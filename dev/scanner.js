@@ -22,8 +22,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
+import { LIBRARY_FILE } from "./paths.js";
 
-const LIB_FILE = path.join(DATA_DIR, "library.json");
+const LIB_FILE = LIBRARY_FILE; // per system (full paths differ between Linux and Windows)
 const IDS_FILE = path.join(DATA_DIR, "ids.json");
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 const SKIP_DIR = /^(\.|@|\$|sample$|samples$|extras?$|featurettes?$|behind the scenes$|trailers?$)/i;

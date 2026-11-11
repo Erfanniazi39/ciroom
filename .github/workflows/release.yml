@@ -1,5 +1,5 @@
 # Builds CiRoom and publishes a signed release when a version tag (v1.2.3) is pushed (npm run release does that).
-# The installed apps check this repository's latest release for updates.
+# The installed apps check this repository's latest release for updates (latest.json lists every platform).
 # Needs two repository secrets: TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
 name: Release
 
@@ -11,19 +11,24 @@ permissions:
   contents: write
 
 jobs:
+  # One release first (with the notes from the tag message), so the builds below all add to the same one.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > notes.txt
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --title "CiRoom ${GITHUB_REF_NAME}" --notes-file notes.txt
+
   linux:
+    needs: release
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Release notes from the tag message
-        id: notes
-        run: |
-          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          {
-            echo 'body<<CIROOM_NOTES_END'
-            git tag -l --format='%(contents)' "${GITHUB_REF_NAME}"
-            echo 'CIROOM_NOTES_END'
-          } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -49,7 +54,60 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: CiRoom ${{ github.ref_name }}
-          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
-          prerelease: false
+          includeUpdaterJson: true
+
+  windows:
+    needs: [release, linux] # after Linux, so the two never update latest.json at the same moment
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Bundle Node (runs CiRoom's server)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          Copy-Item (Get-Command node).Source src-tauri/binaries/node-x86_64-pc-windows-msvc.exe
+      - name: Bundle mpv and ffmpeg (Windows has neither)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = "src-tauri/windows-bin"
+          New-Item -ItemType Directory -Force $bin, dl | Out-Null
+          # ffmpeg + ffprobe (BtbN GPL shared build: includes Chromaprint, used for skip intro)
+          $ff = (Invoke-RestMethod https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest).assets |
+                Where-Object { $_.name -match '^ffmpeg-n7\.1.*-win64-gpl-shared-7\.1\.zip$' } | Select-Object -First 1
+          if (-not $ff) { throw "ffmpeg build not found" }
+          Invoke-WebRequest $ff.browser_download_url -OutFile dl/ffmpeg.zip
+          Expand-Archive dl/ffmpeg.zip dl/ffmpeg
+          Copy-Item (Get-ChildItem dl/ffmpeg -Recurse -Include ffmpeg.exe, ffprobe.exe, *.dll) $bin
+          # mpv (shinchiro build, one self-contained mpv.exe)
+          $mp = (Invoke-RestMethod https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest).assets |
+                Where-Object { $_.name -match '^mpv-x86_64-\d{8}-git-.*\.7z$' } | Select-Object -First 1
+          if (-not $mp) { throw "mpv build not found" }
+          Invoke-WebRequest $mp.browser_download_url -OutFile dl/mpv.7z
+          7z x dl/mpv.7z -odl/mpv -y | Out-Null
+          Copy-Item dl/mpv/mpv.exe $bin
+          # Check: Chromaprint present, mpv runs
+          & "$bin/ffmpeg.exe" -hide_banner -muxers | Select-String chromaprint
+          if (-not (& "$bin/ffmpeg.exe" -hide_banner -muxers | Select-String chromaprint)) { throw "ffmpeg has no Chromaprint" }
+          & "$bin/mpv.exe" --version | Select-Object -First 1
+          Get-ChildItem $bin | Format-Table Name, Length
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: CiRoom ${{ github.ref_name }}
+          releaseDraft: false
           includeUpdaterJson: true

@@ -58,7 +58,9 @@ local S = {
   base_sub_margin = nil,
   raised = false,
 }
-local thumb = { dir = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/marquee-thumbs-" .. utils.getpid(),
+local WIN = package.config:sub(1, 1) == "\\"
+local thumb = { dir = (WIN and ((os.getenv("TEMP") or os.getenv("TMP") or ".") .. "\\marquee-thumbs-")
+                          or ((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/marquee-thumbs-")) .. utils.getpid(),
                 cache = {}, pending = nil, want = nil, shown = nil, w = 0, h = 0, gen = 0 }
 
 ------------------------------------------------------------------------------------------------
@@ -187,7 +189,8 @@ local function thumb_setup()
   local scale = clamp(oh / 1080, 0.7, 2)
   thumb.w = math.floor(260 * scale / 2) * 2
   thumb.h = math.floor(thumb.w * vp.dh / vp.dw / 2) * 2
-  mp.command_native({ name = "subprocess", args = { "mkdir", "-p", thumb.dir }, playback_only = false })
+  mp.command_native({ name = "subprocess", playback_only = false,
+    args = WIN and { "cmd", "/d", "/c", "mkdir", thumb.dir } or { "mkdir", "-p", thumb.dir } }) -- Windows: an error if it exists is fine
 end
 
 ------------------------------------------------------------------------------------------------
@@ -859,7 +862,8 @@ mp.register_event("file-loaded", function()
 end)
 mp.register_event("shutdown", function()
   thumb_remove()
-  mp.command_native({ name = "subprocess", args = { "rm", "-rf", thumb.dir }, playback_only = false })
+  mp.command_native({ name = "subprocess", playback_only = false,
+    args = WIN and { "cmd", "/d", "/c", "rmdir", "/s", "/q", thumb.dir } or { "rm", "-rf", thumb.dir } })
 end)
 
 -- Toggle the controls from input.conf: `TAB script-binding marquee-osc/toggle`

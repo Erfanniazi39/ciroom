@@ -10,17 +10,17 @@
  * Read-only on your real data: the database is copied with SQLite's own consistent snapshot (VACUUM INTO).
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
+import { CACHE_DIR, DATA_DIR } from "../dev/paths.js";
 
-const here = path.dirname(decodeURIComponent(new URL(import.meta.url).pathname));
-const home = os.homedir();
-const REAL_DATA = path.join(process.env.XDG_DATA_HOME || path.join(home, ".local/share"), "marquee");
-const REAL_CACHE = path.join(process.env.XDG_CACHE_HOME || path.join(home, ".cache"), "marquee");
+const here = path.dirname(fileURLToPath(import.meta.url));
+if (process.env.CIROOM_DATA_DIR) throw new Error("run without CIROOM_DATA_DIR (this copies the real data)");
+const REAL_DATA = DATA_DIR, REAL_CACHE = CACHE_DIR; // the real app's folders (shared with Windows when set up)
 const ROOT = path.resolve(here, "../.dev-data");
 const DATA = path.join(ROOT, "data"), CACHE = path.join(ROOT, "cache");
-const SKIP = new Set(["remote.json", "party.json", "backups", "ciroom.db", "ciroom.db-wal", "ciroom.db-shm", "ciroom.db-journal"]);
+const SKIP = new Set(["remote.json", "party.json", "local.json", "backups", "ciroom.db", "ciroom.db-wal", "ciroom.db-shm", "ciroom.db-journal"]);
 
 if (process.argv.includes("--if-missing") && fs.existsSync(path.join(DATA, "ciroom.db"))) process.exit(0);
 if (!fs.existsSync(REAL_DATA)) { console.log("[dev-data] no CiRoom data yet: the test version starts empty"); process.exit(0); }

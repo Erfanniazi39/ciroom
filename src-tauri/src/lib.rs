@@ -41,7 +41,8 @@ mod installed {
         }
         let exe = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
         let node = exe.parent().ok_or("no program folder")?.join(if cfg!(windows) { "node.exe" } else { "node" });
-        let res: PathBuf = app.path().resource_dir().map_err(|e| e.to_string())?;
+        // Windows paths can come as \\?\C:\…; plain C:\… is safer for Node and for PATH.
+        let res = PathBuf::from(app.path().resource_dir().map_err(|e| e.to_string())?.to_string_lossy().trim_start_matches(r"\\?\").to_string());
         let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
         let log = std::fs::File::create(log_dir.join("server.log")).map_err(|e| e.to_string())?;
@@ -51,6 +52,7 @@ mod installed {
             .env("CIROOM_DIST", res.join("dist"))
             .env("NODE_USE_ENV_PROXY", "1")
             .env("NODE_NO_WARNINGS", "1")
+            .env("CIROOM_SHARE_DATA", "1") // Linux: move the data next to the library once, for the Windows app
             // The server quits when this pipe closes, i.e. whenever CiRoom ends (even if it is killed or crashes).
             .env("CIROOM_EXIT_WITH_STDIN", "1")
             .stdin(Stdio::piped())
@@ -58,6 +60,13 @@ mod installed {
             .stderr(log);
         #[cfg(windows)]
         {
+            // mpv, ffmpeg and ffprobe ship with CiRoom on Windows (resources/bin): the server finds them on PATH.
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs = vec![res.join("bin")];
+            dirs.extend(std::env::split_paths(&path));
+            if let Ok(joined) = std::env::join_paths(dirs) {
+                cmd.env("PATH", joined);
+            }
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console window
         }

@@ -13,15 +13,17 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createCiRoom } from "../dev/mpv-bridge.js";
 import { DATA_DIR, isMediaRoot, savedMediaRoot } from "../dev/paths.js";
 
-const here = path.dirname(decodeURIComponent(new URL(import.meta.url).pathname));
+const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIROOM_PORT) || 1420;
 // Library folder: CIROOM_MEDIA_ROOT, else the one chosen in Settings, else the folder above the app folder.
 const MEDIA_ROOT = process.env.CIROOM_MEDIA_ROOT || savedMediaRoot() || path.resolve(here, "../..");
 if (!isMediaRoot(MEDIA_ROOT)) console.warn(`[ciroom] no Movies or Series folder in ${MEDIA_ROOT}: choose your library folder in Settings`);
 const DIST = path.resolve(process.env.CIROOM_DIST || path.join(here, "../dist"));
+process.env.CIROOM_DIST = DIST; // dev/party.js serves the prebuilt guest page from here
 
 const TYPES = /** @type {Record<string, string>} */ ({
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",

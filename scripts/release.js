@@ -9,8 +9,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const git = (/** @type {string[]} */ ...a) => execFileSync("git", a, { cwd: root, encoding: "utf8" }).trim();
 
 if (git("status", "--porcelain")) { console.error("There are unsaved changes. Commit them first (or ask Claude to)."); process.exit(1); }

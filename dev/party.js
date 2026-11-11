@@ -25,6 +25,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
+import { fileURLToPath } from "node:url";
 
 const FILE = path.join(DATA_DIR, "party.json");
 const COOKIE = "ciroom_guest";
@@ -36,8 +37,10 @@ const MAX_STREAMS_PER_GUEST = 2;
 const CHAT_KEEP = 100;
 export const TAILSCALE_IP = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./; // 100.64.0.0/10
 const PRIVATE_IP = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
-const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|virbr|vboxnet|vmnet|lo)/i;
-const SRC = decodeURIComponent(new URL("../src", import.meta.url).pathname);
+const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|virbr|vboxnet|vmnet|lo$|vethernet|virtualbox|vmware|loopback|bluetooth)/i;
+const SRC = fileURLToPath(new URL("../src", import.meta.url));
+/** The installed app has no sources: the guest page is built ahead (scripts/build-party.js → dist/party/). */
+const prebuilt = (/** @type {string} */ name) => (process.env.CIROOM_DIST ? path.join(process.env.CIROOM_DIST, "party", name) : null);
 
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 const safeEq = (/** @type {string} */ a, /** @type {string} */ b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -166,6 +169,8 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
   /** @type {{ stamp: string, js: string } | null} */
   let bundle = null;
   async function guestJs() {
+    const pre = prebuilt("app.js");
+    if (pre && fs.existsSync(pre)) return (bundle ??= { stamp: "prebuilt", js: fs.readFileSync(pre, "utf8") }).js;
     const files = [path.join(SRC, "party/guest.ts"), path.join(SRC, "lib/mse.ts"), path.join(SRC, "api/stream.ts")];
     const stamp = files.map((f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }).join("|");
     if (bundle?.stamp === stamp) return bundle.js;
@@ -323,7 +328,8 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
       if (req.method === "GET" && route === "/party/app.css") {
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/css; charset=utf-8");
-        res.end(fs.readFileSync(path.join(SRC, "party/guest.css")));
+        const pre = prebuilt("app.css");
+        res.end(fs.readFileSync(pre && fs.existsSync(pre) ? pre : path.join(SRC, "party/guest.css")));
         return true;
       }
 

@@ -6,7 +6,7 @@ import { subSearchApi } from "@/api/subsearch";
 import { PhoneRemoteSettings } from "@/components/PhoneRemoteSettings";
 import { WatchPartySettings } from "@/components/WatchPartySettings";
 import { UpdateSettings } from "@/components/UpdateSettings";
-import { LibraryFolder } from "@/components/LibraryFolder";
+import { DataFolder, LibraryFolder } from "@/components/LibraryFolder";
 import { Button, Segmented, cx } from "@/components/ui";
 import { SUBTITLE_LANGUAGES } from "@/lib/languages";
 import { setTvMode } from "@/hooks/useTvMode";
@@ -183,11 +183,7 @@ export default function Settings() {
       </Section>
 
       <Section title="Where CiRoom keeps its data">
-        <div className="space-y-1.5 px-5 py-4 font-mono text-[13px] text-fg-muted">
-          <div>~/.local/share/marquee <span className="font-sans text-fg-subtle">· library scan, metadata, artwork, your TMDB key</span></div>
-          <div>~/.cache/marquee <span className="font-sans text-fg-subtle">· file facts, loudness, repaired subtitles</span></div>
-          <div>~/.local/share/marquee/ciroom.db <span className="font-sans text-fg-subtle">· progress, favorites, watchlist, watch time, subtitle choices, these settings, skip-intro results (daily backups in backups/)</span></div>
-        </div>
+        <DataFolder />
         <Row label="Reset watching data" hint="Forget progress, history and watch time. Favorites, the watchlist and your files are not touched.">
           {confirm ? (
             <div className="flex gap-2">

@@ -26,7 +26,8 @@ import { remoteRoutes } from "./remote.js";
 import { partyRoutes } from "./party.js";
 import { userdbRoutes } from "./userdb.js";
 import { introRoutes } from "./intro.js";
-import { MPV_SOCKET, isMediaRoot, saveMediaRoot, savedMediaRoot } from "./paths.js";
+import { fileURLToPath } from "node:url";
+import { DATA_DIR, MPV_SOCKET, SHARED, isMediaRoot, openUrlCommand, saveMediaRoot, savedMediaRoot } from "./paths.js";
 
 /** Marquee's mpv profile (mpv.conf, input.conf, script-opts/osc.conf). */
 /** Track language codes (ISO 639) ↔ the language names CiRoom uses for subtitles. */
@@ -50,7 +51,7 @@ const markerOpts = (m) => [
   ...(m?.credits ? [`--script-opts-append=marquee-osc-credits=${m.credits}`] : []),
 ];
 
-const MPV_CONFIG = decodeURIComponent(new URL("../mpv", import.meta.url).pathname);
+const MPV_CONFIG = fileURLToPath(new URL("../mpv", import.meta.url));
 
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 
@@ -195,7 +196,7 @@ export function createCiRoom(mediaRoot) {
     return true;
   }
 
-  const intro = introRoutes(resolveVideo);
+  const intro = introRoutes(resolveVideo, rootAbs);
   /** Skip intro / credits while mpv plays (for the phone): what the button would do right now, or null. */
   function mpvSkipState() {
     if (!st.running || !st.file) return null;
@@ -360,14 +361,15 @@ export function createCiRoom(mediaRoot) {
             if (!local) return json(403, { error: "Not allowed from this device" });
             const { key } = await body(req);
             if (!/^[\w-]{6,20}$/.test(String(key))) return json(400, { error: "Bad video id" });
-            spawn("xdg-open", [`https://www.youtube.com/watch?v=${key}`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+            const [cmd, args] = openUrlCommand(`https://www.youtube.com/watch?v=${key}`);
+            spawn(cmd, [...args], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
             return json(200, { ok: true });
           }
 
           // Library folder (Settings). This PC only. Takes effect when CiRoom restarts.
           if (req.url === "/api/media-root") {
             if (!local) return json(403, { error: "Not allowed from this device" });
-            if (req.method === "GET") return json(200, { current: rootAbs, saved: savedMediaRoot(), ok: isMediaRoot(rootAbs) });
+            if (req.method === "GET") return json(200, { current: rootAbs, saved: savedMediaRoot(), ok: isMediaRoot(rootAbs), dataDir: DATA_DIR, shared: SHARED });
             if (req.method === "POST") {
               const p = path.resolve(String((await body(req)).path ?? "").trim());
               if (!isMediaRoot(p)) return json(400, { error: "That folder has no Movies or Series folder inside" });

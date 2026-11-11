@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_USE_ENV_PROXY=1 vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/build-party.js",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "tauri": "tauri",

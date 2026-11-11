@@ -41,3 +41,19 @@ export function LibraryFolder() {
     </div>
   );
 }
+
+/** Settings → Where CiRoom keeps its data: the real folder (shared with the other system when set up). */
+export function DataFolder() {
+  const [d, setD] = useState<{ dataDir: string; shared: boolean } | null>(null);
+  useEffect(() => { fetch("/api/media-root").then((r) => (r.ok ? r.json() : null)).then(setD).catch(() => undefined); }, []);
+  if (!d) return null;
+  return (
+    <div className="space-y-1.5 px-5 py-4 text-[13px] text-fg-muted">
+      <div className="font-mono">{d.dataDir}</div>
+      <div className="text-fg-subtle">
+        Progress, favorites, watchlist, watch time, subtitle choices, these settings, skip-intro results (database ciroom.db, daily backups in backups/), plus artwork and metadata.
+        {d.shared && <span className="text-success"> Shared with your other system (Linux and Windows see the same data).</span>}
+      </div>
+    </div>
+  );
+}

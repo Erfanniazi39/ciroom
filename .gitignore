@@ -24,3 +24,4 @@ src-tauri/.cargo/
 # The test version's copy of your data (npm run dev-data)
 .dev-data/
 src-tauri/binaries/
+src-tauri/windows-bin/

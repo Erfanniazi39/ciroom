@@ -4,8 +4,8 @@
  *
  * A background queue analyses the library season by season (dev/intro-worker.js, one season at a
  * time in a worker thread, ffmpeg at the lowest CPU/disk priority) and stores the result per video
- * file in CiRoom's database (table media_markers, keyed by path + size + mtime, so a replaced file is
- * analysed again). Order: the season of whatever you open first, then series you've been watching,
+ * file in CiRoom's database (table media_markers, keyed by the path inside the library folder + size + mtime, so
+ * a replaced file is analysed again, and Linux and Windows share the results). Order: the season of whatever you open first, then series you've been watching,
  * then everything else. New episodes found by a scan are picked up on the next pass.
  *
  *   GET /api/markers?path=…    → { status: "ready", intro: {start,end} | null, credits: number | null }
@@ -16,11 +16,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
-import { DATA_DIR } from "./artwork-store.js";
 import { openDb } from "./userdb.js";
-import { BACKGROUND } from "./paths.js";
+import { BACKGROUND, LIBRARY_FILE } from "./paths.js";
 
-const LIB_FILE = path.join(DATA_DIR, "library.json");
+const LIB_FILE = LIBRARY_FILE;
 const VERSION = 1; // bump when the analysis changes: everything is analysed again
 const START_DELAY = 45_000; // let CiRoom start up first
 const RECHECK = 10 * 60_000; // look for new episodes again after a pass
@@ -31,7 +30,9 @@ const TABLE = `CREATE TABLE IF NOT EXISTS media_markers (
 
 /** @typedef {{ key: string, label: string, seriesId: string, files: string[], ids: string[] }} Season */
 
-export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
+export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /** @type {string} */ mediaRoot) {
+  /** Key: the path inside the library folder with "/" (the same on Linux and Windows). */
+  const key = (/** @type {string} */ f) => path.relative(mediaRoot, f).split(path.sep).join("/");
   let db = /** @type {any} */ (null);
   /** @type {Promise<void> | null} */ let ready = null;
   // Vite reloads this module when dev/*.js changes, in the same process: only the newest queue may run,
@@ -44,7 +45,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
   let timer = /** @type {NodeJS.Timeout | null} */ (null);
 
   const stat = (/** @type {string} */ f) => { try { const s = fs.statSync(f); return { size: s.size, mtime: Math.floor(s.mtimeMs) }; } catch { return null; } };
-  const row = (/** @type {string} */ f) => db.prepare("SELECT * FROM media_markers WHERE path = ?").get(f);
+  const row = (/** @type {string} */ f) => db.prepare("SELECT * FROM media_markers WHERE path = ?").get(key(f));
   const current = (/** @type {string} */ f) => {
     const r = row(f), s = stat(f);
     return r && s && r.size === s.size && r.mtime === s.mtime && r.version === VERSION ? r : null;
@@ -79,7 +80,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
       const s = stat(f);
       if (!s) continue;
       const r = results[f] ?? { duration: null, intro: null, credits: null };
-      ins.run(f, s.size, s.mtime, r.duration ?? null, r.intro?.[0] ?? null, r.intro?.[1] ?? null, r.credits ?? null, VERSION, Date.now());
+      ins.run(key(f), s.size, s.mtime, r.duration ?? null, r.intro?.[0] ?? null, r.intro?.[1] ?? null, r.credits ?? null, VERSION, Date.now());
     }
   }
 
@@ -116,7 +117,19 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
   };
   /** Opens the database and starts the background queue (called by the dev server, never by a build). */
   function start() {
-    ready ??= (async () => { db = await openDb(); db.exec(TABLE); })();
+    ready ??= (async () => {
+      db = await openDb();
+      db.exec(TABLE);
+      // Before 0.1.2 rows were keyed by the full path: keep them, keyed by the path inside the library folder.
+      const prefix = path.resolve(mediaRoot) + path.sep;
+      const old = db.prepare("SELECT path FROM media_markers WHERE path LIKE ?").all(`${prefix}%`);
+      if (old.length) {
+        const upd = db.prepare("UPDATE OR REPLACE media_markers SET path = ? WHERE path = ?");
+        db.exec("BEGIN");
+        for (const r of old) upd.run(key(/** @type {any} */ (r).path), /** @type {any} */ (r).path);
+        db.exec("COMMIT");
+      }
+    })();
     ready.then(() => { if (BACKGROUND) kick(START_DELAY); }).catch((e) => console.warn("[ciroom] skip intro disabled:", e.message));
     return ready;
   }

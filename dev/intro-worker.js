@@ -12,7 +12,7 @@
  * Input  (workerData): { files: string[] }  (one season, in episode order)
  * Output (message):    { results: { [file]: { duration, intro: [start, end] | null, credits: number | null } } }
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import os from "node:os";
 import { parentPort, workerData } from "node:worker_threads";
 
@@ -27,25 +27,35 @@ const pop = (/** @type {number} */ x) => {
   return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 };
 
-const LOW_PRIORITY = (() => { try { execFileSync("ionice", ["-c3", "true"]); return true; } catch { return false; } })();
+const WIN = process.platform === "win32";
+const IONICE = !WIN && (() => { try { execFileSync("ionice", ["-c3", "true"]); return true; } catch { return false; } })();
 
-/** Raw Chromaprint fingerprint of part of a file's audio. */
+/** Raw Chromaprint fingerprint of part of a file's audio (ffmpeg at the lowest priority). @returns {Promise<Uint32Array>} */
 function fingerprint(/** @type {string} */ file, /** @type {"head"|"tail"} */ part) {
   const range = part === "head" ? ["-t", String(HEAD_S), "-i", file] : ["-sseof", `-${TAIL_S}`, "-i", file];
-  const args = ["-v", "error", ...range, "-vn", "-ac", "1", "-ar", "11025", "-f", "chromaprint", "-fp_format", "raw", "-"];
-  const cmd = LOW_PRIORITY ? "ionice" : "nice";
-  const full = LOW_PRIORITY ? ["-c3", "nice", "-n", "19", "ffmpeg", ...args] : ["-n", "19", "ffmpeg", ...args];
-  try {
-    const b = execFileSync(cmd, full, { maxBuffer: 1 << 26, timeout: 180_000 });
-    return new Uint32Array(b.buffer, b.byteOffset, b.length >> 2);
-  } catch {
-    return new Uint32Array(0);
-  }
+  const args = ["-v", "error", "-nostdin", ...range, "-vn", "-ac", "1", "-ar", "11025", "-f", "chromaprint", "-fp_format", "raw", "-"];
+  // Linux: ionice (idle disk) + nice 19. Windows: the same ffmpeg, set to the idle priority class right after it starts.
+  const [cmd, full] = WIN ? ["ffmpeg", args] : IONICE ? ["ionice", ["-c3", "nice", "-n", "19", "ffmpeg", ...args]] : ["nice", ["-n", "19", "ffmpeg", ...args]];
+  return new Promise((resolve) => {
+    const empty = () => resolve(new Uint32Array(0));
+    const p = spawn(cmd, full, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    if (WIN && p.pid) { try { os.setPriority(p.pid, 19); } catch { /* fine */ } }
+    /** @type {Buffer[]} */ const chunks = [];
+    p.stdout.on("data", (c) => chunks.push(c));
+    const timer = setTimeout(() => p.kill(), 180_000);
+    p.on("error", () => { clearTimeout(timer); empty(); });
+    p.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return empty();
+      const b = Buffer.concat(chunks);
+      resolve(new Uint32Array(b.buffer, b.byteOffset, b.length >> 2));
+    });
+  });
 }
 
 function duration(/** @type {string} */ file) {
   try {
-    return Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file], { timeout: 30_000 }).toString().trim()) || 0;
+    return Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file], { timeout: 30_000, windowsHide: true }).toString().trim()) || 0;
   } catch { return 0; }
 }
 
@@ -122,10 +132,11 @@ function agreed(fps, o) {
 }
 
 /** Analyse one season. @param {string[]} files */
-export function analyseSeason(files) {
+export async function analyseSeason(files) {
   const durations = files.map(duration);
-  const heads = files.map((f) => fingerprint(f, "head"));
-  const tails = files.map((f, i) => (durations[i] > TAIL_S + 120 ? fingerprint(f, "tail") : new Uint32Array(0)));
+  /** @type {Uint32Array[]} */ const heads = [], tails = [];
+  for (const f of files) heads.push(await fingerprint(f, "head")); // one ffmpeg at a time
+  for (const [i, f] of files.entries()) tails.push(durations[i] > TAIL_S + 120 ? await fingerprint(f, "tail") : new Uint32Array(0));
   const intros = agreed(heads, { minSec: 6, maxSec: 150 });
   const credits = agreed(tails, { minSec: 10, maxSec: TAIL_S });
   /** @type {Record<string, { duration: number, intro: [number, number] | null, credits: number | null }>} */ const results = {};
@@ -144,6 +155,7 @@ export function analyseSeason(files) {
 }
 
 if (parentPort && workerData?.files) {
-  try { os.setPriority(19); } catch { /* not allowed: fine */ }
-  parentPort.postMessage({ results: analyseSeason(workerData.files) });
+  // Linux: lowers only this worker thread. On Windows it would lower the whole CiRoom server, so not there.
+  if (!WIN) { try { os.setPriority(19); } catch { /* not allowed: fine */ } }
+  analyseSeason(workerData.files).then((results) => parentPort?.postMessage({ results }));
 }
