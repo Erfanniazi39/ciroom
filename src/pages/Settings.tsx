@@ -5,6 +5,8 @@ import { api } from "@/api";
 import { subSearchApi } from "@/api/subsearch";
 import { PhoneRemoteSettings } from "@/components/PhoneRemoteSettings";
 import { WatchPartySettings } from "@/components/WatchPartySettings";
+import { UpdateSettings } from "@/components/UpdateSettings";
+import { LibraryFolder } from "@/components/LibraryFolder";
 import { Button, Segmented, cx } from "@/components/ui";
 import { SUBTITLE_LANGUAGES } from "@/lib/languages";
 import { setTvMode } from "@/hooks/useTvMode";
@@ -92,6 +94,10 @@ export default function Settings() {
       <h1 className="h-display-l">Settings</h1>
       <p className="meta mt-2">Everything here is saved on this computer.</p>
 
+      <Section title="Updates">
+        <UpdateSettings />
+      </Section>
+
       <Section title="Playback">
         <Row label="Play the next episode automatically" hint="A card counts down in the last seconds, and the next episode starts when this one ends. Cancel it with the ✕.">
           <Toggle on={st.autoplayNext} onChange={(v) => st.set({ autoplayNext: v })} label="Auto-play next episode" />
@@ -160,6 +166,7 @@ export default function Settings() {
       </Section>
 
       <Section title="Your library">
+        <LibraryFolder />
         <Row label="Media folders" hint="CiRoom only reads these. It never moves, renames or deletes your files.">
           <Link to="/library"><Button icon={<LibraryIcon size={16} />} tabIndex={-1}>Open Library</Button></Link>
         </Row>

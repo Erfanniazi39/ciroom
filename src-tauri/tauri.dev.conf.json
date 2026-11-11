@@ -14,11 +14,17 @@
         "minWidth": 1024,
         "minHeight": 640,
         "center": true,
-        "backgroundColor": "#0A0A0D"
+        "backgroundColor": "#0A0A0D",
+        "create": false
       }
     ]
   },
   "bundle": {
-    "icon": ["icons-dev/32x32.png", "icons-dev/128x128.png", "icons-dev/128x128@2x.png", "icons-dev/icon.png"]
+    "icon": [
+      "icons-dev/32x32.png",
+      "icons-dev/128x128.png",
+      "icons-dev/128x128@2x.png",
+      "icons-dev/icon.png"
+    ]
   }
 }

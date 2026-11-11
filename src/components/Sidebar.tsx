@@ -1,7 +1,8 @@
-import { BarChart3, Clapperboard, Heart, Home, Library, Search, Settings, Tv } from "lucide-react";
+import { BarChart3, Clapperboard, Download, Heart, Home, Library, Search, Settings, Tv } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
 import { cx } from "./ui";
+import { useUpdates } from "@/lib/updates";
 
 const main: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
   { to: "/", label: "Home", icon: Home, end: true },
@@ -15,6 +16,7 @@ const main: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
  * (no layout shift) and stays out of the way of the artwork.
  */
 export function Sidebar({ onSearch }: { onSearch: () => void }) {
+  const update = useUpdates((s) => s.status === "available" || s.status === "downloading");
   return (
     <nav
       aria-label="Main"
@@ -40,6 +42,15 @@ export function Sidebar({ onSearch }: { onSearch: () => void }) {
       </ul>
 
       <ul className="mt-auto flex flex-col gap-1 px-3">
+        {update && (
+          <li>
+            <NavLink to="/settings" className={cx(itemClass(false), "text-accent hover:text-accent")} title="A new version of CiRoom is ready">
+              <Download size={22} strokeWidth={2} className="shrink-0" />
+              <span className="absolute left-[30px] top-[10px] h-2 w-2 animate-pulse rounded-full bg-accent" />
+              <Label>Update available</Label>
+            </NavLink>
+          </li>
+        )}
         <li>
           <button onClick={onSearch} className={itemClass(false)}>
             <Search size={22} strokeWidth={1.8} className="shrink-0" />

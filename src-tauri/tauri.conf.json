@@ -18,7 +18,8 @@
         "minWidth": 1024,
         "minHeight": 640,
         "center": true,
-        "backgroundColor": "#0A0A0D"
+        "backgroundColor": "#0A0A0D",
+        "create": false
       }
     ],
     "security": {
@@ -27,9 +28,35 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "appimage"
+    ],
     "category": "Video",
     "shortDescription": "Personal media center",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/node"
+    ],
+    "resources": {
+      "../dist/": "dist/",
+      "../server/": "server/",
+      "../dev/": "dev/",
+      "../mpv/": "mpv/",
+      "runtime/package.json": "package.json"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Erfanniazi39/ciroom/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUxMEU2MTFEMkRGQTg3QjkKUldTNWgvb3RIV0VPNGNKczAxUUJOeFJONVlXcUE3Wnk1emNJS2s1RUt3SlBtWmlRN0tqSi9xWTkK"
+    }
   }
 }

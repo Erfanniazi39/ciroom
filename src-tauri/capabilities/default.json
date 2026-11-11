@@ -1,7 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main window. Kept minimal; Stage 2 adds only what the app uses.",
+  "description": "The main window. In the installed app it shows CiRoom's own server (127.0.0.1:1420), which may check for and install updates.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "remote": { "urls": ["http://127.0.0.1:1420/*"] },
+  "permissions": ["core:default", "updater:default", "process:allow-restart"]
 }

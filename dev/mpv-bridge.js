@@ -26,7 +26,7 @@ import { remoteRoutes } from "./remote.js";
 import { partyRoutes } from "./party.js";
 import { userdbRoutes } from "./userdb.js";
 import { introRoutes } from "./intro.js";
-import { MPV_SOCKET } from "./paths.js";
+import { MPV_SOCKET, isMediaRoot, saveMediaRoot, savedMediaRoot } from "./paths.js";
 
 /** Marquee's mpv profile (mpv.conf, input.conf, script-opts/osc.conf). */
 /** Track language codes (ISO 639) ↔ the language names CiRoom uses for subtitles. */
@@ -362,6 +362,18 @@ export function createCiRoom(mediaRoot) {
             if (!/^[\w-]{6,20}$/.test(String(key))) return json(400, { error: "Bad video id" });
             spawn("xdg-open", [`https://www.youtube.com/watch?v=${key}`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
             return json(200, { ok: true });
+          }
+
+          // Library folder (Settings). This PC only. Takes effect when CiRoom restarts.
+          if (req.url === "/api/media-root") {
+            if (!local) return json(403, { error: "Not allowed from this device" });
+            if (req.method === "GET") return json(200, { current: rootAbs, saved: savedMediaRoot(), ok: isMediaRoot(rootAbs) });
+            if (req.method === "POST") {
+              const p = path.resolve(String((await body(req)).path ?? "").trim());
+              if (!isMediaRoot(p)) return json(400, { error: "That folder has no Movies or Series folder inside" });
+              saveMediaRoot(p);
+              return json(200, { saved: p, restart: p !== rootAbs });
+            }
           }
 
           if (req.url === "/api/player/cmd" && req.method === "POST") {

@@ -6,7 +6,7 @@
  *
  *   node server/index.js
  *   CIROOM_PORT        port (default 1420)
- *   CIROOM_MEDIA_ROOT  folder holding Movies/ and Series/ (default: the folder above the app folder)
+ *   CIROOM_MEDIA_ROOT  folder holding Movies/ and Series/ (default: Settings → Library folder, else the folder above the app folder)
  *   CIROOM_DIST        built page folder (default: ../dist)
  *   CIROOM_DATA_DIR, CIROOM_CACHE_DIR, CIROOM_DEV: see dev/paths.js
  */
@@ -14,11 +14,13 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { createCiRoom } from "../dev/mpv-bridge.js";
-import { DATA_DIR } from "../dev/paths.js";
+import { DATA_DIR, isMediaRoot, savedMediaRoot } from "../dev/paths.js";
 
 const here = path.dirname(decodeURIComponent(new URL(import.meta.url).pathname));
 const PORT = Number(process.env.CIROOM_PORT) || 1420;
-const MEDIA_ROOT = process.env.CIROOM_MEDIA_ROOT || path.resolve(here, "../..");
+// Library folder: CIROOM_MEDIA_ROOT, else the one chosen in Settings, else the folder above the app folder.
+const MEDIA_ROOT = process.env.CIROOM_MEDIA_ROOT || savedMediaRoot() || path.resolve(here, "../..");
+if (!isMediaRoot(MEDIA_ROOT)) console.warn(`[ciroom] no Movies or Series folder in ${MEDIA_ROOT}: choose your library folder in Settings`);
 const DIST = path.resolve(process.env.CIROOM_DIST || path.join(here, "../dist"));
 
 const TYPES = /** @type {Record<string, string>} */ ({
@@ -65,3 +67,9 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`[ciroom] ready on http://127.0.0.1:${PORT}  (media: ${MEDIA_ROOT}, data: ${DATA_DIR})`);
 });
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { server.close(); process.exit(0); });
+// Started by the installed app: quit when the app ends (its end of this pipe closes, even after a crash).
+if (process.env.CIROOM_EXIT_WITH_STDIN === "1") {
+  process.stdin.on("end", () => process.exit(0));
+  process.stdin.on("error", () => process.exit(0));
+  process.stdin.resume();
+}

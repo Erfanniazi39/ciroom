@@ -26,6 +26,7 @@ import SeriesDetail from "@/pages/SeriesDetail";
 import Settings from "@/pages/Settings";
 import Stats from "@/pages/Stats";
 import Watch from "@/pages/Watch";
+import { startUpdateChecks } from "@/lib/updates";
 
 export default function App() {
   const { load, error } = useLibrary();
@@ -37,6 +38,7 @@ export default function App() {
   const scrollPositions = useRef(new Map<string, number>());
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { startUpdateChecks(); }, []);
 
   const openSearch = useCallback(() => setSearchOpen(true), []);
   useHotkey("mod+k", openSearch);

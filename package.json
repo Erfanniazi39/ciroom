@@ -12,12 +12,15 @@
     "desktop": "tauri dev",
     "dev-app": "node scripts/dev-data.js --if-missing && CIROOM_DEV=1 CIROOM_PORT=1430 CIROOM_DATA_DIR=.dev-data/data CIROOM_CACHE_DIR=.dev-data/cache tauri dev --config src-tauri/tauri.dev.conf.json",
     "dev-data": "node scripts/dev-data.js",
-    "serve": "NODE_USE_ENV_PROXY=1 node server/index.js"
+    "serve": "NODE_USE_ENV_PROXY=1 node server/index.js",
+    "release": "node scripts/release.js"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.1.0",
     "@fontsource-variable/inter": "^5.1.0",
     "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "lucide-react": "^0.460.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
