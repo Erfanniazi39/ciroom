@@ -24,6 +24,56 @@ mod installed {
 
     pub const PORT: u16 = 1420;
 
+    /// The system proxy (what browsers use, e.g. a VPN app's local proxy): (proxy URL, addresses that skip it).
+    /// Opened from the app menu, CiRoom doesn't get the terminal's proxy variables, so it reads the setting itself.
+    fn system_proxy() -> Option<(String, String)> {
+        #[cfg(target_os = "linux")]
+        {
+            let get = |key: &str, name: &str| -> Option<String> {
+                // The AppImage points GSettings/GIO at its own bundled copies, which don't know the system proxy:
+                // ask the system's own settings instead.
+                let out = Command::new("gsettings").args(["get", key, name])
+                    .env_remove("GSETTINGS_SCHEMA_DIR").env_remove("GIO_MODULE_DIR").env_remove("LD_LIBRARY_PATH")
+                    .output().ok()?;
+                let v = String::from_utf8_lossy(&out.stdout).trim().trim_matches('\'').to_string();
+                (out.status.success() && !v.is_empty()).then_some(v)
+            };
+            if get("org.gnome.system.proxy", "mode")? != "manual" {
+                return None;
+            }
+            let (host, port) = ["https", "http"].iter().find_map(|kind| {
+                let key = format!("org.gnome.system.proxy.{kind}");
+                let host = get(&key, "host")?;
+                let port = get(&key, "port")?;
+                (!host.is_empty() && port != "0").then_some((host, port))
+            })?;
+            let skip = get("org.gnome.system.proxy", "ignore-hosts").unwrap_or_default();
+            let skip: Vec<String> = skip.trim_matches(['[', ']']).split(',').map(|h| h.trim().trim_matches('\'').to_string()).filter(|h| !h.is_empty()).collect();
+            return Some((format!("http://{host}:{port}"), skip.join(",")));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+            let query = |name: &str| -> Option<String> {
+                let out = Command::new("reg").args(["query", key, "/v", name]).creation_flags(0x0800_0000).output().ok()?;
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                let line = text.lines().find(|l| l.trim_start().starts_with(name))?.to_string();
+                line.split_whitespace().nth(2).map(|v| v.to_string())
+            };
+            if query("ProxyEnable")? != "0x1" {
+                return None;
+            }
+            let server = query("ProxyServer")?; // "host:port" or "http=h:p;https=h:p"
+            let pick = server.split(';').find(|p| p.starts_with("https=")).or_else(|| server.split(';').find(|p| p.starts_with("http=")))
+                .map(|p| p.split_once('=').map(|x| x.1).unwrap_or(p).to_string()).unwrap_or(server.clone());
+            let skip = query("ProxyOverride").unwrap_or_default().replace("<local>", "localhost,127.0.0.1").replace(';', ",");
+            return Some((format!("http://{pick}"), skip));
+        }
+        #[allow(unreachable_code)]
+        None
+    }
+
     fn port_open() -> bool {
         TcpStream::connect_timeout(&([127, 0, 0, 1], PORT).into(), Duration::from_millis(150)).is_ok()
     }
@@ -69,6 +119,16 @@ mod installed {
             }
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console window
+        }
+        let has_proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"].iter().any(|k| std::env::var_os(k).is_some());
+        if !has_proxy {
+            if let Some((proxy, skip)) = system_proxy() {
+                let skip = if skip.is_empty() { "localhost,127.0.0.1,::1".to_string() } else { format!("{skip},localhost,127.0.0.1,::1") };
+                for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+                    cmd.env(k, &proxy);
+                }
+                cmd.env("NO_PROXY", &skip).env("no_proxy", &skip);
+            }
         }
         let mut child = cmd.spawn().map_err(|e| format!("could not start {}: {e}", node.display()))?;
         let start = Instant::now();
