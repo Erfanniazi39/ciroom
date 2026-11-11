@@ -21,9 +21,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { DATA_DIR } from "./paths.js";
 
 const run = promisify(execFile);
-const DATA = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local/share"), "marquee");
+const DATA = DATA_DIR;
 const SETTINGS = path.join(DATA, "settings.json");
 export const FOUND_DIR = path.join(DATA, "found-subs");
 const API = process.env.SUBDL_API_URL || "https://api.subdl.com/api/v1/subtitles";

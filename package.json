@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "tauri": "tauri",
-    "desktop": "tauri dev"
+    "desktop": "tauri dev",
+    "dev-app": "node scripts/dev-data.js --if-missing && CIROOM_DEV=1 CIROOM_PORT=1430 CIROOM_DATA_DIR=.dev-data/data CIROOM_CACHE_DIR=.dev-data/cache tauri dev --config src-tauri/tauri.dev.conf.json",
+    "dev-data": "node scripts/dev-data.js",
+    "serve": "NODE_USE_ENV_PROXY=1 node server/index.js"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.1.0",

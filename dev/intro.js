@@ -18,6 +18,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { DATA_DIR } from "./artwork-store.js";
 import { openDb } from "./userdb.js";
+import { BACKGROUND } from "./paths.js";
 
 const LIB_FILE = path.join(DATA_DIR, "library.json");
 const VERSION = 1; // bump when the analysis changes: everything is analysed again
@@ -66,6 +67,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
     const all = seasons().filter((s) => s.files.some((f) => !current(f)));
     if (!all.length) return null;
     for (const k of wanted) { const s = all.find((x) => x.key === k); if (s) return s; }
+    if (!BACKGROUND) return null; // test version: only seasons you open
     const recent = db.prepare("SELECT item_id FROM watch_progress WHERE profile_id = 1 ORDER BY updated_at DESC LIMIT 50").all().map((/** @type {any} */ r) => r.item_id);
     for (const id of recent) { const s = all.find((x) => x.ids.includes(id)); if (s) return s; }
     return all[0];
@@ -85,7 +87,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
     timer = null;
     if (running || stale()) return;
     const season = next();
-    if (!season) { timer = setTimeout(work, RECHECK); return; }
+    if (!season) { if (BACKGROUND) timer = setTimeout(work, RECHECK); return; }
     wanted = wanted.filter((k) => k !== season.key);
     if (season.files.length < 2) { save(season, {}); setImmediate(work); return; } // nothing to compare with
     running = season.label;
@@ -115,7 +117,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo) {
   /** Opens the database and starts the background queue (called by the dev server, never by a build). */
   function start() {
     ready ??= (async () => { db = await openDb(); db.exec(TABLE); })();
-    ready.then(() => kick(START_DELAY)).catch((e) => console.warn("[ciroom] skip intro disabled:", e.message));
+    ready.then(() => { if (BACKGROUND) kick(START_DELAY); }).catch((e) => console.warn("[ciroom] skip intro disabled:", e.message));
     return ready;
   }
 

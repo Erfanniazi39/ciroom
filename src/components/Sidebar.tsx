@@ -26,6 +26,9 @@ export function Sidebar({ onSearch }: { onSearch: () => void }) {
           <path d="M27 23.5v17a1.6 1.6 0 0 0 2.4 1.4l14.2-8.5a1.6 1.6 0 0 0 0-2.8L29.4 22.1a1.6 1.6 0 0 0-2.4 1.4z" fill="rgb(var(--accent))" />
         </svg>
         <span className="font-display text-xl font-semibold tracking-tight opacity-0 transition-opacity duration-200 group-hover/rail:opacity-100 group-focus-within/rail:opacity-100"><span className="text-accent">Ci</span>Room</span>
+        {__CIROOM_DEV__ && (
+          <span title="Test version: uses a copy of your data" className="absolute left-[18px] top-[58px] rounded bg-orange-500 px-1.5 py-px text-[10px] font-bold tracking-wider text-black">DEV</span>
+        )}
       </div>
 
       <ul className="flex flex-col gap-1 px-3">

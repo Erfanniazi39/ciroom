@@ -9,12 +9,12 @@
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { foundSubtitles } from "./subtitle-search.js";
+import { CACHE_DIR } from "./paths.js";
 
 const SUB = /\.(srt|ass|ssa|vtt|sub)$/i;
-const CACHE = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "marquee", "subs");
+const CACHE = path.join(CACHE_DIR, "subs");
 const TIME = /^\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}/;
 
 /** @param {string} videoPath @returns {string[]} subtitle paths to pass to mpv (originals or repaired copies) */

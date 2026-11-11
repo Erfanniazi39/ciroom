@@ -17,14 +17,14 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { promisify } from "node:util";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
+import { CACHE_DIR } from "./paths.js";
 
 const run = promisify(execFile);
-const LOUD_FILE = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "marquee", "loudness.json");
+const LOUD_FILE = path.join(CACHE_DIR, "loudness.json");
 const LEVEL_TARGET = -18; // LUFS: a comfortable TV level (Hannibal/Rick & Morty sit around -16…-18)
-const FACTS_FILE = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "marquee", "facts.json");
+const FACTS_FILE = path.join(CACHE_DIR, "facts.json");
 const TEXT_SUB = /\.(srt|ass|ssa|vtt)$/i;
 
 /** @type {Map<string, any>} */ const probeCache = new Map();

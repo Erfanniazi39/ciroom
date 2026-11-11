@@ -15,7 +15,6 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { artworkRoutes } from "./artwork-store.js";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
@@ -27,6 +26,7 @@ import { remoteRoutes } from "./remote.js";
 import { partyRoutes } from "./party.js";
 import { userdbRoutes } from "./userdb.js";
 import { introRoutes } from "./intro.js";
+import { MPV_SOCKET } from "./paths.js";
 
 /** Marquee's mpv profile (mpv.conf, input.conf, script-opts/osc.conf). */
 /** Track language codes (ISO 639) ↔ the language names CiRoom uses for subtitles. */
@@ -58,10 +58,14 @@ const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 const OBSERVED = ["time-pos", "duration", "pause", "eof-reached", "volume", "mute", "speed", "sub-delay", "sid", "aid", "track-list"];
 const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid", "aid"]);
 
-/** @param {string} mediaRoot */
-export function mpvBridge(mediaRoot) {
+/**
+ * CiRoom's server: every /api route, the phone remote and the watch party. Used by the Vite dev server (the
+ * test version, mpvBridge below) and by the standalone server (server/index.js) the installed app runs.
+ * @param {string} mediaRoot
+ */
+export function createCiRoom(mediaRoot) {
   const rootAbs = path.resolve(mediaRoot);
-  const socketPath = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "marquee-mpv.sock");
+  const socketPath = MPV_SOCKET;
 
   /** @type {any} */
   const st = { proc: null, sock: null, running: false, file: "", props: {}, ended: false, hasNext: false };
@@ -233,18 +237,19 @@ export function mpvBridge(mediaRoot) {
 
   let server_port = 1420;
   return {
-    name: "marquee-dev-bridge",
-    /** @param {import("vite").ViteDevServer} server */
-    configureServer(server) {
-      intro.start(); // background skip-intro analysis: dev server only (not during `vite build`)
-      server.httpServer?.once("listening", () => { server_port = Number(/** @type {any} */ (server.httpServer?.address())?.port) || 1420; });
-      // Vite's live-reload WebSocket only checks its token when the request has an Origin header (browsers),
-      // so a script on another device could still connect. Nothing on another device needs it: refuse.
-      server.httpServer?.prependListener("upgrade", (req, socket) => {
-        const ip = String(req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
-        if (ip !== "127.0.0.1" && ip !== "::1") socket.destroy();
-      });
-      server.middlewares.use(async (req, res, next) => {
+    /** Starts the background work (skip-intro analysis). Never called by `vite build`. */
+    start: () => { intro.start(); },
+    setPort: (/** @type {number} */ p) => { server_port = p; },
+    /** WebSocket upgrades (Vite's live reload only): nothing on another device needs them. */
+    upgrade: (/** @type {import("node:http").IncomingMessage} */ req, /** @type {import("node:stream").Duplex} */ socket) => {
+      const ip = String(req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
+      if (ip !== "127.0.0.1" && ip !== "::1") socket.destroy();
+    },
+    /**
+     * Connect-style handler: answers CiRoom's routes, calls next() for everything else (the page itself).
+     * @param {import("node:http").IncomingMessage} req @param {import("node:http").ServerResponse} res @param {() => void} next
+     */
+    handle: async (req, res, next) => {
         const peer = String(req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
         const onThisPc = peer === "127.0.0.1" || peer === "::1";
         if (!hostAllowed(req.headers.host)) {
@@ -368,7 +373,23 @@ export function mpvBridge(mediaRoot) {
         } catch (e) {
           return json(400, { error: e instanceof Error ? e.message : String(e) });
         }
-      });
+    },
+  };
+}
+
+/** Vite plugin: the dev server (test version) runs CiRoom's server inside Vite. @param {string} mediaRoot */
+export function mpvBridge(mediaRoot) {
+  const app = createCiRoom(mediaRoot);
+  return {
+    name: "marquee-dev-bridge",
+    /** @param {import("vite").ViteDevServer} server */
+    configureServer(server) {
+      app.start(); // dev server only (not during `vite build`)
+      server.httpServer?.once("listening", () => app.setPort(Number(/** @type {any} */ (server.httpServer?.address())?.port) || 1420));
+      // Vite's live-reload WebSocket only checks its token when the request has an Origin header (browsers),
+      // so a script on another device could still connect: refuse those first.
+      server.httpServer?.prependListener("upgrade", app.upgrade);
+      server.middlewares.use((req, res, next) => { app.handle(req, res, next); });
     },
   };
 }

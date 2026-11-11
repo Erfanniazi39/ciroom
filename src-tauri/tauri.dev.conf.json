@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CiRoom Dev",
+  "identifier": "app.ciroom.media.dev",
+  "build": {
+    "devUrl": "http://127.0.0.1:1430"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CiRoom Dev (test version)",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "center": true,
+        "backgroundColor": "#0A0A0D"
+      }
+    ]
+  },
+  "bundle": {
+    "icon": ["icons-dev/32x32.png", "icons-dev/128x128.png", "icons-dev/128x128@2x.png", "icons-dev/icon.png"]
+  }
+}

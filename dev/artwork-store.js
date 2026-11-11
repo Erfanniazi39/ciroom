@@ -17,10 +17,10 @@
  *   POST   /api/tmdb/match  { id, type, title, year } (auto: search, score, apply if confident)
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { DATA_DIR as PATHS_DATA_DIR } from "./paths.js";
 
-const DATA = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local/share"), "marquee");
+const DATA = PATHS_DATA_DIR;
 const ART_DIR = path.join(DATA, "artwork");
 const INDEX = path.join(ART_DIR, "index.json");
 const SETTINGS = path.join(DATA, "settings.json");
