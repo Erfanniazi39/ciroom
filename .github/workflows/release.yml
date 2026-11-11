@@ -78,27 +78,29 @@ jobs:
           Copy-Item (Get-Command node).Source src-tauri/binaries/node-x86_64-pc-windows-msvc.exe
       - name: Bundle mpv and ffmpeg (Windows has neither)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $gh = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "ciroom-build" }
           $bin = "src-tauri/windows-bin"
           New-Item -ItemType Directory -Force $bin, dl | Out-Null
-          # ffmpeg + ffprobe (BtbN GPL shared build: includes Chromaprint, used for skip intro)
-          $ff = (Invoke-RestMethod https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest).assets |
-                Where-Object { $_.name -match '^ffmpeg-n7\.1.*-win64-gpl-shared-7\.1\.zip$' } | Select-Object -First 1
-          if (-not $ff) { throw "ffmpeg build not found" }
-          Invoke-WebRequest $ff.browser_download_url -OutFile dl/ffmpeg.zip
+          # ffmpeg + ffprobe: BtbN GPL shared build of the 8.1 release line (includes Chromaprint, used for skip intro)
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip -OutFile dl/ffmpeg.zip
           Expand-Archive dl/ffmpeg.zip dl/ffmpeg
-          Copy-Item (Get-ChildItem dl/ffmpeg -Recurse -Include ffmpeg.exe, ffprobe.exe, *.dll) $bin
-          # mpv (shinchiro build, one self-contained mpv.exe)
-          $mp = (Invoke-RestMethod https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest).assets |
-                Where-Object { $_.name -match '^mpv-x86_64-\d{8}-git-.*\.7z$' } | Select-Object -First 1
-          if (-not $mp) { throw "mpv build not found" }
+          Get-ChildItem dl/ffmpeg -Recurse -Include ffmpeg.exe, ffprobe.exe, *.dll | Copy-Item -Destination $bin
+          # mpv: shinchiro build (the newest x86_64 one; not the "v3" build, which needs a newer CPU)
+          $rel = Invoke-RestMethod -Headers $gh https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest
+          $mp = $rel.assets | Where-Object { $_.name -match '^mpv-x86_64-\d{8}-git-.*\.7z$' } | Select-Object -First 1
+          if (-not $mp) { throw "mpv build not found in $($rel.tag_name): $($rel.assets.name -join ', ')" }
           Invoke-WebRequest $mp.browser_download_url -OutFile dl/mpv.7z
           7z x dl/mpv.7z -odl/mpv -y | Out-Null
-          Copy-Item dl/mpv/mpv.exe $bin
-          # Check: Chromaprint present, mpv runs
-          & "$bin/ffmpeg.exe" -hide_banner -muxers | Select-String chromaprint
-          if (-not (& "$bin/ffmpeg.exe" -hide_banner -muxers | Select-String chromaprint)) { throw "ffmpeg has no Chromaprint" }
+          Get-ChildItem dl/mpv -Recurse -Include mpv.exe, *.dll | Copy-Item -Destination $bin
+          # Checks: Chromaprint present, both programs run
+          $mux = & "$bin/ffmpeg.exe" -hide_banner -muxers 2>&1 | Out-String
+          if ($mux -notmatch "chromaprint") { throw "ffmpeg has no Chromaprint" }
+          & "$bin/ffprobe.exe" -version | Select-Object -First 1
           & "$bin/mpv.exe" --version | Select-Object -First 1
           Get-ChildItem $bin | Format-Table Name, Length
       - uses: tauri-apps/tauri-action@v0
