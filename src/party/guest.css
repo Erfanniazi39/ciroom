@@ -1,0 +1,78 @@
+/* Watch-party guest page (served at /party/app.css). Same look as CiRoom: dark, violet accent. */
+:root { color-scheme: dark; --bg: #0b0a10; --panel: #15131c; --line: rgb(255 255 255 / .07); --fg: #f3f1f8; --muted: rgb(243 241 248 / .55); --accent: #8b5cf6; --accent-2: #a78bfa; }
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:disabled { opacity: .4; cursor: default; }
+.hidden { display: none !important; }
+
+.brand { font-weight: 800; letter-spacing: .02em; background: linear-gradient(90deg, #c4b5fd, #8b5cf6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.field { width: 100%; padding: 10px 14px; border-radius: 999px; border: 0; outline: none; background: rgb(255 255 255 / .08); color: var(--fg); font: inherit; }
+.field:focus { background: rgb(255 255 255 / .12); }
+.primary { border: 0; border-radius: 999px; padding: 10px 22px; background: var(--accent); color: #fff; font-weight: 600; }
+.primary:hover { background: var(--accent-2); }
+.primary.small { padding: 8px 14px; }
+.error { color: #fca5a5; min-height: 1.2em; font-size: 13px; }
+.error.small { padding: 0 14px; font-size: 12px; min-height: 0; }
+.link { border: 0; background: none; color: var(--muted); font-size: 12px; }
+.link:hover { color: var(--fg); }
+
+/* join / message screens */
+.screen { min-height: 100%; display: grid; place-items: center; padding: 24px; background: radial-gradient(60% 50% at 50% 0%, rgb(139 92 246 / .18), transparent); }
+.card { width: min(440px, 100%); padding: 32px; border-radius: 24px; background: var(--panel); box-shadow: 0 30px 80px -30px #000; border: 1px solid var(--line); }
+.card h1 { font-size: 22px; margin: 14px 0 6px; }
+.card p { color: var(--muted); margin: 0 0 18px; }
+.join { display: grid; gap: 10px; }
+
+/* party page */
+.page { height: 100%; display: flex; flex-direction: column; }
+.head { display: flex; align-items: center; gap: 18px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.now { min-width: 0; flex: 1; }
+.title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subtitle { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conn { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(255 255 255 / .25); }
+.dot.on { background: #34d399; }
+.main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 16px; }
+.stage { position: relative; flex: 1; min-width: 0; background: #000; border-radius: 18px; overflow: hidden; align-self: flex-start; aspect-ratio: 16 / 9; max-height: 100%; }
+.stage:fullscreen { border-radius: 0; aspect-ratio: auto; }
+.video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.cue { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); max-width: 86%; text-align: center; white-space: pre-line; font-size: clamp(16px, 2.4vw, 30px); font-weight: 600; color: #fff; text-shadow: 0 0 4px #000, 0 2px 3px #000, 0 0 10px #000; pointer-events: none; }
+.cue:empty { display: none; }
+.overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgb(0 0 0 / .55); }
+.overlay.clickable { cursor: pointer; }
+.overlay-card { display: grid; gap: 14px; justify-items: center; text-align: center; padding: 20px; max-width: 80%; font-size: 15px; }
+.controls { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 14px 10px; background: linear-gradient(transparent, rgb(0 0 0 / .8)); opacity: 0; transition: opacity .2s; }
+.stage:hover .controls, .stage:focus-within .controls { opacity: 1; }
+.row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.grow { flex: 1; }
+.ctl { border: 0; background: none; min-width: 34px; height: 34px; border-radius: 999px; font-size: 16px; }
+.ctl:hover:not(:disabled) { background: rgb(255 255 255 / .15); }
+.ctl.small { min-width: 26px; height: 26px; font-size: 15px; }
+.time, .delay { font-variant-numeric: tabular-nums; font-size: 13px; color: rgb(255 255 255 / .85); }
+.delay { min-width: 38px; text-align: center; font-size: 12px; }
+.bar { position: relative; height: 5px; border-radius: 3px; background: rgb(255 255 255 / .2); cursor: pointer; }
+.bar.locked { cursor: default; }
+.bar .buf { position: absolute; top: 0; bottom: 0; background: rgb(255 255 255 / .3); border-radius: 3px; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
+.vol { width: 90px; accent-color: var(--accent); }
+.subs { max-width: 180px; background: rgb(0 0 0 / .6); color: #fff; border: 1px solid rgb(255 255 255 / .2); border-radius: 8px; padding: 4px 6px; font: inherit; font-size: 12px; }
+
+.side { width: 320px; flex-shrink: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border-radius: 18px; border: 1px solid var(--line); overflow: hidden; }
+.side-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.chat-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.msg { display: flex; flex-direction: column; align-items: flex-start; }
+.msg.mine { align-items: flex-end; }
+.from { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.bubble { max-width: 85%; padding: 6px 12px; border-radius: 16px; background: rgb(255 255 255 / .09); white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.mine .bubble { background: rgb(139 92 246 / .8); }
+.msg.host .bubble { background: rgb(139 92 246 / .35); }
+.sys { text-align: center; font-size: 11px; color: var(--muted); }
+.chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+
+@media (max-width: 900px) {
+  .main { flex-direction: column; overflow-y: auto; }
+  .stage { width: 100%; flex: none; }
+  .side { width: 100%; min-height: 320px; max-height: 70vh; }
+  .vol { width: 60px; }
+}

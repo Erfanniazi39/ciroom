@@ -1,0 +1,92 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/fraunces";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens (SPEC §4.2). Channels only, so Tailwind can apply alpha. ── */
+:root {
+  --bg: 10 10 13;
+  --surface-1: 18 18 23;
+  --surface-2: 26 26 33;
+  --surface-3: 36 36 45;
+  --fg: 244 244 246;
+  --fg-muted: 163 163 174;
+  --fg-subtle: 107 107 120;
+  --accent: 139 92 246;          /* purple #8B5CF6 — same as both players */
+  --accent-ink: 255 255 255;     /* text on accent: white */
+  --danger: 242 109 109;
+  --success: 95 211 154;
+
+  --gutter: clamp(16px, 4vw, 64px);
+  --rail: 76px;
+  --poster-w: clamp(150px, 12vw, 200px);
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    font-size: 15px;
+    line-height: 1.6;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden; /* the main pane scrolls, not the window */
+  }
+  ::selection { background: rgb(var(--accent) / .35); }
+  :focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 3px; border-radius: 6px; }
+  button { -webkit-tap-highlight-color: transparent; }
+  img { -webkit-user-drag: none; }
+
+  /* Thin, quiet scrollbars for the main pane */
+  * { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / .12) transparent; }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { background: rgb(255 255 255 / .1); border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background-color: rgb(255 255 255 / .2); }
+}
+
+@layer components {
+  .gutter-x { padding-left: var(--gutter); padding-right: var(--gutter); }
+  .h-display-xl { @apply font-display font-semibold; font-size: clamp(40px, 5vw, 72px); line-height: 1; letter-spacing: -0.02em; font-variation-settings: "opsz" 144; }
+  .h-display-l { @apply font-display font-semibold; font-size: clamp(32px, 4vw, 56px); line-height: 1.05; letter-spacing: -0.015em; font-variation-settings: "opsz" 144; }
+  .micro { @apply text-[11px] font-semibold uppercase leading-4 tracking-[0.06em]; }
+  .meta { @apply text-[13px] font-medium leading-5 text-fg-muted tabular-nums; }
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* Film grain overlay for generated art: inline SVG noise, no network. */
+  .grain::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .18; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, rgb(var(--surface-2)) 0%, rgb(var(--surface-3)) 50%, rgb(var(--surface-2)) 100%);
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
+}
+
+/* TV mode (Settings → Couch mode): bigger interface and unmissable focus for arrow-key control. */
+html.tv-mode { zoom: 1.2; }
+html.tv-mode :focus {
+  outline: 4px solid rgb(var(--accent));
+  outline-offset: 5px;
+  border-radius: 14px;
+}
+html.tv-mode a:focus, html.tv-mode button:focus { transform: scale(1.04); transition: transform 150ms ease-out; }
+
+/* Phone remote sliders (src/remote/RemoteApp.tsx): accent fill up to --p, big touch-friendly thumb. */
+.remote-range { -webkit-appearance: none; appearance: none; height: 28px; background: transparent; touch-action: pan-y; }
+.remote-range::-webkit-slider-runnable-track { height: 6px; border-radius: 999px; background: linear-gradient(to right, rgb(var(--accent)) var(--p, 0%), rgb(255 255 255 / .16) var(--p, 0%)); }
+.remote-range::-moz-range-track { height: 6px; border-radius: 999px; background: rgb(255 255 255 / .16); }
+.remote-range::-moz-range-progress { height: 6px; border-radius: 999px; background: rgb(var(--accent)); }
+.remote-range::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; margin-top: -9px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / .5); }
+.remote-range::-moz-range-thumb { width: 24px; height: 24px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / .5); }

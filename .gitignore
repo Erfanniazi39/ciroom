@@ -1,0 +1,22 @@
+node_modules
+dist
+*.log
+.DS_Store
+src-tauri/target
+tsconfig.tsbuildinfo
+graphify-out/cache/
+# Signing keys must never be committed
+*.keystore
+*.jks
+*.key
+.env*
+
+# Private project notes: kept on this PC only, never published (they contain network and personal details)
+project-state.md
+project-knowledge-archive.md
+improvements.md
+next-session-prompt.md
+docs/CiRoom-Report.md
+docs/*.png
+graphify-out/
+src-tauri/.cargo/
