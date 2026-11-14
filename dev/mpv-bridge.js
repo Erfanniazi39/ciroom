@@ -59,6 +59,16 @@ const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 const OBSERVED = ["time-pos", "duration", "pause", "eof-reached", "volume", "mute", "speed", "sub-delay", "sid", "aid", "track-list"];
 const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid", "aid"]);
 
+/** CiRoom's version: set by the desktop app (CIROOM_VERSION), else read from package.json (test version). */
+function appVersion() {
+  if (process.env.CIROOM_VERSION) return process.env.CIROOM_VERSION;
+  try {
+    return JSON.parse(fs.readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")).version ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * CiRoom's server: every /api route, the phone remote and the watch party. Used by the Vite dev server (the
  * test version, mpvBridge below) and by the standalone server (server/index.js) the installed app runs.
@@ -289,6 +299,14 @@ export function createCiRoom(mediaRoot) {
           } catch (e) {
             pjson(400, { error: onThisPc && e instanceof Error ? e.message : "Something went wrong" });
           }
+          return;
+        }
+        // Identity check for the desktop app (src-tauri): is the thing on this port CiRoom? This PC only.
+        if (onThisPc && req.method === "GET" && String(req.url).split("?")[0] === "/api/ping") {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(JSON.stringify({ app: "ciroom", version: appVersion() }));
           return;
         }
         if (!onThisPc) {

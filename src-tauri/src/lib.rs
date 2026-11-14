@@ -16,12 +16,14 @@ struct Server(Mutex<Option<std::process::Child>>);
 
 #[cfg(not(debug_assertions))]
 mod installed {
-    use std::net::TcpStream;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
     use tauri::Manager;
 
+    /// CiRoom's usual port. If something else holds it, another free port is used (see `start_server`).
     pub const PORT: u16 = 1420;
 
     /// The system proxy (what browsers use, e.g. a VPN app's local proxy): (proxy URL, addresses that skip it).
@@ -74,20 +76,51 @@ mod installed {
         None
     }
 
-    fn port_open() -> bool {
-        TcpStream::connect_timeout(&([127, 0, 0, 1], PORT).into(), Duration::from_millis(150)).is_ok()
+    fn port_open(port: u16) -> bool {
+        TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(150)).is_ok()
     }
 
-    /// Starts server/index.js on the bundled Node and waits until it answers (max 20 s).
-    /// Returns None when something already serves CiRoom's port (e.g. the server from an earlier run).
-    pub fn start_server(app: &tauri::AppHandle) -> Result<Option<Child>, String> {
+    /// True when CiRoom itself answers on this port (`GET /api/ping` → `{"app":"ciroom"}`), not some other program.
+    fn is_ciroom(port: u16) -> bool {
+        let Ok(mut s) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(300)) else { return false };
+        let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
+        let _ = s.set_write_timeout(Some(Duration::from_millis(800)));
+        let req = format!("GET /api/ping HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        if s.write_all(req.as_bytes()).is_err() {
+            return false;
+        }
+        let mut buf = Vec::new();
+        let _ = s.take(4096).read_to_end(&mut buf); // a timeout just ends the read; what arrived is still checked
+        let text = String::from_utf8_lossy(&buf);
+        text.starts_with("HTTP/1.") && text.contains("\"app\":\"ciroom\"")
+    }
+
+    /// A port nothing is using, from 1430 up (the test version uses 1430 itself, so it is skipped if busy).
+    fn free_port() -> Option<u16> {
+        (1431..1500).find(|p| TcpListener::bind(("127.0.0.1", *p)).is_ok() && !port_open(*p))
+    }
+
+    /// Where the window should go: CiRoom's server, or an error page.
+    pub struct Started {
+        pub port: u16,
+        pub child: Option<Child>,
+    }
+
+    /// Starts server/index.js on the bundled Node and waits until it answers as CiRoom (max 30 s).
+    /// If CiRoom already runs on the usual port (e.g. the server from an earlier run) it is used as is. If another
+    /// program holds the port, a free one is used instead. Err(message) when the server can't be brought up.
+    pub fn start_server(app: &tauri::AppHandle) -> Result<Started, String> {
         // Right after an update the previous version's server may still be shutting down: give it a moment.
         let wait = Instant::now();
-        while port_open() && wait.elapsed() < Duration::from_secs(5) {
+        while port_open(PORT) && wait.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(200));
         }
-        if port_open() {
-            return Ok(None); // something else serves CiRoom here (e.g. `npm run desktop`): use it
+        let mut port = PORT;
+        if port_open(PORT) {
+            if is_ciroom(PORT) {
+                return Ok(Started { port, child: None }); // CiRoom already runs here (e.g. `npm run desktop`): use it
+            }
+            port = free_port().ok_or("Port 1420 is used by another program and no other port is free")?;
         }
         let exe = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
         let node = exe.parent().ok_or("no program folder")?.join(if cfg!(windows) { "node.exe" } else { "node" });
@@ -98,7 +131,8 @@ mod installed {
         let log = std::fs::File::create(log_dir.join("server.log")).map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&node);
         cmd.arg(res.join("server").join("index.js"))
-            .env("CIROOM_PORT", PORT.to_string())
+            .env("CIROOM_PORT", port.to_string())
+            .env("CIROOM_VERSION", env!("CARGO_PKG_VERSION"))
             .env("CIROOM_DIST", res.join("dist"))
             .env("NODE_USE_ENV_PROXY", "1")
             .env("NODE_NO_WARNINGS", "1")
@@ -132,16 +166,39 @@ mod installed {
         }
         let mut child = cmd.spawn().map_err(|e| format!("could not start {}: {e}", node.display()))?;
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(20) {
-            if port_open() {
-                return Ok(Some(child));
+        while start.elapsed() < Duration::from_secs(30) {
+            if is_ciroom(port) {
+                return Ok(Started { port, child: Some(child) });
             }
             if let Ok(Some(status)) = child.try_wait() {
-                return Err(format!("CiRoom's server stopped ({status}); see {}", log_dir.join("server.log").display()));
+                return Err(format!("CiRoom's server stopped right away ({status})."));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        Ok(Some(child))
+        let _ = child.kill();
+        let _ = child.wait();
+        Err("CiRoom's server did not start within 30 seconds.".to_string())
+    }
+
+    /// A small local page for when the server can't start: what happened and where the log is.
+    /// Written next to the log and opened as a file; returns its address.
+    pub fn error_page(app: &tauri::AppHandle, message: &str) -> Option<tauri::Url> {
+        let log_dir = app.path().app_log_dir().ok()?;
+        std::fs::create_dir_all(&log_dir).ok()?;
+        let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let html = format!(
+            "<!doctype html><meta charset=utf-8><title>CiRoom</title><style>\
+body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c0c10;color:#e8e8ee;font:16px/1.5 system-ui,sans-serif}}\
+main{{max-width:34rem;padding:2rem}}h1{{font-size:1.4rem;margin:0 0 .75rem}}p{{margin:.5rem 0;color:#b8b8c4}}\
+code{{display:block;margin-top:.5rem;padding:.6rem .8rem;background:#1a1a22;border-radius:.5rem;color:#e8e8ee;word-break:break-all}}</style>\
+<main><h1>CiRoom couldn't start</h1><p>{}</p><p>Close CiRoom and open it again. If this keeps happening, the log says why:</p>\
+<code>{}</code></main>",
+            esc(message),
+            esc(&log_dir.join("server.log").display().to_string())
+        );
+        let file = log_dir.join("error.html");
+        std::fs::write(&file, html).ok()?;
+        tauri::Url::from_file_path(file).ok()
     }
 
     /// AppImage: add CiRoom to the app menu (and keep the entry pointing at the current file).
@@ -190,11 +247,17 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             {
                 installed::menu_entry();
-                match installed::start_server(app.handle()) {
-                    Ok(child) => *app.state::<Server>().0.lock().unwrap() = child,
-                    Err(e) => eprintln!("[ciroom] {e}"),
-                }
-                let url = format!("http://127.0.0.1:{}/", installed::PORT).parse().expect("valid url");
+                let url = match installed::start_server(app.handle()) {
+                    Ok(started) => {
+                        *app.state::<Server>().0.lock().unwrap() = started.child;
+                        format!("http://127.0.0.1:{}/", started.port).parse().expect("valid url")
+                    }
+                    Err(e) => {
+                        eprintln!("[ciroom] {e}");
+                        installed::error_page(app.handle(), &e)
+                            .unwrap_or_else(|| format!("http://127.0.0.1:{}/", installed::PORT).parse().expect("valid url"))
+                    }
+                };
                 cfg.url = tauri::WebviewUrl::External(url);
             }
             WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
