@@ -18,7 +18,7 @@ function guestLine(g: PartyGuest, hostPos: number | null) {
 
 /** The host's watch-party panel: who's watching (and whether they're loading) plus the chat. Shown while the party is on. */
 export function PartyPanel() {
-  const { enabled, guests, chat, unread, open, waitingFor, notice, setOpen } = useParty();
+  const { enabled, guests, chat, unread, open, waitingFor, gaveUp, notice, setOpen } = useParty();
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [, force] = useState(0);
@@ -60,6 +60,11 @@ export function PartyPanel() {
       {waitingFor.length > 0 && (
         <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-amber-500/90 px-3.5 py-1.5 text-[12px] font-semibold text-black">
           <Loader2 size={13} className="animate-spin" /> Waiting for {waitingFor.join(", ")} to load…
+        </div>
+      )}
+      {gaveUp.length > 0 && waitingFor.length === 0 && (
+        <div className="pointer-events-auto rounded-full bg-amber-500/90 px-3.5 py-1.5 text-[12px] font-semibold text-black">
+          Continuing without {gaveUp.join(", ")} (slow connection)
         </div>
       )}
       {showNotice && <div className="rounded-full bg-violet-500/90 px-3.5 py-1.5 text-[12px] font-semibold text-white">{notice!.text}</div>}

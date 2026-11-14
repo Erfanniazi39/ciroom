@@ -32,6 +32,8 @@ interface PartyStore {
   open: boolean;
   /** Names the host's player is paused for (waiting while they load). */
   waitingFor: string[];
+  /** Names the host stopped waiting for (slow connection): shown as "Continuing without …". */
+  gaveUp: string[];
   /** Last thing a guest did ("Sara paused"), shown briefly. */
   notice: { text: string; at: number } | null;
   setOpen: (open: boolean) => void;
@@ -44,6 +46,7 @@ export const useParty = create<PartyStore>((set) => ({
   unread: 0,
   open: false,
   waitingFor: [],
+  gaveUp: [],
   notice: null,
   setOpen: (open) => set(open ? { open, unread: 0 } : { open }),
 }));
@@ -56,6 +59,8 @@ export const partyApi = {
 };
 
 const WAIT_MAX_MS = 25_000;
+/** After giving up on a slow guest, don't pause for them again until they report ready or this long has passed. */
+const GAVE_UP_MS = 60_000;
 
 export function usePartyLink() {
   useEffect(() => {
@@ -95,6 +100,8 @@ export function usePartyLink() {
     // ── Reporting + waiting for guests ─────────────────────────────────────────────────────
     let autoPaused = false;
     let waitStarted = 0;
+    /** guest name → when the host gave up waiting for them */
+    const gaveUp = new Map<string, number>();
     let lastBody = "";
     let lastSent = 0;
 
@@ -121,17 +128,29 @@ export function usePartyLink() {
       const { guests, enabled } = useParty.getState();
       if (!enabled || !ctl || !usePlayback.getState().session) {
         if (useParty.getState().waitingFor.length) useParty.setState({ waitingFor: [] });
+        if (useParty.getState().gaveUp.length) useParty.setState({ gaveUp: [] });
+        gaveUp.clear();
         autoPaused = false;
         return;
       }
       const fresh = (g: PartyGuest) => g.online && g.status && Date.now() - g.status.at < 5000 && g.status.onKey;
-      const loading = guests.filter((g) => fresh(g) && g.status!.buffering).map((g) => g.name);
+      const now = Date.now();
+      // Forget a give-up once the guest is ready again, has gone, or 60 s have passed.
+      for (const [name, at] of gaveUp) {
+        const g = guests.find((x) => x.name === name);
+        if (now - at > GAVE_UP_MS || !g || !g.online || (fresh(g) && !g.status!.buffering)) gaveUp.delete(name);
+      }
+      const loading = guests.filter((g) => fresh(g) && g.status!.buffering && !gaveUp.has(g.name)).map((g) => g.name);
       const s = ctl.getState();
       if (loading.length && !s.paused && !s.ended && !autoPaused) {
         autoPaused = true;
-        waitStarted = Date.now();
+        waitStarted = now;
         ctl.pause();
-      } else if (autoPaused && (!loading.length || Date.now() - waitStarted > WAIT_MAX_MS)) {
+      } else if (autoPaused && !loading.length) {
+        autoPaused = false;
+        if (s.paused) ctl.play();
+      } else if (autoPaused && now - waitStarted > WAIT_MAX_MS) {
+        loading.forEach((n) => gaveUp.set(n, now)); // timed out: carry on without them
         autoPaused = false;
         if (s.paused) ctl.play();
       } else if (autoPaused && !s.paused) {
@@ -139,6 +158,8 @@ export function usePartyLink() {
       }
       const waitingFor = autoPaused ? loading : [];
       if (waitingFor.join() !== useParty.getState().waitingFor.join()) useParty.setState({ waitingFor });
+      const gaveUpNames = [...gaveUp.keys()];
+      if (gaveUpNames.join() !== useParty.getState().gaveUp.join()) useParty.setState({ gaveUp: gaveUpNames });
     }
 
     const tick = window.setInterval(() => {
