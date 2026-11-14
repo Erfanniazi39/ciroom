@@ -259,6 +259,23 @@ export function createCiRoom(mediaRoot) {
           res.end(JSON.stringify({ error: "Use an IP address or localhost to reach CiRoom" }));
           return;
         }
+        // Cross-site protection: a web page in the user's browser can POST text/plain to 127.0.0.1 without a
+        // preflight. Anything that changes something must come from our own page (same origin) and be JSON.
+        if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+          const origin = req.headers.origin;
+          if (origin !== undefined && origin !== `http://${req.headers.host}`) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Cross-site request refused" }));
+            return;
+          }
+          if (!/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) {
+            res.statusCode = 415;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "JSON only" }));
+            return;
+          }
+        }
         // Watch party: its own gate and allow-list (dev/party.js); guests never reach the rest of the app.
         if (party.owns(req.url)) {
           const pjson = (/** @type {number} */ code, /** @type {unknown} */ data) => {

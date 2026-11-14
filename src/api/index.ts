@@ -75,7 +75,7 @@ export const api = {
 
   /** Re-read the folders now (read-only). Returns what changed since the previous scan. */
   async scan(): Promise<ScanChanges> {
-    const d = await get("/api/library/scan", { method: "POST" });
+    const d = await get("/api/library/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     const { changes, ...lib } = d;
     last = lib;
     return changes;
