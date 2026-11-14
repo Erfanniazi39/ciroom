@@ -140,9 +140,36 @@ export function scanLibrary(mediaRoot) {
   {
     const ids = readJson(IDS_FILE, {});
     const used = new Set(Object.values(ids));
-    /** Stable id per folder: saved → legacy → slug(title) → slug(title-year) → numbered. */
-    const idFor = (/** @type {string} */ rel, /** @type {string} */ base, /** @type {string=} */ alt) => {
+    // A renamed folder keeps its id (progress, favorites and artwork are keyed by it). An id is handed over only
+    // when its old folder no longer exists, and the new folder either holds the same video file (name + size,
+    // from the previous scan) or gets the same id from its title.
+    const folderGone = (/** @type {string} */ r) => !fs.existsSync(path.join(root, r.replace(/#collection$/, "")));
+    /** @type {Map<string, string>} id → saved folder that no longer exists */
+    const goneById = new Map();
+    for (const [r, id] of Object.entries(ids)) if (folderGone(r)) goneById.set(id, r);
+    /** @type {Map<string, string>} "file name|size" → id, from the previous scan */
+    const prevByFile = new Map();
+    const fileKey = (/** @type {string} */ p, /** @type {number} */ size) => `${path.basename(p)}|${size}`;
+    if (goneById.size) {
+      const prev = readJson(LIB_FILE, null);
+      for (const m of prev?.movies ?? []) if (m.file?.path) prevByFile.set(fileKey(m.file.path, m.file.sizeBytes), m.id);
+      for (const s of prev?.series ?? []) for (const se of s.seasons ?? []) for (const e of se.episodes ?? []) if (e.file?.path) prevByFile.set(fileKey(e.file.path, e.file.sizeBytes), s.id);
+    }
+    const reclaim = (/** @type {string} */ rel, /** @type {string | undefined} */ id) => {
+      const old = id && goneById.get(id);
+      if (!id || !old) return null;
+      delete ids[old]; goneById.delete(id);
+      ids[rel] = id;
+      return id;
+    };
+    /**
+     * Stable id per folder: saved → same video as a vanished folder → legacy → slug(title) → slug(title-year) → numbered.
+     * @param {string} rel @param {string} base @param {string=} alt @param {{abs:string,size:number}[]=} files
+     */
+    const idFor = (rel, base, alt, files) => {
       if (ids[rel]) return ids[rel];
+      for (const f of files ?? []) { const got = reclaim(rel, prevByFile.get(fileKey(f.abs, f.size))); if (got) return got; }
+      if (!LEGACY_IDS[rel]) for (const c of [slug(base), alt && slug(alt)]) { const got = reclaim(rel, c || undefined); if (got) return got; }
       let id = LEGACY_IDS[rel] ?? slug(base);
       if (!LEGACY_IDS[rel] && used.has(id) && alt) id = slug(alt);
       for (let n = 2; used.has(id) && !LEGACY_IDS[rel]; n++) id = `${slug(alt ?? base)}-${n}`;
@@ -171,7 +198,7 @@ export function scanLibrary(mediaRoot) {
       const main = vids[0];
       for (const d of vids.slice(1)) if (d.size > main.size * 0.5) note("duplicate", `${rel}/${d.name}`, `Another copy of this movie. CiRoom plays “${main.name}”.`);
       const { title, year } = parseFolder(folder);
-      const id = idFor(rel, title, year ? `${title} ${year}` : undefined);
+      const id = idFor(rel, title, year ? `${title} ${year}` : undefined, [main]);
       return {
         kind: "movie", id, title, year, genres: [], ratings: {}, cast: [], addedAt: new Date(main.mtime).toISOString(), collectionId,
         art: { hue: hueOf(id) }, file: { path: main.abs, sizeBytes: main.size, subtitles: [], status: "present" },
@@ -213,7 +240,7 @@ export function scanLibrary(mediaRoot) {
       const vids = listVideos(abs, 4);
       if (!vids.length) { note("empty", rel, "No video files in this series folder yet."); continue; }
       const { title, year } = parseFolder(name);
-      const id = idFor(rel, title);
+      const id = idFor(rel, title, undefined, vids);
       /** @type {Map<number, Map<number, any>>} */ const seasons = new Map();
       for (const v of vids.sort(bestFirst)) {
         const { season, episode, fromFile, alsoEpisode } = parseEpisode(v.dirs, v.name);
