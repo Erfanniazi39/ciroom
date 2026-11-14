@@ -84,11 +84,11 @@ export function parseFolder(/** @type {string} */ name) {
 const SEASON_DIR = /^(?:s|season[\s._-]*)0*(\d{1,3})(?:\b|[\s._-]*e)/i;
 const EPISODE_DIR = /^(?:ep?|episode[\s._-]*)0*(\d{1,3})$/i;
 const SE_DIR = /^s0*(\d{1,3})[\s._-]*e0*(\d{1,3})$/i;
-const SE_FILE = /(?:^|[^a-z0-9])s0*(\d{1,3})[\s._-]*e0*(\d{1,3})(?!\d)/i;
+const SE_FILE = /(?:^|[^a-z0-9])s0*(\d{1,3})[\s._-]*e0*(\d{1,3})(?:[\s._-]*e0*(\d{1,3}))?(?!\d)/i; // 3rd group: S01E01E02 / S01E01-E02 double episodes
 const X_FILE = /(?:^|[^0-9])(\d{1,2})x(\d{2,3})(?!\d)/i;
 
 /** Season/episode from the folder path first (folder beats file name), then the file name. */
-function parseEpisode(/** @type {string[]} */ dirs, /** @type {string} */ file) {
+export function parseEpisode(/** @type {string[]} */ dirs, /** @type {string} */ file) {
   let season, episode;
   for (const d of dirs) {
     const se = d.match(SE_DIR);
@@ -100,9 +100,12 @@ function parseEpisode(/** @type {string[]} */ dirs, /** @type {string} */ file) 
   }
   const fm = file.match(SE_FILE) ?? file.match(X_FILE);
   const fromFile = fm ? { season: Number(fm[1]), episode: Number(fm[2]) } : undefined;
+  // A double episode (S01E01E02) is one file for two episodes; only trust a short, increasing range.
+  const last = fm?.[3] !== undefined ? Number(fm[3]) : undefined;
+  const alsoEpisode = last !== undefined && fromFile && last > fromFile.episode && last - fromFile.episode <= 3 ? last : undefined;
   if (episode === undefined && fromFile) { season ??= fromFile.season; episode = fromFile.episode; }
   if (episode !== undefined) season ??= 1; // e.g. Series/<Name>/EP01 with no season folder
-  return { season, episode, fromFile };
+  return { season, episode, fromFile, alsoEpisode };
 }
 
 /** Videos under a folder (depth-limited), with size and mtime. */
@@ -213,7 +216,7 @@ export function scanLibrary(mediaRoot) {
       const id = idFor(rel, title);
       /** @type {Map<number, Map<number, any>>} */ const seasons = new Map();
       for (const v of vids.sort(bestFirst)) {
-        const { season, episode, fromFile } = parseEpisode(v.dirs, v.name);
+        const { season, episode, fromFile, alsoEpisode } = parseEpisode(v.dirs, v.name);
         const vrel = `${rel}/${[...v.dirs, v.name].join("/")}`;
         if (season === undefined || episode === undefined) { note("unidentified", vrel, "Can't tell which episode this is. Put it in an S01/EP01 folder or name it S01E01."); continue; }
         if (!seasons.has(season)) seasons.set(season, new Map());
@@ -223,6 +226,8 @@ export function scanLibrary(mediaRoot) {
           note("misplaced", vrel, `The file is named S${String(fromFile.season).padStart(2, "0")}E${String(fromFile.episode).padStart(2, "0")} but sits in the S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")} folder. CiRoom follows the folder; check it's the right episode.`);
         }
         eps.set(episode, v);
+        // Double episode: the same file also plays the next episode number (unless that one has its own file).
+        if (alsoEpisode !== undefined && !eps.has(alsoEpisode)) eps.set(alsoEpisode, v);
       }
       // Episode folders that exist but hold no video (e.g. Revenge S01/EP01).
       const emptyEpisodeDirs = [];
@@ -241,14 +246,24 @@ export function scanLibrary(mediaRoot) {
       }
       const seasonList = [...seasons.keys()].sort((a, b) => a - b).map((sn) => {
         const eps = /** @type {Map<number, any>} */ (seasons.get(sn));
-        const max = Math.max(0, ...eps.keys(), ...emptyEpisodeDirs.filter((x) => x.sn === sn).map((x) => x.en));
+        const emptyNums = emptyEpisodeDirs.filter((x) => x.sn === sn).map((x) => x.en);
+        const have = [...new Set([...eps.keys(), ...emptyNums])].sort((a, b) => a - b);
         const firstOnDisk = Math.min(...eps.keys());
         const hasEmptyDirs = emptyEpisodeDirs.some((x) => x.sn === sn && x.en < firstOnDisk);
         if (eps.size && firstOnDisk > 1 && !hasEmptyDirs) note("missing", `${rel} · season ${sn}`, firstOnDisk === 2 ? "Episode 1 is not on disk." : `Episodes 1–${firstOnDisk - 1} are not on disk.`);
+        // Real episodes always get a row (episode 0 included). Gaps get "missing" placeholders only when small,
+        // so one stray E999 can't create 900 empty rows.
+        const GAP = 30;
+        const nums = new Set(have);
+        let prev = 0;
+        for (const n of have) {
+          if (n - prev <= GAP) for (let k = prev + 1; k < n; k++) nums.add(k);
+          prev = n;
+        }
         return {
           number: sn,
-          episodes: Array.from({ length: max }, (_, i) => {
-            const en = i + 1, v = eps.get(en);
+          episodes: [...nums].sort((a, b) => a - b).map((en) => {
+            const v = eps.get(en);
             return {
               kind: "episode", id: `${id}-s${sn}e${en}`, seriesId: id, season: sn, number: en, title: `Episode ${en}`,
               file: v ? { path: v.abs, sizeBytes: v.size, subtitles: [], status: "present" } : undefined,

@@ -134,6 +134,8 @@ async function probe(/** @type {string} */ file) {
     height: v?.height ?? 0,
     video: v ? `${v.codec_name}${v.pix_fmt?.includes("10") ? " 10-bit" : ""}` : null,
     audio: a ? `${a.codec_name}${a.channels ? ` ${a.channels}ch` : ""}` : null,
+    // HDR (PQ / HLG): the page stream is plain SDR, so colours look washed out; mpv tone-maps it properly.
+    hdr: !!v && /^(smpte2084|arib-std-b67)$/.test(v.color_transfer ?? ""),
     copyVideo: !!v && v.codec_name === "h264" && /^(yuv420p|yuvj420p)$/.test(v.pix_fmt ?? ""),
     copyAudio: !!a && a.codec_name === "aac",
     hasAudio: !!a,

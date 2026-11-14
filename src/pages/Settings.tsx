@@ -17,15 +17,26 @@ import type { LibraryRoot } from "@/types/media";
 /** Shows a warning when ffmpeg, ffprobe or mpv can't be run (dev/deps.js). Nothing when all is well. */
 function MissingTools() {
   const [tools, setTools] = useState<{ name: string; ok: boolean; needed: string; help: string | null }[] | null>(null);
-  useEffect(() => { fetch("/api/system/tools").then((r) => (r.ok ? r.json() : null)).then((d) => setTools(d?.tools ?? null)).catch(() => undefined); }, []);
+  const [storage, setStorage] = useState<{ ok: boolean; message: string | null } | null>(null);
+  useEffect(() => { fetch("/api/system/tools").then((r) => (r.ok ? r.json() : null)).then((d) => { setTools(d?.tools ?? null); setStorage(d?.storage ?? null); }).catch(() => undefined); }, []);
   const missing = tools?.filter((t) => !t.ok) ?? [];
-  if (!missing.length) return null;
+  if (!missing.length && storage?.ok !== false) return null;
   return (
-    <div className="mt-6 rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-[14px] leading-6">
-      <div className="font-semibold text-fg">Some programs CiRoom needs were not found</div>
-      <ul className="mt-2 list-disc pl-5">
-        {missing.map((t) => <li key={t.name}><b>{t.name}</b>: needed for {t.needed}. {t.help}</li>)}
-      </ul>
+    <div className="mt-6 space-y-3">
+      {storage?.ok === false && (
+        <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-[14px] leading-6">
+          <div className="font-semibold text-fg">Your progress can't be saved</div>
+          <p className="mt-1">{storage.message}</p>
+        </div>
+      )}
+      {missing.length > 0 && (
+        <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-[14px] leading-6">
+          <div className="font-semibold text-fg">Some programs CiRoom needs were not found</div>
+          <ul className="mt-2 list-disc pl-5">
+            {missing.map((t) => <li key={t.name}><b>{t.name}</b>: needed for {t.needed}. {t.help}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

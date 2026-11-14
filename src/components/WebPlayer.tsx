@@ -405,9 +405,10 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   }, []);
 
   // Keyboard (YouTube-like) unless typing in a field.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   useEffect(() => {
     if (mini) return;
-    const onKey = (e: KeyboardEvent) => {
+    keyRef.current = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey) return;
       const k = e.key.toLowerCase();
@@ -428,9 +429,14 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       else return;
       if (handled) { e.preventDefault(); poke(); }
     };
+  });
+  // One listener for the life of the player; it calls the newest handler (which sees the current state) via the ref.
+  useEffect(() => {
+    if (mini) return;
+    const onKey = (e: KeyboardEvent) => keyRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [mini]);
 
   // ── Render ────────────────────────────────────────────────────────────────────────────────
   return (
@@ -579,7 +585,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
                 <Captions size={21} />
               </CtrlButton>
               <CtrlButton label="Settings (right-click)" active={!!menu} onClick={() => setMenu((m) => (m ? null : "main"))}><Settings size={20} className={cx("transition-transform duration-300", menu && "rotate-45")} /></CtrlButton>
-              {onOpenFull && <CtrlButton label="Open in full player (mpv)" onClick={() => { videoRef.current?.pause(); save(); onOpenFull(timeRef.current); }}><MonitorPlay size={20} /></CtrlButton>}
+              {onOpenFull && <CtrlButton label={info?.hdr ? "HDR video: looks best in the full player (mpv)" : "Open in full player (mpv)"} active={!!info?.hdr} onClick={() => { videoRef.current?.pause(); save(); onOpenFull(timeRef.current); }}><MonitorPlay size={20} /></CtrlButton>}
               <CtrlButton label={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"} onClick={toggleFullscreen}>{fullscreen ? <Minimize size={20} /> : <Maximize size={20} />}</CtrlButton>
             </div>
           </div>

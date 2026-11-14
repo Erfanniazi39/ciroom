@@ -2,6 +2,8 @@
  * In-page playback client (dev bridge `dev/stream.js` today; Tauri commands in Stage 3).
  */
 export interface ProbeInfo {
+  /** HDR source (PQ/HLG): the page player shows it without tone mapping, so the full player looks better. */
+  hdr?: boolean;
   duration: number;
   width: number;
   height: number;

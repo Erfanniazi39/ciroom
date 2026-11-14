@@ -27,6 +27,7 @@ import { partyRoutes } from "./party.js";
 import { userdbRoutes } from "./userdb.js";
 import { introRoutes } from "./intro.js";
 import { checkTools } from "./deps.js";
+import { checkWritable } from "./diskcheck.js";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, MPV_SOCKET, SHARED, isMediaRoot, openUrlCommand, saveMediaRoot, savedMediaRoot } from "./paths.js";
 
@@ -118,7 +119,7 @@ export function createCiRoom(mediaRoot) {
       }
     });
     sock.on("error", () => {
-      if (attempt < 40 && st.running) setTimeout(() => connect(attempt + 1), 150); // mpv still starting
+      if (attempt < 200 && st.running) setTimeout(() => connect(attempt + 1), 150); // mpv still starting (~30 s: a slow drive or a cold start)
     });
   }
 
@@ -345,7 +346,7 @@ export function createCiRoom(mediaRoot) {
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store");
-          res.end(JSON.stringify({ tools: await checkTools(String(req.url).includes("fresh=1")) }));
+          res.end(JSON.stringify({ tools: await checkTools(String(req.url).includes("fresh=1")), storage: checkWritable(DATA_DIR) }));
           return;
         }
         if (!onThisPc) {
