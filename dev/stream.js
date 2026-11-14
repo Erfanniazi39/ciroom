@@ -36,16 +36,38 @@ const TEXT_SUB = /\.(srt|ass|ssa|vtt)$/i;
 /** @type {Map<string, string>} */ const vttCache = new Map();
 /** @type {Map<string, Buffer>} */ const thumbCache = new Map();
 
-/** Text subtitles for the page player. Listed fresh each time: subtitles found online can appear at any moment. */
-const subtitleList = (/** @type {string} */ file) =>
-  subtitlesFor(file).filter((f) => TEXT_SUB.test(f))
-    .map((f, i) => {
+/** Embedded subtitle codecs ffmpeg can turn into WebVTT (not the picture formats: PGS, DVD, DVB). */
+const EMBED_TEXT = new Set(["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"]);
+/** ISO 639-2 tags in MKV/MP4 → the language names subtitleLanguage() uses. */
+const LANG_NAME = /** @type {Record<string,string>} */ ({ eng: "English", per: "Persian", fas: "Persian", ara: "Arabic", tur: "Turkish", rus: "Russian", pol: "Polish", fre: "French", fra: "French", ger: "German", deu: "German", spa: "Spanish", ita: "Italian", por: "Portuguese", hin: "Hindi", jpn: "Japanese", kor: "Korean", chi: "Chinese", zho: "Chinese", dut: "Dutch", nld: "Dutch", swe: "Swedish", heb: "Hebrew", ukr: "Ukrainian" });
+
+/** Text subtitle streams inside the video. `stream` = position among ALL its subtitle streams (ffmpeg `-map 0:s:N`). */
+function embeddedSubs(/** @type {any[]} */ streams) {
+  return streams.filter((s) => s.codec_type === "subtitle").flatMap((s, n) => {
+    if (!EMBED_TEXT.has(s.codec_name)) return [];
+    const tag = String(s.tags?.language ?? "").toLowerCase();
+    const language = LANG_NAME[tag] ?? null;
+    const title = String(s.tags?.title ?? "").trim();
+    const sdh = s.disposition?.hearing_impaired || /\b(sdh|hi|cc)\b/i.test(title) ? " (SDH)" : "";
+    const bit = title && title.toLowerCase() !== (language ?? "").toLowerCase() ? title : "";
+    const label = `${language ?? (tag && tag !== "und" ? tag.toUpperCase() : `Track ${n + 1}`)}${sdh} · ${bit ? (bit.length > 30 ? bit.slice(0, 28) + "…" : bit) : "built-in"}`;
+    return [{ name: `embedded:${n}:${tag || "und"}`, language, label, format: s.codec_name, embedded: true, stream: n }];
+  });
+}
+
+/** Subtitles for the page player: files next to the video first, then the ones built in. Files are listed fresh
+ *  each time (subtitles found online can appear at any moment); `index` is the position in this combined list. */
+const subtitleList = (/** @type {string} */ file, /** @type {any[]} */ embedded = []) =>
+  [
+    ...subtitlesFor(file).filter((f) => TEXT_SUB.test(f)).map((f) => {
       const language = subtitleLanguage(f);
-      return { index: i, name: path.basename(f), language, label: prettySubName(path.basename(f), language), format: path.extname(f).slice(1).toLowerCase() };
-    });
+      return { name: path.basename(f), language, label: prettySubName(path.basename(f), language), format: path.extname(f).slice(1).toLowerCase() };
+    }),
+    ...embedded,
+  ].map((s, i) => ({ index: i, ...s }));
 
 async function probe(/** @type {string} */ file) {
-  if (probeCache.has(file)) return { ...probeCache.get(file), subtitles: subtitleList(file) };
+  if (probeCache.has(file)) { const c = probeCache.get(file); return { ...c, subtitles: subtitleList(file, c.embedded) }; }
   const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file], { maxBuffer: 8 << 20 });
   const info = JSON.parse(stdout);
   const v = info.streams.find((/** @type {any} */ s) => s.codec_type === "video" && !s.disposition?.attached_pic);
@@ -61,10 +83,10 @@ async function probe(/** @type {string} */ file) {
     hasAudio: !!a,
     // RFC 6381 codec string of the STREAM's video, for MediaSource (copied: the file's H.264; else our High@4.0).
     codecs: { video: v && v.codec_name === "h264" && /^(yuv420p|yuvj420p)$/.test(v.pix_fmt ?? "") ? avc1(v.profile, v.level) : "avc1.640028" },
-    subtitles: subtitleList(file),
+    embedded: embeddedSubs(info.streams),
   };
   probeCache.set(file, result);
-  return result;
+  return { ...result, subtitles: subtitleList(file, result.embedded) };
 }
 
 /**
@@ -230,6 +252,30 @@ export function streamRoutes(resolveVideo) {
         req.on("close", stop);
         res.on("close", stop);
         ff.on("exit", (code) => { if (code && code !== 255 && err) console.error("[stream] ffmpeg:", err.trim()); });
+        return true;
+      }
+
+      if (u.pathname === "/api/subtitle.vtt" && u.searchParams.has("e")) {
+        // A subtitle built into the video: extract that stream (cached by path+size+mtime+stream).
+        const n = Math.floor(Number(u.searchParams.get("e")));
+        try {
+          const st = fs.statSync(file);
+          const ok = Number.isInteger(n) && n >= 0 && (await probe(file)).embedded.some((/** @type {any} */ s) => s.stream === n);
+          if (!ok) { json(404, { error: "No such built-in subtitle" }); return true; }
+          const key = `${file}|${st.size}|${st.mtimeMs}|e${n}`;
+          let vtt = vttCache.get(key);
+          if (!vtt) {
+            const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", file, "-map", `0:s:${n}`, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20 });
+            vtt = stdout;
+            vttCache.set(key, vtt);
+          }
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+          res.end(vtt);
+        } catch (e) {
+          console.error("[stream] embedded subtitle:", e instanceof Error ? e.message : e);
+          json(422, { error: "This subtitle couldn't be read" });
+        }
         return true;
       }
 

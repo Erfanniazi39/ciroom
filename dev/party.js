@@ -437,7 +437,10 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
         const q = new URLSearchParams({ path: media.file });
         const t = Math.max(0, Math.min(Number(u.searchParams.get("t")) || 0, media.duration || 1e6));
         if (route !== "/api/party/probe" && route !== "/api/party/subtitle.vtt") q.set("t", t.toFixed(3));
-        if (route === "/api/party/subtitle.vtt") q.set("i", String(Math.max(0, Math.min(99, Math.floor(Number(u.searchParams.get("i")) || 0)))));
+        if (route === "/api/party/subtitle.vtt") {
+          if (u.searchParams.has("e")) q.set("e", String(Math.max(0, Math.min(99, Math.floor(Number(u.searchParams.get("e")) || 0))))); // built-in track
+          else q.set("i", String(Math.max(0, Math.min(99, Math.floor(Number(u.searchParams.get("i")) || 0)))));
+        }
         if (route === "/api/party/stream" && u.searchParams.get("level") === "0") q.set("level", "0");
         if (route === "/api/party/stream") {
           if (l.streams >= MAX_STREAMS_PER_GUEST) return deny(res, 429, "Too many streams");
@@ -448,7 +451,7 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
         if (route === "/api/party/probe") {
           // Same answer as /api/probe minus anything about the file's location.
           const orig = json;
-          const filtered = (/** @type {number} */ code, /** @type {any} */ data) => orig(code, code === 200 && data ? { duration: data.duration, width: data.width, height: data.height, video: data.video, audio: data.audio, codecs: data.codecs, hasAudio: data.hasAudio, copyVideo: data.copyVideo, levelGainDb: data.levelGainDb, subtitles: (data.subtitles ?? []).map((/** @type {any} */ s) => ({ index: s.index, label: s.label, format: s.format })) } : { error: "Could not read the video" });
+          const filtered = (/** @type {number} */ code, /** @type {any} */ data) => orig(code, code === 200 && data ? { duration: data.duration, width: data.width, height: data.height, video: data.video, audio: data.audio, codecs: data.codecs, hasAudio: data.hasAudio, copyVideo: data.copyVideo, levelGainDb: data.levelGainDb, subtitles: (data.subtitles ?? []).map((/** @type {any} */ s) => ({ index: s.index, label: s.label, format: s.format, ...(s.embedded ? { embedded: true, stream: s.stream } : {}) })) } : { error: "Could not read the video" });
           await stream.handle(req, res, filtered, body);
         } else {
           await stream.handle(req, res, json, body);

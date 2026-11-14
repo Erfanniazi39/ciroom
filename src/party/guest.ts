@@ -210,7 +210,8 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
     cue.textContent = "";
     if (i < 0 || !mediaKey) return;
     const key = mediaKey;
-    const r = await fetch(`/api/party/subtitle.vtt?k=${key}&i=${i}`).catch(() => null);
+    const s = probe?.subtitles.find((x) => x.index === i);
+    const r = await fetch(`/api/party/subtitle.vtt?k=${key}&${s?.embedded ? `e=${s.stream}` : `i=${i}`}`).catch(() => null);
     if (r?.ok && key === mediaKey) cues = parseVtt(await r.text());
   }
   subsSel.addEventListener("change", () => {

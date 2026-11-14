@@ -10,7 +10,7 @@ export interface ProbeInfo {
   copyVideo: boolean;
   copyAudio: boolean;
   /** `language`: from the file name or detected from the text ("Persian", "English"…), null when unknown. */
-  subtitles: { index: number; name: string; label: string; format: string; language?: string | null }[];
+  subtitles: { index: number; name: string; label: string; format: string; language?: string | null; /** built into the video: fetched by `stream` */ embedded?: boolean; stream?: number }[];
   /** Volume levelling boost for this file in dB (+ = quiet file boosted). */
   levelGainDb?: number;
   /** Codec of the streamed video (for MediaSource). */
@@ -62,8 +62,8 @@ export const streamApi = {
   /** A representative frame for an episode/movie card (≈30% in, past intros). */
   stillUrl: (path: string, durationSec?: number) => `/api/thumb?path=${q(path)}&t=${Math.round((durationSec || 1200) * 0.3)}`,
   thumbUrl: (path: string, t: number) => `/api/thumb?path=${q(path)}&t=${Math.max(0, Math.round(t))}`,
-  subtitles: async (path: string, index: number): Promise<Cue[]> => {
-    const r = await fetch(`/api/subtitle.vtt?path=${q(path)}&i=${index}`);
+  subtitles: async (path: string, sub: { index: number; embedded?: boolean; stream?: number }): Promise<Cue[]> => {
+    const r = await fetch(`/api/subtitle.vtt?path=${q(path)}&${sub.embedded ? `e=${sub.stream}` : `i=${sub.index}`}`);
     if (!r.ok) throw new Error("subtitle");
     return parseVtt(await r.text());
   },

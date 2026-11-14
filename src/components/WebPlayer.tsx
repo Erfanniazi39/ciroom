@@ -168,7 +168,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (subIndex < 0) { setCues([]); return; }
     let alive = true;
     setSubError(false);
-    streamApi.subtitles(path, subIndex).then((c) => alive && setCues(c)).catch(() => { if (alive) { setCues([]); setSubError(true); } });
+    streamApi.subtitles(path, subListRef.current.find((s) => s.index === subIndex) ?? { index: subIndex }).then((c) => alive && setCues(c)).catch(() => { if (alive) { setCues([]); setSubError(true); } });
     return () => { alive = false; };
   }, [path, subIndex]);
 
@@ -777,7 +777,7 @@ function SettingsPanel(p: {
           {p.subtitles.map((s) => <Option key={s.index} selected={p.subIndex === s.index} label={s.label} onClick={() => p.setSubIndex(s.index)} />)}
           {p.subError && p.subIndex >= 0 && <p className="px-3 py-2 text-[13px] font-semibold text-amber-300">This subtitle couldn't be read. Try another one.</p>}
           {p.subtitles.length > 0 && p.rememberNote && <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">{p.rememberNote}</p>}
-          {p.subtitles.length === 0 && <p className="px-3 py-2 text-[13px] text-white/55">No subtitle files next to this video. Built-in tracks are available in the full player.</p>}
+          {p.subtitles.length === 0 && <p className="px-3 py-2 text-[13px] text-white/55">No text subtitles for this video. Picture subtitles (DVD/Blu-ray) are available in the full player.</p>}
           {p.onFind && <button onClick={p.onFind} className="mt-1 flex w-full items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 text-left text-[14px] font-semibold text-violet-300 transition hover:bg-white/10"><Search size={16} /> Find subtitles online…</button>}
         </>
       )}
