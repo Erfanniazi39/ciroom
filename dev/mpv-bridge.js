@@ -186,10 +186,25 @@ export function createCiRoom(mediaRoot) {
     return pool.sort((a, b) => a.depth - b.depth || b.size - a.size)[0].p;
   }
 
+  /** Largest request body we read: 1 MB, or 20 MB for an artwork upload (a picture as a data URL). */
+  const bodyLimit = (/** @type {import("node:http").IncomingMessage} */ req) =>
+    String(req.url ?? "").split("?")[0] === "/api/art/upload" ? 20 * 1024 * 1024 : 1024 * 1024;
+
+  /** Thrown when a request body is over the limit; the handlers' catch turns it into HTTP 413. */
+  class BodyTooLarge extends Error {
+    constructor() { super("Request body too large"); }
+  }
+
   /** @param {import("node:http").IncomingMessage} req @returns {Promise<any>} */
-  const body = (req) => new Promise((resolve) => {
+  const body = (req) => new Promise((resolve, reject) => {
+    const limit = bodyLimit(req);
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit) { chunks.length = 0; reject(new BodyTooLarge()); return; }
+      if (size <= limit) chunks.push(c);
+    });
     req.on("end", () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString() || "{}")); } catch { resolve({}); } });
   });
 
@@ -291,6 +306,14 @@ export function createCiRoom(mediaRoot) {
             res.end(JSON.stringify({ error: "JSON only" }));
             return;
           }
+          // Honest clients announce the size: refuse before reading anything (chunked bodies are cut off in body()).
+          if (Number(req.headers["content-length"] ?? 0) > bodyLimit(req)) {
+            res.statusCode = 413;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Connection", "close");
+            res.end(JSON.stringify({ error: "Request body too large" }));
+            return;
+          }
         }
         // Watch party: its own gate and allow-list (dev/party.js); guests never reach the rest of the app.
         if (party.owns(req.url)) {
@@ -303,6 +326,7 @@ export function createCiRoom(mediaRoot) {
           try {
             await party.handle(req, res, peer, onThisPc, pjson, body);
           } catch (e) {
+            if (e instanceof BodyTooLarge) return void pjson(413, { error: e.message });
             pjson(400, { error: onThisPc && e instanceof Error ? e.message : "Something went wrong" });
           }
           return;
@@ -426,6 +450,7 @@ export function createCiRoom(mediaRoot) {
 
           return json(404, { error: "Unknown endpoint" });
         } catch (e) {
+          if (e instanceof BodyTooLarge) return json(413, { error: e.message });
           return json(400, { error: e instanceof Error ? e.message : String(e) });
         }
     },
