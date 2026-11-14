@@ -36,6 +36,40 @@ const TEXT_SUB = /\.(srt|ass|ssa|vtt)$/i;
 /** @type {Map<string, string>} */ const vttCache = new Map();
 /** @type {Map<string, Buffer>} */ const thumbCache = new Map();
 
+const THUMB_DIR = path.join(CACHE_DIR, "thumbs");
+const THUMB_MAX_PARALLEL = 3;
+const THUMB_TIMEOUT_MS = 15_000;
+let thumbRunning = 0;
+/** @type {Array<() => void>} */ const thumbWaiting = [];
+
+/** One JPEG frame at t seconds. At most 3 ffmpeg run at once, each is killed after 15 s, and results are kept on disk.
+ *  Returns an empty Buffer if ffmpeg failed or timed out. */
+async function thumbnail(/** @type {string} */ file, /** @type {number} */ t) {
+  const st = fs.statSync(file);
+  const key = `${file}|${st.size}|${Math.round(st.mtimeMs)}|${t}`;
+  const hit = thumbCache.get(key);
+  if (hit) return hit;
+  const diskFile = path.join(THUMB_DIR, createHash("sha1").update(key).digest("hex") + ".jpg");
+  try { const b = fs.readFileSync(diskFile); if (b.length) { thumbCache.set(key, b); return b; } } catch { /* not cached yet */ }
+  if (thumbRunning >= THUMB_MAX_PARALLEL) await new Promise((r) => thumbWaiting.push(() => r(undefined)));
+  else thumbRunning++;
+  try {
+    const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-ss", String(t), "-i", file, "-frames:v", "1", "-an", "-sn",
+      "-vf", "scale=320:-2", "-q:v", "5", "-f", "mjpeg", "pipe:1"], { encoding: "buffer", maxBuffer: 4 << 20, timeout: THUMB_TIMEOUT_MS, killSignal: "SIGKILL" });
+    const jpg = /** @type {Buffer} */ (stdout);
+    if (jpg.length) {
+      if (thumbCache.size > 600) thumbCache.clear();
+      thumbCache.set(key, jpg);
+      try { fs.mkdirSync(THUMB_DIR, { recursive: true }); const tmp = diskFile + ".tmp"; fs.writeFileSync(tmp, jpg); fs.renameSync(tmp, diskFile); } catch { /* cache only */ }
+    }
+    return jpg;
+  } catch { return Buffer.alloc(0); }
+  finally {
+    const next = thumbWaiting.shift();
+    if (next) next(); else thumbRunning--;
+  }
+}
+
 /** Embedded subtitle codecs ffmpeg can turn into WebVTT (not the picture formats: PGS, DVD, DVB). */
 const EMBED_TEXT = new Set(["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"]);
 /** ISO 639-2 tags in MKV/MP4 → the language names subtitleLanguage() uses. */
@@ -325,15 +359,8 @@ export function streamRoutes(resolveVideo) {
 
       if (u.pathname === "/api/thumb") {
         const t = Math.max(0, Math.round(Number(u.searchParams.get("t")) || 0));
-        const key = `${file}|${t}`;
-        let jpg = thumbCache.get(key);
-        if (!jpg) {
-          const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-ss", String(t), "-i", file, "-frames:v", "1", "-an", "-sn",
-            "-vf", "scale=320:-2", "-q:v", "5", "-f", "mjpeg", "pipe:1"], { encoding: "buffer", maxBuffer: 4 << 20 });
-          jpg = /** @type {Buffer} */ (stdout);
-          if (thumbCache.size > 600) thumbCache.clear();
-          thumbCache.set(key, jpg);
-        }
+        const jpg = await thumbnail(file, t);
+        if (!jpg.length) { json(504, { error: "thumbnail failed" }); return true; }
         res.statusCode = 200;
         res.setHeader("Content-Type", "image/jpeg");
         res.setHeader("Cache-Control", "public, max-age=86400");
