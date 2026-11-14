@@ -9,7 +9,25 @@ graphify-out/cache/
 *.keystore
 *.jks
 *.key
+*.pem
+*.p12
+*.pfx
+*password*.txt
+keys/
 .env*
+
+# User data that must never land in the repo (databases, temp files from atomic writes)
+*.db
+*.db-wal
+*.db-shm
+*.tmp
+
+# Files Windows and editors create (the drive is shared with Windows)
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.vscode/
+.idea/
 
 # Private project notes: kept on this PC only, never published (they contain network and personal details)
 project-state.md
@@ -18,6 +36,8 @@ improvements.md
 next-session-prompt.md
 docs/CiRoom-Report.md
 docs/*.png
+docs/CiRoom-Audit.md
+docs/to-sonnet/
 graphify-out/
 src-tauri/.cargo/
 
