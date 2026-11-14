@@ -4,6 +4,7 @@
  * READ-ONLY: it lists folders and stats files; it never moves, renames, writes or deletes media.
  * The standalone app ports this to Rust (same rules, same output shape).
  *
+ * The scan runs in a worker thread (scan-worker.js), so the server stays responsive.
  * Scans only when asked (POST /api/library/scan) or when no saved scan exists yet. The result is saved to
  * ~/.local/share/marquee/library.json; ids.json keeps every title's id stable across scans, so watch
  * progress (stored by id) survives renames of files inside a title folder.
@@ -22,6 +23,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 import { DATA_DIR } from "./artwork-store.js";
 import { LIBRARY_FILE } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
@@ -141,11 +143,13 @@ const subdirs = (/** @type {string} */ dir) => { try { return fs.readdirSync(dir
 /** Largest first; equal size → a "clean" name (no double extension), then the shorter name. */
 const bestFirst = (/** @type {any} */ a, /** @type {any} */ b) => b.size - a.size || Number(/\.\w{3}\.\w{3}$/.test(a.name)) - Number(/\.\w{3}\.\w{3}$/.test(b.name)) || a.name.length - b.name.length;
 
-/** @param {string} mediaRoot */
-export function scannerRoutes(mediaRoot) {
+/**
+ * One full scan of <mediaRoot>/Movies and /Series (synchronous, so it runs in a worker thread: see scan-worker.js).
+ * @param {string} mediaRoot
+ */
+export function scanLibrary(mediaRoot) {
   const root = path.resolve(mediaRoot);
-
-  function scan() {
+  {
     const ids = readJson(IDS_FILE, {});
     const used = new Set(Object.values(ids));
     /** Stable id per folder: saved → legacy → slug(title) → slug(title-year) → numbered. */
@@ -279,6 +283,23 @@ export function scannerRoutes(mediaRoot) {
     ];
     return { movies, series, collections, roots, review, scannedAt: now };
   }
+}
+
+/** @param {string} mediaRoot */
+export function scannerRoutes(mediaRoot) {
+  /** The scan runs in a worker thread so the server keeps answering while a big library is read. One at a time. */
+  /** @type {Promise<any> | null} */ let running = null;
+  function scan() {
+    running ??= new Promise((resolve, reject) => {
+      const w = new Worker(new URL("./scan-worker.js", import.meta.url), { workerData: { root: mediaRoot } });
+      let done = false;
+      const end = (/** @type {Error | null} */ err, /** @type {any=} */ lib) => { if (done) return; done = true; running = null; err ? reject(err) : resolve(lib); };
+      w.once("message", (m) => (m.error ? end(new Error(m.error)) : end(null, m.library)));
+      w.once("error", (e) => end(e));
+      w.once("exit", (code) => end(new Error(`scan worker exited (${code})`)));
+    });
+    return running;
+  }
 
   /** What changed compared with the previous scan (for the "Scan complete" message). */
   function diff(/** @type {any} */ prev, /** @type {any} */ next) {
@@ -298,14 +319,15 @@ export function scannerRoutes(mediaRoot) {
       const url = String(req.url);
       if (url === "/api/library" && req.method === "GET") {
         let lib = readJson(LIB_FILE, null);
-        if (!lib) { lib = scan(); writeJson(LIB_FILE, lib); }
+        if (!lib) { try { lib = await scan(); } catch (e) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; } writeJson(LIB_FILE, lib); }
         json(200, lib);
         return true;
       }
       if (url === "/api/library/scan" && req.method === "POST") {
         const prev = readJson(LIB_FILE, null);
         const t0 = Date.now();
-        const lib = scan();
+        let lib;
+        try { lib = await scan(); } catch (e) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; }
         writeJson(LIB_FILE, lib);
         json(200, { ...lib, changes: { ...diff(prev, lib), ms: Date.now() - t0 } });
         return true;
