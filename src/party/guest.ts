@@ -8,7 +8,7 @@
  *   target = position + (serverNow - at) * rate
  * small drift → nudge playback speed; big drift → jump. While we load, we report "buffering" and the host waits.
  */
-import { MseStream, streamMime, type StreamSource } from "@/lib/mse";
+import { MseStream, lowStreamMime, streamMime, type StreamSource } from "@/lib/mse";
 import { parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
 
 // ── tiny DOM helper ───────────────────────────────────────────────────────────────────────────
@@ -97,13 +97,16 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
   const vol = h("input", { type: "range", min: "0", max: "100", value: store.get("volume") ?? "100", class: "vol", "aria-label": "Volume" });
   const muteBtn = h("button", { class: "ctl", "aria-label": "Mute", text: "🔊" });
   const subsSel = h("select", { class: "subs", "aria-label": "Subtitles" });
+  const qualSel = h("select", { class: "subs", "aria-label": "Video quality", title: "Video quality" },
+    h("option", { value: "full", text: "Quality: full" }), h("option", { value: "low", text: "Low data (480p)" }));
+  qualSel.value = store.get("quality") === "low" ? "low" : "full";
   const delayEl = h("span", { class: "delay", text: "" });
   const delayMinus = h("button", { class: "ctl small", text: "−", title: "Subtitles earlier (0.1 s)" });
   const delayPlus = h("button", { class: "ctl small", text: "+", title: "Subtitles later (0.1 s)" });
   const fsBtn = h("button", { class: "ctl", "aria-label": "Fullscreen", text: "⛶" });
   const stage = h("div", { class: "stage" }, video, cue, overlay,
     h("div", { class: "controls" }, bar,
-      h("div", { class: "row" }, playBtn, timeEl, h("span", { class: "grow" }), muteBtn, vol, subsSel, delayMinus, delayEl, delayPlus, fsBtn)));
+      h("div", { class: "row" }, playBtn, timeEl, h("span", { class: "grow" }), muteBtn, vol, qualSel, subsSel, delayMinus, delayEl, delayPlus, fsBtn)));
   const chatList = h("div", { class: "chat-list" });
   const chatInput = h("input", { class: "field", placeholder: "Message…", maxLength: 500, dir: "auto" });
   const chatErr = h("div", { class: "error small" });
@@ -163,15 +166,16 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
   });
 
   // ---- media
+  const qs = () => (qualSel.value === "low" ? "&q=low" : "");
   const source = (key: string): StreamSource => ({
     seekPoint: async (_p, t) => {
       try {
-        const r = await fetch(`/api/party/seekpoint?k=${key}&t=${t.toFixed(3)}`);
+        const r = await fetch(`/api/party/seekpoint?k=${key}&t=${t.toFixed(3)}${qs()}`);
         const d = await r.json();
         return typeof d.start === "number" && d.start <= t + 0.01 ? d.start : t;
       } catch { return t; }
     },
-    streamUrl: (_p, t) => `/api/party/stream?k=${key}&t=${t.toFixed(3)}`,
+    streamUrl: (_p, t) => `/api/party/stream?k=${key}&t=${t.toFixed(3)}${qs()}`,
   });
 
   async function loadMedia(key: string) {
@@ -188,7 +192,7 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
       const p: ProbeInfo = await r.json();
       if (mediaKey !== key) return;
       probe = p;
-      const mime = streamMime(p);
+      const mime = qualSel.value === "low" ? lowStreamMime(p) : streamMime(p);
       if (!MseStream.supported(mime)) { showOverlay("This browser can't play this video. Try Chrome or Edge."); return; }
       mse = new MseStream(video, "", p.duration, mime, true, 0, (m) => showOverlay(m.replace(/ or use the full player\.?|Try the full player\.?/g, "")), source(key));
       await mse.start(target());
@@ -203,6 +207,17 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
       if (mediaKey === key) showOverlay("Couldn't open the video. The host may have changed it; waiting…");
     }
   }
+
+  // Quality changed: rebuild the player at the current spot (the video codec string differs, so a new MediaSource).
+  qualSel.addEventListener("change", () => {
+    store.set("quality", qualSel.value);
+    if (!probe || !mediaKey) return;
+    const p = probe, key = mediaKey, at = video.currentTime;
+    mse?.destroy();
+    const mime = qualSel.value === "low" ? lowStreamMime(p) : streamMime(p);
+    mse = new MseStream(video, "", p.duration, mime, true, 0, (m) => showOverlay(m.replace(/ or use the full player\.?|Try the full player\.?/g, "")), source(key));
+    void mse.start(at).then(() => { lastSyncSeek = Date.now(); if (!needsClick && host && !host.paused) void video.play().catch(() => undefined); });
+  });
 
   async function loadSubs() {
     const i = Number(subsSel.value);

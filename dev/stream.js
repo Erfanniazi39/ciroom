@@ -103,6 +103,9 @@ const subtitleList = (/** @type {string} */ file, /** @type {any[]} */ embedded 
     ...embedded,
   ].map((s, i) => ({ index: i, ...s }));
 
+/** `&q=low`: a small 480p ~1 Mbps re-encode (the watch party's "low data" choice for guests on a slow connection). */
+const wantsLow = (/** @type {URL} */ u) => u.searchParams.get("q") === "low";
+
 /** The audio stream asked for with `&a=N`: only a number that exists, otherwise the first one. */
 function audioIndex(/** @type {any} */ info, /** @type {URL} */ u) {
   const n = Math.floor(Number(u.searchParams.get("a")));
@@ -281,7 +284,7 @@ export function streamRoutes(resolveVideo) {
       if (u.pathname === "/api/seekpoint") {
         const info = await probe(file);
         const t = Math.max(0, Number(u.searchParams.get("t")) || 0);
-        json(200, { start: info.copyVideo && t > 0 ? await streamOrigin(file, t.toFixed(3), audioIndex(info, u)) : t });
+        json(200, { start: info.copyVideo && !wantsLow(u) && t > 0 ? await streamOrigin(file, t.toFixed(3), audioIndex(info, u)) : t });
         return true;
       }
 
@@ -291,13 +294,15 @@ export function streamRoutes(resolveVideo) {
         const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
         if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
         args.push("-i", file, "-map", "0:v:0", "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
-        if (info.copyVideo) args.push("-c:v", "copy");
+        const low = wantsLow(u);
+        if (low) args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1", "-vf", "scale=-2:'min(480,ih)'", "-g", "48");
+        else if (info.copyVideo) args.push("-c:v", "copy");
         else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
         const level = u.searchParams.get("level") !== "0" ? levelFilter(await levelGain(file)) : null;
         // Audio is ALWAYS re-encoded (levelling only adds the gain filter). Copying the source audio untouched makes
         // WebKitGTK's MediaSource freeze the whole page (99% CPU, 2+ GB, never recovers) on large files, e.g. movies;
         // re-encoded audio is solid. 192k AAC stereo is transparent for this library (all stereo AAC/Opus).
-        if (info.hasAudio) args.push(...(level ? ["-af", level] : []), "-c:a", "aac", "-b:a", "192k", "-ac", "2");
+        if (info.hasAudio) args.push(...(level ? ["-af", level] : []), "-c:a", "aac", "-b:a", low ? "96k" : "192k", "-ac", "2");
         args.push("-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
 
         const ff = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -306,7 +311,7 @@ export function streamRoutes(resolveVideo) {
         res.statusCode = 200;
         res.setHeader("Content-Type", "video/mp4");
         res.setHeader("Cache-Control", "no-store");
-        res.setHeader("X-Stream-Mode", `${info.copyVideo ? "copy" : "transcode"}/aac${level ? " levelled" : ""}`);
+        res.setHeader("X-Stream-Mode", `${info.copyVideo && !low ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : ""}`);
         ff.stdout.pipe(res);
         const stop = () => { if (ff.exitCode === null) ff.kill("SIGKILL"); };
         req.on("close", stop);

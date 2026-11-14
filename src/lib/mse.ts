@@ -22,6 +22,11 @@ export function streamMime(info: ProbeInfo): string {
   return info.audio ? `video/mp4; codecs="${v}, mp4a.40.2"` : `video/mp4; codecs="${v}"`;
 }
 
+/** The stream's MIME when the server re-encodes to 480p (`q=low`: High@3.1) instead of copying. */
+export function lowStreamMime(info: ProbeInfo): string {
+  return streamMime({ ...info, codecs: { ...info.codecs, video: "avc1.64001f" } });
+}
+
 /** Where the chunks come from: the PC's own API, or the watch-party guest API (src/party/guest.ts). */
 export interface StreamSource {
   seekPoint: (path: string, t: number, audio?: number) => Promise<number>;
