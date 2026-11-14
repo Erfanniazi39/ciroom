@@ -26,6 +26,7 @@ import { remoteRoutes } from "./remote.js";
 import { partyRoutes } from "./party.js";
 import { userdbRoutes } from "./userdb.js";
 import { introRoutes } from "./intro.js";
+import { checkTools } from "./deps.js";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, MPV_SOCKET, SHARED, isMediaRoot, openUrlCommand, saveMediaRoot, savedMediaRoot } from "./paths.js";
 
@@ -337,6 +338,14 @@ export function createCiRoom(mediaRoot) {
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store");
           res.end(JSON.stringify({ app: "ciroom", version: appVersion() }));
+          return;
+        }
+        // Which of ffmpeg / ffprobe / mpv are missing (Settings shows it). This PC only.
+        if (onThisPc && req.method === "GET" && String(req.url).split("?")[0] === "/api/system/tools") {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(JSON.stringify({ tools: await checkTools(String(req.url).includes("fresh=1")) }));
           return;
         }
         if (!onThisPc) {

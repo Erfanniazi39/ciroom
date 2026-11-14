@@ -14,6 +14,22 @@ import { useSettings } from "@/store/settings";
 import { useUser } from "@/store/user";
 import type { LibraryRoot } from "@/types/media";
 
+/** Shows a warning when ffmpeg, ffprobe or mpv can't be run (dev/deps.js). Nothing when all is well. */
+function MissingTools() {
+  const [tools, setTools] = useState<{ name: string; ok: boolean; needed: string; help: string | null }[] | null>(null);
+  useEffect(() => { fetch("/api/system/tools").then((r) => (r.ok ? r.json() : null)).then((d) => setTools(d?.tools ?? null)).catch(() => undefined); }, []);
+  const missing = tools?.filter((t) => !t.ok) ?? [];
+  if (!missing.length) return null;
+  return (
+    <div className="mt-6 rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-[14px] leading-6">
+      <div className="font-semibold text-fg">Some programs CiRoom needs were not found</div>
+      <ul className="mt-2 list-disc pl-5">
+        {missing.map((t) => <li key={t.name}><b>{t.name}</b>: needed for {t.needed}. {t.help}</li>)}
+      </ul>
+    </div>
+  );
+}
+
 /** Background skip-intro analysis progress (dev/intro.js). */
 function SkipIntroStatus() {
   const [st, setSt] = useState<{ done: number; total: number; running: string | null } | null>(null);
@@ -93,6 +109,7 @@ export default function Settings() {
     <div className="gutter-x max-w-[900px] pb-24 pt-10">
       <h1 className="h-display-l">Settings</h1>
       <p className="meta mt-2">Everything here is saved on this computer.</p>
+      <MissingTools />
 
       <Section title="Updates">
         <UpdateSettings />
