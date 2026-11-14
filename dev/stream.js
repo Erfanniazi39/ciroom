@@ -24,7 +24,10 @@ import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
 import { CACHE_DIR } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
 
-const run = promisify(execFile);
+const execFileP = promisify(execFile);
+/** ffprobe/ffmpeg helper: every call is killed after `timeout` ms (default 30 s) so a stalled drive can't hang a request forever. */
+const run = (/** @type {string} */ cmd, /** @type {string[]} */ args, /** @type {import("node:child_process").ExecFileOptions} */ opts = {}) =>
+  execFileP(cmd, args, { timeout: 30_000, killSignal: "SIGKILL", windowsHide: true, ...opts });
 const LOUD_FILE = path.join(CACHE_DIR, "loudness.json");
 const LEVEL_TARGET = -18; // LUFS: a comfortable TV level (Hannibal/Rick & Morty sit around -16…-18)
 const FACTS_FILE = path.join(CACHE_DIR, "facts.json");
@@ -192,7 +195,7 @@ export async function levelGain(/** @type {string} */ file) {
   /** @type {number[]} */ const lufs = [];
   for (const t of points) {
     try {
-      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-ss", t.toFixed(1), "-t", "30", "-i", file, "-map", "0:a:0", "-vn", "-sn", "-af", "ebur128", "-f", "null", "-"], { maxBuffer: 64 << 20 });
+      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-ss", t.toFixed(1), "-t", "30", "-i", file, "-map", "0:a:0", "-vn", "-sn", "-af", "ebur128", "-f", "null", "-"], { maxBuffer: 64 << 20, timeout: 60_000 });
       const m = String(stderr).split("Summary:").pop()?.match(/I:\s+(-?[\d.]+)\s+LUFS/);
       if (m && Number(m[1]) > -70) lufs.push(Number(m[1]));
     } catch { /* sample failed: use the others */ }
@@ -312,7 +315,7 @@ export function streamRoutes(resolveVideo) {
           const key = `${file}|${st.size}|${st.mtimeMs}|e${n}`;
           let vtt = vttCache.get(key);
           if (!vtt) {
-            const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", file, "-map", `0:s:${n}`, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20 });
+            const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", file, "-map", `0:s:${n}`, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20, timeout: 120_000 });
             vtt = stdout;
             vttCache.set(key, vtt);
           }

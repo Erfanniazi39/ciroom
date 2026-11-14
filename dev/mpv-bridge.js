@@ -41,7 +41,7 @@ const langFromCode = (/** @type {string | null | undefined} */ code) =>
 
 /** Number of subtitle streams inside the video file (mpv numbers external subtitle files after them). */
 const embeddedSubCount = (/** @type {string} */ file) => new Promise((resolve) => {
-  execFile("ffprobe", ["-v", "error", "-select_streams", "s", "-show_entries", "stream=index", "-of", "csv=p=0", file], (err, out) =>
+  execFile("ffprobe", ["-v", "error", "-select_streams", "s", "-show_entries", "stream=index", "-of", "csv=p=0", file], { timeout: 30_000, killSignal: "SIGKILL" }, (err, out) =>
     resolve(err ? 0 : String(out).trim().split("\n").filter(Boolean).length));
 });
 
