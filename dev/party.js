@@ -26,6 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { fileURLToPath } from "node:url";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const FILE = path.join(DATA_DIR, "party.json");
 const COOKIE = "ciroom_guest";
@@ -64,7 +65,7 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* first run */ }
   cfg.guests = cfg.guests.filter((g) => g.expires > Date.now());
   const save = () => {
-    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 }); } catch { /* keep in memory */ }
+    try { writeJsonAtomic(FILE, cfg, { mode: 0o600, space: 2 }); } catch { /* keep in memory */ }
   };
 
   /** @type {{ hash: string, expires: number } | null} */

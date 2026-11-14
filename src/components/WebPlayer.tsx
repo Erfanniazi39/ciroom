@@ -51,6 +51,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const { autoplayNext, upNextSeconds } = useSettings();
 
   const [info, setInfo] = useState<ProbeInfo | null>(null);
+  const [subError, setSubError] = useState(false); // the chosen subtitle file couldn't be read
   const [subList, setSubList] = useState<ProbeInfo["subtitles"]>([]);
   const [finder, setFinder] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -162,7 +163,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   useEffect(() => {
     if (subIndex < 0) { setCues([]); return; }
     let alive = true;
-    streamApi.subtitles(path, subIndex).then((c) => alive && setCues(c));
+    setSubError(false);
+    streamApi.subtitles(path, subIndex).then((c) => alive && setCues(c)).catch(() => { if (alive) { setCues([]); setSubError(true); } });
     return () => { alive = false; };
   }, [path, subIndex]);
 
@@ -594,6 +596,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
           page={menu}
           setPage={setMenu}
           subtitles={subList}
+          subError={subError}
           onFind={find ? () => { setMenu(null); setFinder(true); } : undefined}
           subIndex={subIndex}
           setSubIndex={(i) => chooseSub(i)}
@@ -705,6 +708,7 @@ function SettingsPanel(p: {
   page: "main" | "subs" | "delay" | "speed";
   setPage: (pg: null | "main" | "subs" | "delay" | "speed") => void;
   subtitles: ProbeInfo["subtitles"];
+  subError?: boolean;
   onFind?: () => void;
   subIndex: number;
   setSubIndex: (i: number) => void;
@@ -767,6 +771,7 @@ function SettingsPanel(p: {
           <Header title="Subtitles" />
           <Option selected={p.subIndex < 0} label="Off" onClick={() => p.setSubIndex(-1)} />
           {p.subtitles.map((s) => <Option key={s.index} selected={p.subIndex === s.index} label={s.label} onClick={() => p.setSubIndex(s.index)} />)}
+          {p.subError && p.subIndex >= 0 && <p className="px-3 py-2 text-[13px] font-semibold text-amber-300">This subtitle couldn't be read. Try another one.</p>}
           {p.subtitles.length > 0 && p.rememberNote && <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">{p.rememberNote}</p>}
           {p.subtitles.length === 0 && <p className="px-3 py-2 text-[13px] text-white/55">No subtitle files next to this video. Built-in tracks are available in the full player.</p>}
           {p.onFind && <button onClick={p.onFind} className="mt-1 flex w-full items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 text-left text-[14px] font-semibold text-violet-300 transition hover:bg-white/10"><Search size={16} /> Find subtitles online…</button>}

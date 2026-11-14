@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR as PATHS_DATA_DIR } from "./paths.js";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const DATA = PATHS_DATA_DIR;
 const ART_DIR = path.join(DATA, "artwork");
@@ -29,7 +30,7 @@ const IMG = "https://image.tmdb.org/t/p";
 const EXT = /** @type {Record<string,string>} */ ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/avif": "avif" });
 
 const readJson = (/** @type {string} */ f, /** @type {any} */ dflt) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return dflt; } };
-const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v, null, 2)); };
+const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v, { space: 2 });;
 const safeId = (/** @type {string} */ id) => String(id).replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
 const fileUrl = (/** @type {string|undefined} */ name) => (name ? `/api/art/file/${encodeURIComponent(name)}` : undefined);
 

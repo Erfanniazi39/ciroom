@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { writeJsonAtomic } from "./fsutil.js";
 
 export const WIN = process.platform === "win32";
 const home = os.homedir();
@@ -61,8 +62,7 @@ function chooseMediaRoot() {
 const MEDIA_ROOT = chooseMediaRoot();
 export const savedMediaRoot = () => MEDIA_ROOT;
 export function saveMediaRoot(/** @type {string} */ p) {
-  fs.mkdirSync(LOCAL_DIR, { recursive: true });
-  fs.writeFileSync(LOCAL_FILE, JSON.stringify({ ...(readJson(LOCAL_FILE) ?? {}), mediaRoot: p }, null, 2), { mode: 0o600 });
+  writeJsonAtomic(LOCAL_FILE, { ...(readJson(LOCAL_FILE) ?? {}), mediaRoot: p }, { mode: 0o600, space: 2 });
 }
 
 const sharedDir = MEDIA_ROOT && !process.env.CIROOM_DATA_DIR ? path.join(MEDIA_ROOT, SHARED_NAME) : null;

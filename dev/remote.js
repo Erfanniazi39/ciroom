@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const FILE = path.join(DATA_DIR, "remote.json");
 const COOKIE = "ciroom_remote";
@@ -39,7 +40,7 @@ export function remoteRoutes(mpv, getPort = () => 1420) {
   let cfg = { enabled: false, devices: [] };
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* first run */ }
   const save = () => {
-    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 }); } catch { /* read-only disk: keep in memory */ }
+    try { writeJsonAtomic(FILE, cfg, { mode: 0o600, space: 2 }); } catch { /* read-only disk: keep in memory */ }
   };
 
   /** @type {{ pin: string, expires: number, tries: number } | null} */

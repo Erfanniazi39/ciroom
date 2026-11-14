@@ -22,6 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { DATA_DIR } from "./paths.js";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const run = promisify(execFile);
 const DATA = DATA_DIR;
@@ -110,17 +111,16 @@ export function subtitleSearchRoutes(resolveVideo) {
             // Validate before saving, so a typo is reported immediately.
             const prev = s.subdlKey;
             s.subdlKey = next;
-            fs.mkdirSync(DATA, { recursive: true });
-            fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
+            writeJsonAtomic(SETTINGS, s, { space: 2 });
             try { await call({ api_key: next, film_name: "Inception", type: "movie", languages: "EN", year: "2010" }); }
             catch (e) {
               if (prev) s.subdlKey = prev; else delete s.subdlKey;
-              fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
+              writeJsonAtomic(SETTINGS, s, { space: 2 });
               throw e;
             }
           } else {
             delete s.subdlKey;
-            fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
+            writeJsonAtomic(SETTINGS, s, { space: 2 });
           }
           json(200, { hasKey: !!key() });
           return true;

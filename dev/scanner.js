@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { LIBRARY_FILE } from "./paths.js";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const LIB_FILE = LIBRARY_FILE; // per system (full paths differ between Linux and Windows)
 const IDS_FILE = path.join(DATA_DIR, "ids.json");
@@ -52,7 +53,7 @@ const LEGACY_IDS = /** @type {Record<string,string>} */ ({
 });
 
 const readJson = (/** @type {string} */ f, /** @type {any} */ dflt) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return dflt; } };
-const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)); };
+const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v);;
 const slug = (/** @type {string} */ s) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "title";
 const hueOf = (/** @type {string} */ id) => { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; };
 const SMALL = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "vs"]);

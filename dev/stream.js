@@ -18,13 +18,18 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
+import { decodeSubtitle } from "./subtitle-search.js";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
 import { CACHE_DIR } from "./paths.js";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const run = promisify(execFile);
 const LOUD_FILE = path.join(CACHE_DIR, "loudness.json");
 const LEVEL_TARGET = -18; // LUFS: a comfortable TV level (Hannibal/Rick & Morty sit around -16…-18)
 const FACTS_FILE = path.join(CACHE_DIR, "facts.json");
+/** subtitleLanguage() names → the codes decodeSubtitle() knows. */
+const SUB_CODE = /** @type {Record<string,string>} */ ({ Persian: "FA", Arabic: "AR", Turkish: "TR", Russian: "RU", Polish: "PL" });
 const TEXT_SUB = /\.(srt|ass|ssa|vtt)$/i;
 
 /** @type {Map<string, any>} */ const probeCache = new Map();
@@ -127,7 +132,7 @@ export async function levelGain(/** @type {string} */ file) {
   const loudness = 10 * Math.log10(lufs.reduce((a, l) => a + 10 ** (l / 10), 0) / lufs.length); // energy average
   const gain = Math.round(Math.max(-8, Math.min(26, LEVEL_TARGET - loudness)) * 10) / 10;
   loudCache.set(key, gain);
-  try { fs.mkdirSync(path.dirname(LOUD_FILE), { recursive: true }); fs.writeFileSync(LOUD_FILE, JSON.stringify(Object.fromEntries(loudCache))); } catch { /* cache only */ }
+  try { writeJsonAtomic(LOUD_FILE, Object.fromEntries(loudCache)); } catch { /* cache only */ }
   return gain;
 }
 /** The ffmpeg/mpv audio filter for a gain, or null when no change is needed. Limiter: no clipping. */
@@ -165,7 +170,7 @@ async function filesFacts(/** @type {string[]} */ expected, /** @type {(e: strin
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);
-  if (dirty) { fs.mkdirSync(path.dirname(FACTS_FILE), { recursive: true }); fs.writeFileSync(FACTS_FILE, JSON.stringify(disk)); }
+  if (dirty) { writeJsonAtomic(FACTS_FILE, disk); }
   return out;
 }
 
@@ -232,11 +237,26 @@ export function streamRoutes(resolveVideo) {
         const subs = subtitlesFor(file).filter((f) => TEXT_SUB.test(f));
         const sub = subs[Number(u.searchParams.get("i")) || 0];
         if (!sub) { json(404, { error: "No text subtitles for this video" }); return true; }
-        let vtt = vttCache.get(sub);
-        if (!vtt) {
-          const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", sub, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20 });
-          vtt = stdout;
-          vttCache.set(sub, vtt);
+        let vtt;
+        try {
+          const st = fs.statSync(sub);
+          const key = `${sub}|${st.size}|${st.mtimeMs}`;
+          vtt = vttCache.get(key);
+          if (!vtt) {
+            // Decode to UTF-8 first (Windows-1256 Persian, UTF-16…): ffmpeg assumes UTF-8. The original is never touched.
+            const text = decodeSubtitle(fs.readFileSync(sub), SUB_CODE[subtitleLanguage(sub) ?? ""] ?? "").replace(/^\uFEFF/, "");
+            const dir = path.join(CACHE_DIR, "subs-utf8");
+            fs.mkdirSync(dir, { recursive: true });
+            const copy = path.join(dir, `${createHash("sha1").update(key).digest("hex")}${path.extname(sub).toLowerCase()}`);
+            fs.writeFileSync(copy, text);
+            const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", copy, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20 });
+            vtt = stdout;
+            vttCache.set(key, vtt);
+          }
+        } catch (e) {
+          console.error("[stream] subtitle:", e instanceof Error ? e.message : e);
+          json(422, { error: "This subtitle couldn't be read" });
+          return true;
         }
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/vtt; charset=utf-8");

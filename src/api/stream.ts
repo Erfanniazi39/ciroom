@@ -64,7 +64,7 @@ export const streamApi = {
   thumbUrl: (path: string, t: number) => `/api/thumb?path=${q(path)}&t=${Math.max(0, Math.round(t))}`,
   subtitles: async (path: string, index: number): Promise<Cue[]> => {
     const r = await fetch(`/api/subtitle.vtt?path=${q(path)}&i=${index}`);
-    if (!r.ok) return [];
+    if (!r.ok) throw new Error("subtitle");
     return parseVtt(await r.text());
   },
 };

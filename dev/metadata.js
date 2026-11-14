@@ -18,6 +18,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import readline from "node:readline";
 import { DATA_DIR, readArtIndex, similarity, tmdb } from "./artwork-store.js";
+import { writeJsonAtomic } from "./fsutil.js";
 
 const META_DIR = path.join(DATA_DIR, "metadata");
 const INDEX = path.join(META_DIR, "index.json");
@@ -26,7 +27,7 @@ const IMDB_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz";
 const DAY = 86_400_000;
 
 const readJson = (/** @type {string} */ f, /** @type {any} */ dflt) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return dflt; } };
-const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v, null, 1)); };
+const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v, { space: 1 });;
 const yearOf = (/** @type {string|undefined|null} */ d) => (d ? Number(d.slice(0, 4)) || undefined : undefined);
 
 /** Pick the best TMDB result for a folder title (+ year when the folder has one). */
