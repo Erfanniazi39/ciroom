@@ -32,6 +32,14 @@ const TYPES = /** @type {Record<string, string>} */ ({
 });
 
 /** The built page. Unknown paths get index.html (the app's own routes, e.g. /series/…). */
+// What the page may load: only itself (plus TMDB posters, blob: video from the page player, Tauri's own IPC). No inline
+// scripts, no other sites, no framing. Inline styles stay allowed (React `style=` and two <style> tags).
+const CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
+  "img-src 'self' data: blob: https://image.tmdb.org", "media-src 'self' blob:", "connect-src 'self' ipc: http://ipc.localhost",
+  "worker-src 'self' blob:", "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+].join("; ");
+
 function serveStatic(/** @type {http.IncomingMessage} */ req, /** @type {http.ServerResponse} */ res) {
   if (req.method !== "GET" && req.method !== "HEAD") { res.statusCode = 405; return res.end(); }
   let rel;
@@ -50,6 +58,7 @@ function serveStatic(/** @type {http.IncomingMessage} */ req, /** @type {http.Se
   // Hashed build files never change; the page itself must always be fresh (it names the current files).
   res.setHeader("Cache-Control", file.includes(`${path.sep}assets${path.sep}`) ? "public, max-age=31536000, immutable" : "no-cache");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  if (file.endsWith(".html")) { res.setHeader("Content-Security-Policy", CSP); res.setHeader("X-Frame-Options", "DENY"); }
   if (req.method === "HEAD") return res.end();
   fs.createReadStream(file).pipe(res);
 }
