@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Subtitle discovery + repair (dev bridge; Stage 3 ports this to Rust).
+ * Subtitle discovery + repair.
  *
  * Finds every subtitle next to a video (and in a Subs/ subfolder) and hands mpv an explicit list.
  * Some real-world .srt files are malformed. For example, MY-SUBS files start with a timestamp and

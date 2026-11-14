@@ -1,8 +1,7 @@
 // @ts-check
 /**
- * Dev-only metadata store: real titles, years, runtimes, genres, overviews, directors/creators, cast,
+ * Metadata store: real titles, years, runtimes, genres, overviews, directors/creators, cast,
  * TMDB ratings and episode titles from TMDB, plus real IMDb ratings from IMDb's free daily dataset.
- * Stage 4 moves this into the Rust `metadata` module with the same API shapes.
  *
  * Stored in the app's data dir (~/.local/share/marquee/metadata/), never next to media:
  *   index.json               item id → MetaEntry (see `fetchOne`)

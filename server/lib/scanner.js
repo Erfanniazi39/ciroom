@@ -1,8 +1,7 @@
 // @ts-check
 /**
- * Dev-only library scanner: builds the library from the REAL folders in <media root>/Movies and /Series.
+ * Library scanner: builds the library from the REAL folders in <media root>/Movies and /Series.
  * READ-ONLY: it lists folders and stats files; it never moves, renames, writes or deletes media.
- * The standalone app ports this to Rust (same rules, same output shape).
  *
  * The scan runs in a worker thread (scan-worker.js), so the server stays responsive.
  * Scans only when asked (POST /api/library/scan) or when no saved scan exists yet. The result is saved to
@@ -33,30 +32,16 @@ const IDS_FILE = path.join(DATA_DIR, "ids.json");
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 const SKIP_DIR = /^(\.|@|\$|sample$|samples$|extras?$|featurettes?$|behind the scenes$|trailers?$)/i;
 
-/** Folder abbreviations → real names (used for display before TMDB and for matching). */
-const ALIASES = /** @type {Record<string,string>} */ ({ himym: "How I Met Your Mother", hotdg: "House of the Dragon", hotd: "House of the Dragon", got: "Game of Thrones" });
-
 /**
- * Ids the library used before the scanner existed, by folder. Progress, favorites and artwork are keyed
- * by these ids, so they must not change. New titles get a slug of their title.
+ * Folder abbreviations (ALIASES) and the ids the library used before the scanner existed (LEGACY_IDS) live in
+ * library-ids.json. Progress, favorites and artwork are keyed by those ids, so they must not change.
  */
-const LEGACY_IDS = /** @type {Record<string,string>} */ ({
-  "Movies/Zombieland/Zombieland 2009": "zombieland",
-  "Movies/Zombieland/Zombieland 2019": "zombieland-double-tap",
-  "Movies/Harry Potter/Harry Potter 2001": "harry-potter-1",
-  "Movies/Home Alone/Home Alone 1990": "home-alone",
-  "Movies/Zombieland#collection": "zombieland",
-  "Movies/Harry Potter#collection": "harry-potter",
-  "Movies/Home Alone#collection": "home-alone",
-  "Series/HIMYM": "himym",
-  "Series/HOTDG": "house-of-the-dragon",
-  "Series/A knight of the seven kingdoms": "knight-seven-kingdoms",
-  "Series/11.22.63 2016": "11-22-63",
-  "Series/Rick & Morty": "rick-and-morty",
-});
+const ID_DATA = JSON.parse(fs.readFileSync(new URL("./library-ids.json", import.meta.url), "utf8"));
+const ALIASES = /** @type {Record<string,string>} */ (ID_DATA.aliases);
+const LEGACY_IDS = /** @type {Record<string,string>} */ (ID_DATA.legacyIds);
 
 const readJson = (/** @type {string} */ f, /** @type {any} */ dflt) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return dflt; } };
-const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v);;
+const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v);
 const slug = (/** @type {string} */ s) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "title";
 const hueOf = (/** @type {string} */ id) => { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; };
 const SMALL = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "vs"]);

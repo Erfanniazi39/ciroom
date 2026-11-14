@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listZip, readZipEntry } from "../dev/zip.js";
+import { listZip, readZipEntry } from "../server/lib/zip.js";
 
 const hasZip = (() => { try { execFileSync("zip", ["-v"], { stdio: "ignore" }); return true; } catch { return false; } })();
 

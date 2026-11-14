@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * CiRoom's user database (dev bridge; Stage 3 ports this to Rust with rusqlite and the same schema).
+ * CiRoom's user database.
  *
  * Progress, favorites, watchlist, history, watch time, subtitle/audio choices and app settings live in
  * SQLite at ~/.local/share/marquee/ciroom.db instead of the window's browser storage, so they are safe

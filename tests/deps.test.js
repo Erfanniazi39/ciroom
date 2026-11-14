@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkTools, TOOLS } from "../dev/deps.js";
+import { checkTools, TOOLS } from "../server/lib/deps.js";
 
 test("checkTools reports every tool with ok/help consistent", async () => {
   const r = await checkTools(true);

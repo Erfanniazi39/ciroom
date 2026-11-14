@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { CACHE_DIR, DATA_DIR } from "../dev/paths.js";
+import { CACHE_DIR, DATA_DIR } from "../server/lib/paths.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 if (process.env.CIROOM_DATA_DIR) throw new Error("run without CIROOM_DATA_DIR (this copies the real data)");

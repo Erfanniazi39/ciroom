@@ -1,7 +1,7 @@
 // @ts-check
 /**
  * Builds the watch-party guest page ahead (dist/party/app.js + app.css), for the installed app, which has no
- * sources. Same settings dev/party.js uses when it builds the page on the fly in the test version.
+ * sources. Same settings server/lib/party.js uses when it builds the page on the fly in the test version.
  */
 import fs from "node:fs";
 import path from "node:path";

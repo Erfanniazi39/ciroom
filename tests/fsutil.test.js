@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { writeJsonAtomic } from "../dev/fsutil.js";
+import { writeJsonAtomic } from "../server/lib/fsutil.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ciroom-fsutil-"));
 

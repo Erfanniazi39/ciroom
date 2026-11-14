@@ -1,10 +1,10 @@
 // @ts-check
 /**
- * Dev-only mpv bridge (Vite plugin). Lets the preview play REAL files in mpv until the
- * Rust player module (Stage 3) replaces it. Same flow the Rust version will use:
+ * mpv bridge: plays the real files in mpv and serves all of CiRoom's routes. Runs inside the standalone
+ * server (server/index.js) and, in the test version, inside Vite. Flow:
  * spawn mpv → JSON IPC over a unix socket → observe properties → send commands.
  *
- * Endpoints (Vite dev server, localhost only):
+ * Endpoints (this PC only unless the phone remote or a party is on):
  *   POST /api/play          { path, startAt, subDelay?, dryRun? }
  *   GET  /api/player        → full snapshot (position, duration, pause, volume, speed, sub-delay, tracks…)
  *   POST /api/player/cmd    { cmd, value? }  cmd ∈ pause | seek | seek-rel | set | stop
@@ -52,7 +52,7 @@ const markerOpts = (m) => [
   ...(m?.credits ? [`--script-opts-append=marquee-osc-credits=${m.credits}`] : []),
 ];
 
-const MPV_CONFIG = fileURLToPath(new URL("../mpv", import.meta.url));
+const MPV_CONFIG = fileURLToPath(new URL("../../mpv", import.meta.url));
 
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 
@@ -64,7 +64,7 @@ const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid"
 function appVersion() {
   if (process.env.CIROOM_VERSION) return process.env.CIROOM_VERSION;
   try {
-    return JSON.parse(fs.readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")).version ?? "";
+    return JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")).version ?? "";
   } catch {
     return "";
   }
@@ -316,7 +316,7 @@ export function createCiRoom(mediaRoot) {
             return;
           }
         }
-        // Watch party: its own gate and allow-list (dev/party.js); guests never reach the rest of the app.
+        // Watch party: its own gate and allow-list (server/lib/party.js); guests never reach the rest of the app.
         if (party.owns(req.url)) {
           const pjson = (/** @type {number} */ code, /** @type {unknown} */ data) => {
             if (res.headersSent) return void res.end();
@@ -349,7 +349,7 @@ export function createCiRoom(mediaRoot) {
           return;
         }
         if (!onThisPc) {
-          // Other devices (the phone remote): off unless the user turned it on, then token-gated (dev/remote.js).
+          // Other devices (the phone remote): off unless the user turned it on, then token-gated (server/lib/remote.js).
           const refuse = remote.gate(req, peer);
           if (refuse) {
             res.statusCode = refuse;

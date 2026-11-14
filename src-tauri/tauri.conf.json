@@ -45,7 +45,6 @@
     "resources": {
       "../dist/": "dist/",
       "../server/": "server/",
-      "../dev/": "dev/",
       "../mpv/": "mpv/",
       "runtime/package.json": "package.json"
     },

@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Watch party (dev bridge, session 5). The host plays a title in CiRoom's page player; a guest opens a link
+ * Watch party. The host plays a title in CiRoom's page player; a guest opens a link
  * in their browser (reached over Tailscale, a private WireGuard network) and watches the same video streamed
  * from this PC, kept in sync, with a chat.
  *
@@ -39,7 +39,7 @@ const CHAT_KEEP = 100;
 export const TAILSCALE_IP = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./; // 100.64.0.0/10
 const PRIVATE_IP = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
 const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|virbr|vboxnet|vmnet|lo$|vethernet|virtualbox|vmware|loopback|bluetooth)/i;
-const SRC = fileURLToPath(new URL("../src", import.meta.url));
+const SRC = fileURLToPath(new URL("../../src", import.meta.url));
 /** The installed app has no sources: the guest page is built ahead (scripts/build-party.js → dist/party/). */
 const prebuilt = (/** @type {string} */ name) => (process.env.CIROOM_DIST ? path.join(process.env.CIROOM_DIST, "party", name) : null);
 

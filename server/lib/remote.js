@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Phone remote control (dev bridge, session 4). The phone opens CiRoom's /remote page over the home Wi-Fi,
+ * Phone remote control. The phone opens CiRoom's /remote page over the home Wi-Fi,
  * pairs once with a one-time PIN (shown as a QR code in Settings on the PC), and then controls what plays on the PC.
  *
  * Security model:

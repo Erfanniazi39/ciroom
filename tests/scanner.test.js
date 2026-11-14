@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseFolder } from "../dev/scanner.js";
+import { parseFolder } from "../server/lib/scanner.js";
 
 const cases = [
   ["Test 2020", "Test", 2020],

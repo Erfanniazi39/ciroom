@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * In-page playback for the watch page (dev bridge; Stage 3 ports this to Rust).
+ * In-page playback for the watch page.
  *
  * The webview can't play the library's .mkv files directly, so ffmpeg repackages them on the fly
  * as fragmented MP4:

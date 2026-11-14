@@ -1,0 +1,23 @@
+{
+  "_comment": "aliases: folder abbreviation (lowercase) -> real title. legacyIds: folder (or 'folder#collection') -> id the library used before the scanner existed. Progress, favorites and artwork are keyed by these ids: never change an existing one.",
+  "aliases": {
+    "himym": "How I Met Your Mother",
+    "hotdg": "House of the Dragon",
+    "hotd": "House of the Dragon",
+    "got": "Game of Thrones"
+  },
+  "legacyIds": {
+    "Movies/Zombieland/Zombieland 2009": "zombieland",
+    "Movies/Zombieland/Zombieland 2019": "zombieland-double-tap",
+    "Movies/Harry Potter/Harry Potter 2001": "harry-potter-1",
+    "Movies/Home Alone/Home Alone 1990": "home-alone",
+    "Movies/Zombieland#collection": "zombieland",
+    "Movies/Harry Potter#collection": "harry-potter",
+    "Movies/Home Alone#collection": "home-alone",
+    "Series/HIMYM": "himym",
+    "Series/HOTDG": "house-of-the-dragon",
+    "Series/A knight of the seven kingdoms": "knight-seven-kingdoms",
+    "Series/11.22.63 2016": "11-22-63",
+    "Series/Rick & Morty": "rick-and-morty"
+  }
+}

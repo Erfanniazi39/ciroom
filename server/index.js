@@ -1,21 +1,21 @@
 // @ts-check
 /**
  * CiRoom's standalone server: what the installed app runs (no Vite). Serves the built page (dist/) and every
- * CiRoom route from dev/mpv-bridge.js, with the same gates as the test version (phone remote off until paired,
+ * CiRoom route from server/lib/mpv-bridge.js, with the same gates as the test version (phone remote off until paired,
  * watch party off until switched on, mpv only from this PC).
  *
  *   node server/index.js
  *   CIROOM_PORT        port (default 1420)
  *   CIROOM_MEDIA_ROOT  folder holding Movies/ and Series/ (default: Settings → Library folder, else the folder above the app folder)
  *   CIROOM_DIST        built page folder (default: ../dist)
- *   CIROOM_DATA_DIR, CIROOM_CACHE_DIR, CIROOM_DEV: see dev/paths.js
+ *   CIROOM_DATA_DIR, CIROOM_CACHE_DIR, CIROOM_DEV: see server/lib/paths.js
  */
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createCiRoom } from "../dev/mpv-bridge.js";
-import { DATA_DIR, isMediaRoot, savedMediaRoot } from "../dev/paths.js";
+import { createCiRoom } from "./lib/mpv-bridge.js";
+import { DATA_DIR, isMediaRoot, savedMediaRoot } from "./lib/paths.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIROOM_PORT) || 1420;
@@ -23,7 +23,7 @@ const PORT = Number(process.env.CIROOM_PORT) || 1420;
 const MEDIA_ROOT = process.env.CIROOM_MEDIA_ROOT || savedMediaRoot() || path.resolve(here, "../..");
 if (!isMediaRoot(MEDIA_ROOT)) console.warn(`[ciroom] no Movies or Series folder in ${MEDIA_ROOT}: choose your library folder in Settings`);
 const DIST = path.resolve(process.env.CIROOM_DIST || path.join(here, "../dist"));
-process.env.CIROOM_DIST = DIST; // dev/party.js serves the prebuilt guest page from here
+process.env.CIROOM_DIST = DIST; // server/lib/party.js serves the prebuilt guest page from here
 
 const TYPES = /** @type {Record<string, string>} */ ({
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",

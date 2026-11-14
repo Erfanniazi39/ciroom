@@ -1,8 +1,8 @@
 // @ts-check
 /**
- * Skip intro / skip credits (dev bridge; Stage 3 ports this to Rust).
+ * Skip intro / skip credits.
  *
- * A background queue analyses the library season by season (dev/intro-worker.js, one season at a
+ * A background queue analyses the library season by season (server/lib/intro-worker.js, one season at a
  * time in a worker thread, ffmpeg at the lowest CPU/disk priority) and stores the result per video
  * file in CiRoom's database (table media_markers, keyed by the path inside the library folder + size + mtime, so
  * a replaced file is analysed again, and Linux and Windows share the results). Order: the season of whatever you open first, then series you've been watching,
@@ -35,7 +35,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
   const key = (/** @type {string} */ f) => path.relative(mediaRoot, f).split(path.sep).join("/");
   let db = /** @type {any} */ (null);
   /** @type {Promise<void> | null} */ let ready = null;
-  // Vite reloads this module when dev/*.js changes, in the same process: only the newest queue may run,
+  // Vite reloads this module when server/lib/*.js changes, in the same process: only the newest queue may run,
   // older ones stop at their next step. (Also: nothing starts during `vite build`; see start().)
   const G = /** @type {any} */ (globalThis);
   const generation = (G.__ciroomIntroGen = (G.__ciroomIntroGen ?? 0) + 1);

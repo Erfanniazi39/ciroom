@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Dev-only artwork store + TMDB client. Stage 4 moves this into the Rust `metadata` module.
+ * Artwork store + TMDB client.
  *
  * Images live in the app's own data dir (~/.local/share/marquee/artwork), NEVER next to media.
  * index.json maps item id → { poster?, backdrop?, source, tmdbId? }.
@@ -55,7 +55,7 @@ export async function tmdb(/** @type {string} */ pathAndQuery) {
 export function norm(/** @type {string} */ s) {
   return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").replace(/^(the|a|an) /, "").trim();
 }
-/** Token-overlap similarity, 0–1. Good enough for titles; Stage 4 adds Levenshtein. */
+/** Token-overlap similarity, 0–1. Good enough for titles. */
 export function similarity(/** @type {string} */ a, /** @type {string} */ b) {
   const A = new Set(norm(a).split(" ")), B = new Set(norm(b).split(" "));
   if (norm(a) === norm(b)) return 1;

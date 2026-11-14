@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Online subtitle search (dev bridge; the Rust port reproduces these routes).
+ * Online subtitle search.
  *
  *   GET  /api/subsearch/config                     → { hasKey }
  *   POST /api/subsearch/key        { key }         → { hasKey }   (validated with the service right away)

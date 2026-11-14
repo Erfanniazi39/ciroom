@@ -9,8 +9,8 @@ import path from "node:path";
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "subs-"));
 process.env.CIROOM_DATA_DIR = path.join(scratch, "data");
 process.env.CIROOM_CACHE_DIR = path.join(scratch, "cache");
-const { decodeSubtitle } = await import("../dev/subtitle-search.js");
-const { languageOf, subtitleLanguage, subtitlesFor } = await import("../dev/subtitles.js");
+const { decodeSubtitle } = await import("../server/lib/subtitle-search.js");
+const { languageOf, subtitleLanguage, subtitlesFor } = await import("../server/lib/subtitles.js");
 
 // Windows-1256 has the Arabic yeh (ي), not the Persian one (ی), so real old files use ي.
 const fa = "سلام، چطوري؟ من پارسي صحبت ميکنم و گوشي را برداشتم.";
