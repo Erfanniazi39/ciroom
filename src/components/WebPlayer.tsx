@@ -75,6 +75,10 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const hideTimer = useRef<number>();
   const lastSaved = useRef(startAt);
   const timeRef = useRef(startAt);
+  // Should the video be playing? True at the start and after any play; false once the user (or the party host) pauses.
+  // A seek fires `canplay` again, and that must not un-pause a paused video.
+  const wantPlay = useRef(true);
+  useEffect(() => { wantPlay.current = true; }, [path]); // a new file starts playing
 
   const duration = info?.duration || fallbackDuration;
   // `offset` is the source time of the current stream's time 0, measured by /api/seekpoint: stream copy can only
@@ -315,7 +319,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (!v) return;
     if (ended) { replay(); return; }
     if (v.paused) v.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true));
-    else { v.pause(); save(); }
+    else { wantPlay.current = false; v.pause(); save(); }
   }, [ended, save]);
 
   const seek = useCallback((abs: number) => {
@@ -370,7 +374,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     }),
     toggle: togglePlay,
     play: () => { const v = videoRef.current; if (v && v.paused) { if (ended) replay(); else v.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true)); } },
-    pause: () => { const v = videoRef.current; if (v && !v.paused) { v.pause(); save(); } },
+    pause: () => { const v = videoRef.current; wantPlay.current = false; if (v && !v.paused) { v.pause(); save(); } },
     seekTo: seek,
     setVolume,
     toggleMute: () => setMuted((m) => !m),
@@ -453,11 +457,11 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
         onDoubleClick={toggleFullscreen}
         onLoadedMetadata={() => { pending.current = null; }}
         onLoadedData={() => { const v = videoRef.current; if (v) { v.playbackRate = speed; v.volume = Math.min(volumePref, 100) / 100; } }}
-        onPlay={() => { setPlaying(true); setNeedsGesture(false); poke(); }}
+        onPlay={() => { wantPlay.current = true; setPlaying(true); setNeedsGesture(false); poke(); }}
         onPause={() => setPlaying(false)}
         onWaiting={() => { setWaiting(true); mseRef.current?.onWaiting(); }}
         onPlaying={() => setWaiting(false)}
-        onCanPlay={() => { setWaiting(false); videoRef.current?.play().catch(() => setNeedsGesture(true)); }}
+        onCanPlay={() => { setWaiting(false); if (wantPlay.current) videoRef.current?.play().catch(() => setNeedsGesture(true)); }}
         onTimeUpdate={onTimeUpdate}
         onProgress={updateBuffered}
         onEnded={() => {
