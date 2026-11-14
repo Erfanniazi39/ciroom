@@ -44,6 +44,7 @@ export class MseStream {
   private loading = false;
   private opened: Promise<void>;
   private dead = false;
+  private earlyEnd = -1; // where a stream last ended before the duration (a second end there = a real error)
 
   constructor(
     private video: HTMLVideoElement,
@@ -179,7 +180,17 @@ export class MseStream {
         const { done, value } = await reader.read();
         if (gen !== this.gen) { void reader.cancel(); return; }
         if (done) {
-          if (this.head >= this.duration - 2) { await this.idle(); try { this.ms.endOfStream(); } catch { /* already ended */ } }
+          if (this.head >= this.duration - 2) {
+            this.earlyEnd = -1;
+            await this.idle();
+            try { this.ms.endOfStream(); } catch { /* already ended */ }
+          } else if (this.earlyEnd >= 0 && Math.abs(this.head - this.earlyEnd) < 2) {
+            // Ended early twice at the same place: retrying would spin forever.
+            this.earlyEnd = -1;
+            this.onError("The video stops here and can't be streamed further. Try the full player.");
+          } else {
+            this.earlyEnd = this.head; // first time: the stall handler retries once
+          }
           break;
         }
         await this.append(value, gen);
