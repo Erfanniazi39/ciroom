@@ -6,6 +6,7 @@ import { PlayerHost } from "@/components/PlayerHost";
 import { SearchPalette } from "@/components/SearchPalette";
 import { MobileNav } from "@/components/MobileNav";
 import { Sidebar } from "@/components/Sidebar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { EmptyState, ErrorState } from "@/components/States";
 import { useRemoteLink } from "@/lib/remoteLink";
 import { usePartyLink } from "@/lib/partyLink";
@@ -79,6 +80,7 @@ export default function App() {
           <ErrorState message={error} onRetry={load} />
         ) : (
           <div key={location.pathname} className="animate-fade">
+            <ErrorBoundary>
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/movies" element={<Browse kind="movie" />} />
@@ -94,12 +96,13 @@ export default function App() {
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<EmptyState className="pt-[20vh]" icon={Compass} title="Nothing here" body="This page doesn't exist." />} />
             </Routes>
+            </ErrorBoundary>
           </div>
         )}
       </main>
       <MobileNav onSearch={openSearch} />
       <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <PlayerHost />
+      <ErrorBoundary fallback={() => null}><PlayerHost /></ErrorBoundary>
       <NowPlayingBar />
       <PartyPanel />
     </div>
