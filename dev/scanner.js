@@ -17,6 +17,7 @@
  *  - Series/<Name>/…/S01/EP02/video, "S01 E01" folders, else SxxEyy / 1x02 in the file name
  *  - Folder beats file name (a file named S01E01 inside EP02 is episode 2; reported as "misplaced").
  *  - Several videos for one title/episode → the largest wins; the rest are reported as duplicates.
+ *  - Movies/<Name>/<one folder>/<one video> → a single movie (wrapper folder), not a collection; loose videos in Movies/ → Needs attention.
  *  - Folders without a video (e.g. a download in progress) are reported, not shown.
  */
 import fs from "node:fs";
@@ -59,13 +60,34 @@ const hueOf = (/** @type {string} */ id) => { let h = 0; for (const c of id) h =
 const SMALL = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "vs"]);
 const titleCase = (/** @type {string} */ s) => s.split(" ").map((w, i) => (i > 0 && SMALL.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ");
 
-/** "Inception 2010" → { title: "Inception", year: 2010 }; "11.22.63 2016" keeps "11.22.63". */
-function parseFolder(/** @type {string} */ name) {
-  const m = name.match(/^(.*?)[\s._-]*[([]?((?:19|20)\d{2})[)\]]?$/);
-  let title = (m && m[1].trim() ? m[1] : name).trim();
+const RELEASE_WORD = /[\s._([-]+(?:2160p|1440p|1080[pi]|720p|576p|480p|4k|uhd|blu-?ray|bdrip|brrip|bd-?remux|remux|web-?dl|web-?rip|webrip|hdtv|hdrip|dvdrip|dvdscr|x\.?26[45]|h\.?26[45]|hevc|avc|10bit|hdr10?\+?|dolby\.?vision|yify|yts|rarbg|extended|unrated|imax|proper|repack)(?![a-z0-9])/i;
+const KEEP_BRACKET = /^[([](?:US|UK|AU|CA|NZ)[)\]]$/i;
+
+/**
+ * Folder name → { title, year }.
+ *   "Inception 2010" → Inception, 2010          "Inception (2010) [1080p]" → Inception, 2010
+ *   "Movie.Name.2010.1080p.BluRay.x264-GRP" → Movie Name, 2010      "11.22.63 2016" → 11.22.63, 2016
+ * The title is cut at the first year (a bracketed year wins), then at the first release word; [..] and (..)
+ * groups are dropped (except (US)/(UK)…). "11.22.63" is never a year.
+ */
+export function parseFolder(/** @type {string} */ name) {
+  let title = name, year;
+  const YEAR = /(^|[\s._([-])([([]?)((?:19|20)\d{2})([)\]]?)(?=$|[\s._)\]-])/g;
+  /** @type {{ at: number, year: number, bracketed: boolean }[]} */ const found = [];
+  for (const m of name.matchAll(YEAR)) {
+    const at = m.index + m[1].length; // start of the bracket or the digits
+    if (!name.slice(0, at).replace(/[\s._([-]+$/, "").trim()) continue; // a name that IS a year ("2012") keeps it
+    found.push({ at, year: Number(m[3]), bracketed: !!m[2] && !!m[4] });
+  }
+  const hit = found.find((f) => f.bracketed) ?? found[0];
+  if (hit) { title = name.slice(0, hit.at); year = hit.year; }
+  const rw = title.search(RELEASE_WORD);
+  if (rw > 0) title = title.slice(0, rw);
+  title = title.replace(/\s*[([][^)\]]*[)\]]/g, (g) => (KEEP_BRACKET.test(g.trim()) ? g : ""));
+  title = title.replace(/[\s._-]+$/, "").replace(/^[\s._-]+/, "");
+  if (!title) { title = name.trim(); year = undefined; }
   if (!/\s/.test(title) && /[._]/.test(title) && !/^[\d.]+$/.test(title)) title = title.replace(/[._]+/g, " "); // "The.Office" → "The Office"; keep "11.22.63"
-  title = title.replace(/\s+/g, " ");
-  const year = m && m[1].trim() ? Number(m[2]) : undefined;
+  title = title.replace(/\s+/g, " ").trim();
   const alias = ALIASES[title.toLowerCase()];
   if (alias) title = alias;
   else if (title.split(" ").slice(1).every((w) => w === w.toLowerCase())) title = titleCase(title.charAt(0).toLowerCase() + title.slice(1)); // "A knight of the…"
@@ -163,6 +185,11 @@ export function scannerRoutes(mediaRoot) {
         art: { hue: hueOf(id) }, file: { path: main.abs, sizeBytes: main.size, subtitles: [], status: "present" },
       };
     };
+    // Loose video files directly in Movies/: not added (no folder = no reliable title), but reported.
+    try {
+      for (const e of fs.readdirSync(moviesDir, { withFileTypes: true }))
+        if (e.isFile() && VIDEO.test(e.name) && !/sample/i.test(e.name)) note("loose_video", `Movies/${e.name}`, "Video not in its own folder. Put it in a folder named “Title Year” and press Scan now.");
+    } catch { /* no Movies folder */ }
     for (const name of subdirs(moviesDir)) {
       const abs = path.join(moviesDir, name), rel = `Movies/${name}`;
       zips(abs, rel);
@@ -170,6 +197,14 @@ export function scannerRoutes(mediaRoot) {
       if (direct.length) { const m = makeMovie(abs, rel, name); if (m) movies.push(m); continue; }
       const subs = subdirs(abs);
       if (!subs.length) { note("empty", rel, "No video file in this folder yet."); continue; }
+      // One sub-folder holding one video is a single movie in a wrapper folder, not a "collection" (unless this
+      // folder was already a collection: its ids, and the user's progress, must not change).
+      if (subs.length === 1 && !ids[`${rel}#collection`] && !LEGACY_IDS[`${rel}#collection`] && listVideos(path.join(abs, subs[0]), 2).length === 1) {
+        const inner = parseFolder(subs[0]), outer = parseFolder(name);
+        const m = makeMovie(path.join(abs, subs[0]), rel, !inner.year || outer.year ? name : subs[0]);
+        if (m) movies.push(m);
+        continue;
+      }
       const collectionId = idFor(`${rel}#collection`, `${name} collection`);
       const members = subs.map((s) => makeMovie(path.join(abs, s), `${rel}/${s}`, s, collectionId)).filter(Boolean);
       if (!members.length) continue;

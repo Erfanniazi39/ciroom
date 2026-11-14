@@ -126,7 +126,7 @@ export interface LibraryRoot {
   lastScanAt?: string;
 }
 
-export type ReviewKind = "empty" | "unidentified" | "low_confidence" | "nested" | "misplaced" | "duplicate" | "missing" | "zipped_subtitle";
+export type ReviewKind = "empty" | "unidentified" | "low_confidence" | "nested" | "misplaced" | "duplicate" | "missing" | "zipped_subtitle" | "loose_video";
 
 export interface ReviewItem {
   id: string;

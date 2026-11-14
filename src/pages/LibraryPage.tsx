@@ -20,12 +20,13 @@ const KIND_META: Record<ReviewKind, { label: string; icon: LucideIcon; tone: str
   misplaced: { label: "File name doesn't match folder", icon: FolderTree, tone: "text-accent" },
   duplicate: { label: "Duplicate", icon: Copy, tone: "text-fg-muted" },
   missing: { label: "Missing file", icon: AlertTriangle, tone: "text-danger" },
+  loose_video: { label: "Video not in a folder", icon: FileQuestion, tone: "text-accent" },
   zipped_subtitle: { label: "Zipped subtitle", icon: FileArchive, tone: "text-fg-muted" },
 };
 
 type Tab = "identify" | "missing" | "other";
 const TAB_KINDS: Record<Tab, ReviewKind[]> = {
-  identify: ["empty", "unidentified", "low_confidence", "nested", "misplaced"],
+  identify: ["empty", "unidentified", "low_confidence", "nested", "misplaced", "loose_video"],
   missing: ["missing", "duplicate"],
   other: ["zipped_subtitle"],
 };
