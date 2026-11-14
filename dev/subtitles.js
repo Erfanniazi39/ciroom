@@ -14,6 +14,12 @@ import { foundSubtitles } from "./subtitle-search.js";
 import { CACHE_DIR } from "./paths.js";
 
 const SUB = /\.(srt|ass|ssa|vtt|sub)$/i;
+const VIDEO = /\.(mkv|mp4|m4v|avi|mov|wmv|webm|ts|mpg|mpeg)$/i;
+/** "S01E02" / "1x02" → "1:2" (numbers, so S1E2 and S01E02 match), or null. */
+const episodeKey = (/** @type {string} */ n) => {
+  const m = /s(\d{1,2})[ ._-]?e(\d{1,3})/i.exec(n) ?? /\b(\d{1,2})x(\d{2,3})\b/i.exec(n);
+  return m ? `${+m[1]}:${+m[2]}` : null;
+};
 const CACHE = path.join(CACHE_DIR, "subs");
 const TIME = /^\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}/;
 
@@ -25,6 +31,20 @@ export function subtitlesFor(videoPath) {
     if (!fs.existsSync(d)) continue;
     for (const name of fs.readdirSync(d)) if (SUB.test(name)) candidates.push(path.join(d, name));
   }
+  let local = candidates.splice(0);
+  // A flat season folder holds every episode's subtitles: keep this episode's (same SxxEyy or same name), unless none match.
+  let videos = 0;
+  try { videos = fs.readdirSync(dir).filter((n) => VIDEO.test(n)).length; } catch { /* unreadable */ }
+  if (videos > 1) {
+    const key = episodeKey(path.basename(videoPath));
+    const stemLc = path.parse(videoPath).name.toLowerCase();
+    const mine = local.filter((p) => {
+      const n = path.basename(p).toLowerCase();
+      return n.includes(stemLc) || (key !== null && episodeKey(n) === key) || (key !== null && episodeKey(path.basename(path.dirname(p))) === key);
+    });
+    if (mine.length) local = mine;
+  }
+  candidates.push(...local);
   candidates.push(...foundSubtitles(videoPath)); // subtitles found online (stored in CiRoom's data folder, never next to the video)
   const stem = path.parse(videoPath).name.toLowerCase();
   const online = new Set(foundSubtitles(videoPath));

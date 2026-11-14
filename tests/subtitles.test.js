@@ -72,3 +72,18 @@ test("subtitlesFor: a well-formed SRT is used as it is", () => {
   const sub = path.join(dir, "Ok 2021.en.srt"); fs.writeFileSync(sub, "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
   assert.deepEqual(subtitlesFor(video), [sub]);
 });
+
+test("subtitlesFor: a flat season folder gives each episode only its own subtitles", () => {
+  const dir = path.join(scratch, "Series", "Flat", "Season 1"); fs.mkdirSync(path.join(dir, "Subs"), { recursive: true });
+  const srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n";
+  for (const n of ["Show.S01E01.mkv", "Show.S01E02.mkv", "Lonely.mkv"]) fs.writeFileSync(path.join(dir, n), "x");
+  const files = ["Show.S01E01.en.srt", "Show.S01E02.en.srt", "Show.S01E02.fa.srt", "Subs/show 1x01.fa.srt", "Lonely.en.srt", "other.srt"];
+  for (const n of files) fs.writeFileSync(path.join(dir, n), srt);
+  const names = (/** @type {string} */ v) => subtitlesFor(path.join(dir, v)).map((p) => path.relative(dir, p)).sort();
+  assert.deepEqual(names("Show.S01E01.mkv"), ["Show.S01E01.en.srt", "Subs/show 1x01.fa.srt"]);
+  assert.deepEqual(names("Show.S01E02.mkv"), ["Show.S01E02.en.srt", "Show.S01E02.fa.srt"]);
+  assert.deepEqual(names("Lonely.mkv"), ["Lonely.en.srt"]); // matched by name
+  // no match at all: fall back to every subtitle
+  fs.writeFileSync(path.join(dir, "Show.S01E03.mkv"), "x");
+  assert.equal(names("Show.S01E03.mkv").length, files.length);
+});
