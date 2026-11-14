@@ -150,7 +150,7 @@ export function languageOf(/** @type {string} */ name) {
   const n = name.replace(/\.(srt|ass|ssa|vtt)$/i, "");
   if (/\b(eng|english|en)\b/i.test(n)) return "English";
   if (/\b(per|persian|farsi|fa)\b/i.test(n)) return "Persian";
-  const table = /** @type {Record<string,string>} */ ({ ar: "Arabic", tr: "Turkish", fr: "French", es: "Spanish", de: "German", ru: "Russian", it: "Italian", ja: "Japanese", ko: "Korean", zh: "Chinese", nl: "Dutch", pl: "Polish" });
-  const m = n.match(/\.(ar|tr|fr|es|de|ru|it|ja|ko|zh|nl|pl)(?:\.\d+)?$/i); // not "hi": that's hearing-impaired (SDH), not Hindi
+  const table = /** @type {Record<string,string>} */ ({ ar: "Arabic", tr: "Turkish", fr: "French", es: "Spanish", de: "German", ru: "Russian", it: "Italian", ja: "Japanese", ko: "Korean", zh: "Chinese", nl: "Dutch", pl: "Polish", hin: "Hindi" });
+  const m = n.match(/\.(ar|tr|fr|es|de|ru|it|ja|ko|zh|nl|pl|hin)(?:\.\d+)?$/i); // not "hi": that's hearing-impaired (SDH), not Hindi
   return m ? table[m[1].toLowerCase()] : null;
 }

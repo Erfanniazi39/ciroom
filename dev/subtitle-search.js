@@ -201,8 +201,10 @@ export function subtitleSearchRoutes(resolveVideo) {
             const dir = foundDirFor(file);
             fs.mkdirSync(dir, { recursive: true });
             // "<release>.<lang>.srt": the language code is what the track label is built from.
-            let name = `${slug(String(b.release || pick))}.${(lang || "xx").toLowerCase()}${ext}`;
-            for (let i = 2; fs.existsSync(path.join(dir, name)); i++) name = `${slug(String(b.release || pick))}.${(lang || "xx").toLowerCase()}.${i}${ext}`;
+            // Hindi is saved as ".hin": a bare ".hi" means hearing-impaired (SDH) to players and to languageOf().
+            const tag = lang === "HI" ? "hin" : (lang || "xx").toLowerCase();
+            let name = `${slug(String(b.release || pick))}.${tag}${ext}`;
+            for (let i = 2; fs.existsSync(path.join(dir, name)); i++) name = `${slug(String(b.release || pick))}.${tag}.${i}${ext}`;
             fs.writeFileSync(path.join(dir, name), text);
             json(200, { file: name });
           }

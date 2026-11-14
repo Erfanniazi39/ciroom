@@ -40,6 +40,8 @@ test("languageOf: names; .hi means hearing-impaired, not Hindi", () => {
   assert.equal(languageOf("Show.Persian.srt"), "Persian");
   assert.equal(languageOf("Show.fr.srt"), "French");
   assert.equal(languageOf("Show.S01E01.hi.srt"), null);
+  assert.equal(languageOf("Show.S01E01.hin.srt"), "Hindi");
+  assert.equal(languageOf("Show.S01E01.hin.2.srt"), "Hindi");
   assert.equal(languageOf("Show.srt"), null);
 });
 
