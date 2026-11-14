@@ -109,8 +109,18 @@ function audioIndex(/** @type {any} */ info, /** @type {URL} */ u) {
   return Number.isFinite(n) && n > 0 && n < (info.audioTracks?.length ?? 0) ? n : 0;
 }
 
+/** Set in a Map, dropping the oldest entries past `max` so a long session can't grow it forever. */
+function cacheSet(/** @type {Map<string, any>} */ map, /** @type {string} */ key, /** @type {any} */ value, max = 300) {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > max) map.delete(map.keys().next().value);
+}
+
 async function probe(/** @type {string} */ file) {
-  if (probeCache.has(file)) { const c = probeCache.get(file); return { ...c, subtitles: subtitleList(file, c.embedded) }; }
+  // Keyed by path + size + mtime: a replaced or re-encoded file is probed again.
+  let key = file;
+  try { const st = fs.statSync(file); key = `${file}|${st.size}|${st.mtimeMs}`; } catch { /* ffprobe below reports it */ }
+  if (probeCache.has(key)) { const c = probeCache.get(key); return { ...c, subtitles: subtitleList(file, c.embedded) }; }
   const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file], { maxBuffer: 8 << 20 });
   const info = JSON.parse(stdout);
   const v = info.streams.find((/** @type {any} */ s) => s.codec_type === "video" && !s.disposition?.attached_pic);
@@ -135,7 +145,7 @@ async function probe(/** @type {string} */ file) {
     codecs: { video: v && v.codec_name === "h264" && /^(yuv420p|yuvj420p)$/.test(v.pix_fmt ?? "") ? avc1(v.profile, v.level) : "avc1.640028" },
     embedded: embeddedSubs(info.streams),
   };
-  probeCache.set(file, result);
+  cacheSet(probeCache, key, result);
   return { ...result, subtitles: subtitleList(file, result.embedded) };
 }
 
@@ -317,7 +327,7 @@ export function streamRoutes(resolveVideo) {
           if (!vtt) {
             const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", file, "-map", `0:s:${n}`, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20, timeout: 120_000 });
             vtt = stdout;
-            vttCache.set(key, vtt);
+            cacheSet(vttCache, key, vtt);
           }
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/vtt; charset=utf-8");
@@ -347,7 +357,7 @@ export function streamRoutes(resolveVideo) {
             fs.writeFileSync(copy, text);
             const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-i", copy, "-f", "webvtt", "pipe:1"], { maxBuffer: 32 << 20 });
             vtt = stdout;
-            vttCache.set(key, vtt);
+            cacheSet(vttCache, key, vtt);
           }
         } catch (e) {
           console.error("[stream] subtitle:", e instanceof Error ? e.message : e);
