@@ -38,6 +38,7 @@ docs/CiRoom-Report.md
 docs/*.png
 docs/CiRoom-Audit.md
 docs/to-sonnet/
+docs/to-opus/
 graphify-out/
 src-tauri/.cargo/
 
