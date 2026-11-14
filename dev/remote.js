@@ -35,7 +35,7 @@ const PHONE_POST = [/^\/api\/remote\/cmd$/];
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 
 /** @param {any} mpv adapter: { running(): boolean, snapshot(): any, command(c: any): void } */
-export function remoteRoutes(mpv, getPort = () => 1420) {
+export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
   /** @type {{ enabled: boolean, devices: { id: string, hash: string, name: string, created: number, lastSeen: number }[] }} */
   let cfg = { enabled: false, devices: [] };
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* first run */ }
@@ -114,6 +114,8 @@ export function remoteRoutes(mpv, getPort = () => 1420) {
   };
 
   return {
+    /** True while the phone remote is switched on (the server then listens for other devices). */
+    isEnabled: () => !!cfg.enabled,
     /**
      * Gate for requests from other devices (this PC is never gated). Returns an HTTP status to refuse with, or 0 to continue.
      * @param {import("node:http").IncomingMessage} req @param {string} ip
@@ -222,6 +224,7 @@ export function remoteRoutes(mpv, getPort = () => 1420) {
         cfg.enabled = !!on;
         if (!cfg.enabled) { pairing = null; for (const r of phones) r.end(); phones.clear(); ensureTick(); }
         save();
+        onToggle();
         json(200, { ok: true });
         return true;
       }

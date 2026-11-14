@@ -225,7 +225,9 @@ export function createCiRoom(mediaRoot) {
     else send(["seek", Math.max(0, (Number(st.props.duration) || 0) - 1), "absolute"]);
     return true;
   }
-  const remote = remoteRoutes({ running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip }, () => server_port);
+  /** @type {(() => void)[]} called when the phone remote or the watch party is switched on/off */
+  const netListeners = [];
+  const remote = remoteRoutes({ running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip }, () => server_port, () => netListeners.forEach((f) => f()));
 
   const art = artworkRoutes();
   const userdb = userdbRoutes();
@@ -233,7 +235,7 @@ export function createCiRoom(mediaRoot) {
   const meta = metadataRoutes();
   const scanner = scannerRoutes(rootAbs);
   const subSearch = subtitleSearchRoutes(resolveVideo);
-  const party = partyRoutes({ resolveVideo, stream, getPort: () => server_port });
+  const party = partyRoutes({ resolveVideo, stream, getPort: () => server_port, onToggle: () => netListeners.forEach((f) => f()) });
 
   /**
    * DNS-rebinding guard: a web page on another site could point its own domain name at 127.0.0.1 and then read
@@ -251,6 +253,10 @@ export function createCiRoom(mediaRoot) {
     /** Starts the background work (skip-intro analysis). Never called by `vite build`. */
     start: () => { intro.start(); },
     setPort: (/** @type {number} */ p) => { server_port = p; },
+    /** True when other devices may need to reach this server (phone remote or watch party on). */
+    wantsNetwork: () => remote.isEnabled() || party.isEnabled(),
+    /** Calls `fn` whenever the phone remote or the watch party is switched on or off. */
+    onNetworkChange: (/** @type {() => void} */ fn) => { netListeners.push(fn); },
     /** WebSocket upgrades (Vite's live reload only): nothing on another device needs them. */
     upgrade: (/** @type {import("node:http").IncomingMessage} */ req, /** @type {import("node:stream").Duplex} */ socket) => {
       const ip = String(req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");

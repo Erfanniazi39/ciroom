@@ -57,9 +57,9 @@ const PAGE = `<!doctype html>
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /**
- * @param {{ resolveVideo: (p: string) => string, stream: { handle: Function }, getPort: () => number }} deps
+ * @param {{ resolveVideo: (p: string) => string, stream: { handle: Function }, getPort: () => number, onToggle?: () => void }} deps
  */
-export function partyRoutes({ resolveVideo, stream, getPort }) {
+export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {} }) {
   /** @type {{ enabled: boolean, hostName: string, guestControl: boolean, guests: { id: string, hash: string, name: string, created: number, lastSeen: number, expires: number }[] }} */
   let cfg = { enabled: false, hostName: "Host", guestControl: true, guests: [] };
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* first run */ }
@@ -194,6 +194,8 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
   };
 
   return {
+    /** True while the watch party is switched on (the server then listens for other devices). */
+    isEnabled: () => !!cfg.enabled,
     /** True for every path this module answers (the guest page and the party API). */
     owns(/** @type {string | undefined} */ url) {
       const u = url ?? "";
@@ -236,6 +238,7 @@ export function partyRoutes({ resolveVideo, stream, getPort }) {
           }
           save();
           send(hosts, { type: "hello", enabled: cfg.enabled, guests: guestList(), chat });
+          onToggle();
           json(200, { ok: true });
           return true;
         }

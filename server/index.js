@@ -58,15 +58,33 @@ const app = createCiRoom(MEDIA_ROOT);
 const server = http.createServer((req, res) => {
   app.handle(req, res, () => serveStatic(req, res)).catch(() => { if (!res.headersSent) { res.statusCode = 500; res.end(); } });
 });
+/** @type {Set<import("node:net").Socket>} */
+const conns = new Set();
+server.on("connection", (c) => { conns.add(c); c.on("close", () => conns.delete(c)); });
 server.on("upgrade", (req, socket) => { app.upgrade(req, socket); if (!socket.destroyed) socket.destroy(); }); // no WebSockets outside dev
 server.on("error", (e) => {
   console.error(/** @type {any} */ (e).code === "EADDRINUSE" ? `[ciroom] port ${PORT} is already in use (is CiRoom already running?)` : e);
   process.exit(1);
 });
-server.listen(PORT, "0.0.0.0", () => {
+// Only this PC can reach the server, unless the phone remote or the watch party is on (then other devices can too).
+const listenAll = process.env.CIROOM_LISTEN_ALL === "1"; // tests: pretend other devices are allowed in
+const wantHost = () => (listenAll || app.wantsNetwork() ? "0.0.0.0" : "127.0.0.1");
+let host = wantHost();
+server.listen(PORT, host, () => {
   app.setPort(PORT);
   app.start();
-  console.log(`[ciroom] ready on http://127.0.0.1:${PORT}  (media: ${MEDIA_ROOT}, data: ${DATA_DIR})`);
+  console.log(`[ciroom] ready on http://127.0.0.1:${PORT}  (listening on ${host}; media: ${MEDIA_ROOT}, data: ${DATA_DIR})`);
+});
+// Re-listen when the phone remote or the party is switched on/off. close() stops accepting new connections at once;
+// open ones (the page, event streams) stay up, and the switch-off handlers already end the other devices' streams.
+app.onNetworkChange(() => {
+  const want = wantHost();
+  if (want === host) return;
+  host = want;
+  server.close();
+  server.listen(PORT, host, () => console.log(`[ciroom] now listening on ${host}:${PORT}`));
+  // Switching off: drop connections from other devices that are still open (keep-alive).
+  if (host === "127.0.0.1") for (const c of conns) if (!/^(127\.|::1$|::ffff:127\.)/.test(c.remoteAddress ?? "")) c.destroy();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { server.close(); process.exit(0); });
 // Started by the installed app: quit when the app ends (its end of this pipe closes, even after a crash).

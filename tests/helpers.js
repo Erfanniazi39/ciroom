@@ -22,7 +22,7 @@ export const lanIp = () => {
   return null;
 };
 
-/** @param {{ library?: object, files?: string[] }} [opts] files: relative paths (under the scratch media root) to create empty */
+/** @param {{ library?: object, files?: string[], loopbackOnly?: boolean }} [opts] loopbackOnly: don't force listening on all addresses; files: relative paths (under the scratch media root) to create empty */
 export async function startServer(opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ciroom-test-"));
   const media = path.join(dir, "lib");
@@ -34,7 +34,7 @@ export async function startServer(opts = {}) {
   const port = await freePort();
   const child = spawn(process.execPath, [path.join(root, "server/index.js")], {
     cwd: root,
-    env: { ...process.env, CIROOM_PORT: String(port), CIROOM_DEV: "1", CIROOM_MEDIA_ROOT: media, CIROOM_DATA_DIR: data, CIROOM_CACHE_DIR: path.join(dir, "cache"), CIROOM_DIST: path.join(root, "dist") },
+    env: { ...process.env, CIROOM_PORT: String(port), CIROOM_DEV: "1", ...(opts.loopbackOnly ? {} : { CIROOM_LISTEN_ALL: "1" }), CIROOM_MEDIA_ROOT: media, CIROOM_DATA_DIR: data, CIROOM_CACHE_DIR: path.join(dir, "cache"), CIROOM_DIST: path.join(root, "dist") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
