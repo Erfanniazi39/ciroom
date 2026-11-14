@@ -190,7 +190,7 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
       probe = p;
       const mime = streamMime(p);
       if (!MseStream.supported(mime)) { showOverlay("This browser can't play this video. Try Chrome or Edge."); return; }
-      mse = new MseStream(video, "", p.duration, mime, true, (m) => showOverlay(m.replace(/ or use the full player\.?|Try the full player\.?/g, "")), source(key));
+      mse = new MseStream(video, "", p.duration, mime, true, 0, (m) => showOverlay(m.replace(/ or use the full player\.?|Try the full player\.?/g, "")), source(key));
       await mse.start(target());
       lastSyncSeek = Date.now();
       // Subtitles: remember the language she picked last time.

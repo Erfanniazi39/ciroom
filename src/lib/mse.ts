@@ -24,8 +24,8 @@ export function streamMime(info: ProbeInfo): string {
 
 /** Where the chunks come from: the PC's own API, or the watch-party guest API (src/party/guest.ts). */
 export interface StreamSource {
-  seekPoint: (path: string, t: number) => Promise<number>;
-  streamUrl: (path: string, t: number, level?: boolean) => string;
+  seekPoint: (path: string, t: number, audio?: number) => Promise<number>;
+  streamUrl: (path: string, t: number, level?: boolean, audio?: number) => string;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -51,6 +51,7 @@ export class MseStream {
     private duration: number,
     mime: string,
     private level: boolean,
+    private audio: number,
     private onError: (message: string) => void,
     private api: StreamSource = streamApi,
   ) {
@@ -87,6 +88,13 @@ export class MseStream {
   setLevel(on: boolean) {
     if (on === this.level) return;
     this.level = on;
+    void this.reloadFrom(this.video.currentTime);
+  }
+
+  /** Another audio track was chosen: reload from the current position (like a far seek). */
+  setAudio(n: number) {
+    if (n === this.audio) return;
+    this.audio = n;
     void this.reloadFrom(this.video.currentTime);
   }
 
@@ -151,7 +159,7 @@ export class MseStream {
     const sb = this.sb;
     if (!sb || this.dead || gen !== this.gen) return;
     t = Math.round(t * 1000) / 1000; // the same value for /api/seekpoint and /api/stream
-    const origin = await this.api.seekPoint(this.path, t);
+    const origin = await this.api.seekPoint(this.path, t, this.audio);
     if (gen !== this.gen) return;
     await this.idle();
     if (gen !== this.gen) return;
@@ -160,7 +168,7 @@ export class MseStream {
     this.head = origin;
     this.loading = true;
     try {
-      const r = await fetch(this.api.streamUrl(this.path, t, this.level), { signal: ctrl.signal });
+      const r = await fetch(this.api.streamUrl(this.path, t, this.level, this.audio), { signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
       const reader = r.body.getReader();
       let appended = 0;

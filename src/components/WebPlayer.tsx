@@ -66,7 +66,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const [speed, setSpeed] = useState(1);
   const [realFs, setFullscreen] = useState(false); // the browser's real fullscreen
   const [controls, setControls] = useState(true);
-  const [menu, setMenu] = useState<null | "main" | "subs" | "delay" | "speed">(null);
+  const [menu, setMenu] = useState<null | "main" | "subs" | "audio" | "delay" | "speed">(null);
   const [subIndex, setSubIndex] = useState(-1);
   const [cues, setCues] = useState<Cue[]>([]);
   const [cueText, setCueText] = useState("");
@@ -93,7 +93,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const levelling = useUser((s) => s.levelling);
   const setLevelling = useUser((s) => s.setLevelling);
   const [levelKey, setLevelKey] = useState(levelling); // the levelling setting the current stream uses
-  const src = useMemo(() => (ready ? streamApi.streamUrl(path, streamT, levelKey) : undefined), [ready, path, streamT, levelKey]);
+  const [audioIdx, setAudioIdx] = useState(0); // which audio stream of the file is playing (`&a=`)
+  const src = useMemo(() => (ready ? streamApi.streamUrl(path, streamT, levelKey, audioIdx) : undefined), [ready, path, streamT, levelKey, audioIdx]);
 
   /** (Re)start the stream so that playback lands exactly on `target`. */
   const restartAt = useCallback((target: number, alsoApply?: () => void) => {
@@ -102,7 +103,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     pending.current = target;
     videoRef.current?.pause();
     setWaiting(true);
-    streamApi.seekPoint(path, target).then((start) => {
+    streamApi.seekPoint(path, target, audioIdx).then((start) => {
       if (seq !== seekSeq.current) return; // a newer click won
       alsoApply?.(); // e.g. a new levelling setting, so the stream reloads once, at the right place
       setBufferedEnd(start);
@@ -110,7 +111,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       setStreamT(target);
       setReady(true);
     });
-  }, [path, ready]);
+  }, [path, ready, audioIdx]);
 
   // Playback engine: chunked (MediaSource, src/lib/mse.ts) when supported: instant jumps inside what's
   // loaded, exact landing elsewhere. Otherwise the plain fMP4 pipe above (every jump restarts the stream).
@@ -125,7 +126,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       setMode("mse");
       setOffset(0); // the MediaSource timeline IS the file's timeline
       pending.current = null;
-      const m = new MseStream(v, path, info.duration, mime, levelKey, setError);
+      const m = new MseStream(v, path, info.duration, mime, levelKey, audioIdx, setError);
       mseRef.current = m;
       void m.start(startAt);
       return () => { m.destroy(); mseRef.current = null; };
@@ -138,7 +139,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   useEffect(() => {
     let alive = true;
     streamApi.probe(path).then(
-      (p) => { if (!alive) return; setInfo(p); setSubList(p.subtitles); setSubIndex(startSubtitle(p.subtitles, useUser.getState().subPrefs[prefKey])); },
+      (p) => { if (!alive) return; setAudioIdx(startAudio(p.audioTracks ?? [], useUser.getState().audioPrefs[prefKey])); setInfo(p); setSubList(p.subtitles); setSubIndex(startSubtitle(p.subtitles, useUser.getState().subPrefs[prefKey])); },
       (e) => alive && setError(e instanceof Error ? e.message : "Could not read this video."),
     );
     return () => { alive = false; };
@@ -600,6 +601,15 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
           page={menu}
           setPage={setMenu}
           subtitles={subList}
+          audioTracks={info?.audioTracks ?? []}
+          audioIndex={audioIdx}
+          setAudioIndex={(i) => {
+            // Audio comes from the server: restart the stream where we are with the chosen track, and remember it.
+            const t = info?.audioTracks?.find((a) => a.index === i);
+            if (t?.language) useUser.getState().setAudioPref(prefKey, t.language);
+            if (mseRef.current) { setAudioIdx(i); mseRef.current.setAudio(i); }
+            else restartAt(timeRef.current, () => setAudioIdx(i));
+          }}
           subError={subError}
           onFind={find ? () => { setMenu(null); setFinder(true); } : undefined}
           subIndex={subIndex}
@@ -708,10 +718,31 @@ function Volume({ volume, muted, onVolume, onMute }: { volume: number; muted: bo
   );
 }
 
+type AudioTrack = NonNullable<ProbeInfo["audioTracks"]>[number];
+
+/** Which audio stream to start with: the saved language for this title, else English (like mpv), else the first. */
+function startAudio(tracks: AudioTrack[], pref: string | undefined): number {
+  const by = (codes: string[]) => tracks.find((t) => t.language && codes.includes(t.language))?.index;
+  return (pref ? by([pref.toLowerCase()]) : undefined) ?? by(["en", "eng"]) ?? 0;
+}
+
+function audioLabel(t: AudioTrack | undefined): string {
+  if (!t) return "Default";
+  let lang: string | null = null;
+  if (t.language) { try { lang = new Intl.DisplayNames(undefined, { type: "language" }).of(t.language) ?? t.language; } catch { lang = t.language; } }
+  const ch = t.channels === 6 ? "5.1" : t.channels === 8 ? "7.1" : t.channels === 1 ? "mono" : t.channels === 2 ? "stereo" : "";
+  const name = t.title || lang || `Track ${t.index + 1}`;
+  const extra = [t.codec.toUpperCase(), ch].filter(Boolean).join(" ");
+  return t.title && lang && !t.title.toLowerCase().includes(lang.toLowerCase()) ? `${lang} · ${t.title}` : extra ? `${name} · ${extra}` : name;
+}
+
 function SettingsPanel(p: {
-  page: "main" | "subs" | "delay" | "speed";
-  setPage: (pg: null | "main" | "subs" | "delay" | "speed") => void;
+  page: "main" | "subs" | "audio" | "delay" | "speed";
+  setPage: (pg: null | "main" | "subs" | "audio" | "delay" | "speed") => void;
   subtitles: ProbeInfo["subtitles"];
+  audioTracks: NonNullable<ProbeInfo["audioTracks"]>;
+  audioIndex: number;
+  setAudioIndex: (i: number) => void;
   subError?: boolean;
   onFind?: () => void;
   subIndex: number;
@@ -755,6 +786,7 @@ function SettingsPanel(p: {
         <>
           <Header title="Settings" />
           <Row icon={<Captions size={18} />} label="Subtitles" value={subLabel} onClick={() => p.setPage("subs")} />
+          {p.audioTracks.length > 1 && <Row icon={<AudioLines size={18} />} label="Audio" value={audioLabel(p.audioTracks[p.audioIndex] ?? p.audioTracks[0])} onClick={() => p.setPage("audio")} />}
           <Row icon={<Timer size={18} />} label="Subtitle timing" value={fmtDelay(p.delay)} onClick={() => p.setPage("delay")} />
           <Row icon={<Gauge size={18} />} label="Playback speed" value={p.speed === 1 ? "Normal" : `${p.speed}×`} onClick={() => p.setPage("speed")} />
           <button onClick={() => p.setLevelling(!p.levelling)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-white transition hover:bg-white/10"
@@ -779,6 +811,13 @@ function SettingsPanel(p: {
           {p.subtitles.length > 0 && p.rememberNote && <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">{p.rememberNote}</p>}
           {p.subtitles.length === 0 && <p className="px-3 py-2 text-[13px] text-white/55">No text subtitles for this video. Picture subtitles (DVD/Blu-ray) are available in the full player.</p>}
           {p.onFind && <button onClick={p.onFind} className="mt-1 flex w-full items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 text-left text-[14px] font-semibold text-violet-300 transition hover:bg-white/10"><Search size={16} /> Find subtitles online…</button>}
+        </>
+      )}
+      {p.page === "audio" && (
+        <>
+          <Header title="Audio" />
+          {p.audioTracks.map((a) => <Option key={a.index} selected={p.audioIndex === a.index} label={audioLabel(a)} onClick={() => p.setAudioIndex(a.index)} />)}
+          <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">The video restarts at the same spot with the new track.</p>
         </>
       )}
       {p.page === "delay" && (

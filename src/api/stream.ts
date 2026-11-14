@@ -16,6 +16,8 @@ export interface ProbeInfo {
   /** Codec of the streamed video (for MediaSource). */
   codecs?: { video: string };
   hasAudio?: boolean;
+  /** Every audio stream in the file (`index` = position among the audio streams, for `&a=`). Shown when there are 2+. */
+  audioTracks?: { index: number; language: string | null; title: string | null; codec: string; channels: number }[];
 }
 
 export interface Cue {
@@ -48,11 +50,12 @@ export const streamApi = {
     if (!r.ok) throw new Error(data.error || "Could not read this video file.");
     return data;
   },
-  streamUrl: (path: string, t: number, level = true) => `/api/stream?path=${q(path)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}`,
+  streamUrl: (path: string, t: number, level = true, audio = 0) =>
+    `/api/stream?path=${q(path)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}${audio ? `&a=${audio}` : ""}`,
   /** Where a stream requested at `t` really starts (the keyframe before t for stream-copied files). */
-  seekPoint: async (path: string, t: number): Promise<number> => {
+  seekPoint: async (path: string, t: number, audio = 0): Promise<number> => {
     try {
-      const r = await fetch(`/api/seekpoint?path=${q(path)}&t=${t.toFixed(3)}`);
+      const r = await fetch(`/api/seekpoint?path=${q(path)}&t=${t.toFixed(3)}${audio ? `&a=${audio}` : ""}`);
       const d = await r.json();
       return typeof d.start === "number" && d.start <= t + 0.01 ? d.start : t;
     } catch {

@@ -10,7 +10,7 @@
  * Seeking restarts the stream at the new time (?t=). The client tracks that offset.
  *
  *   GET /api/probe?path=…                 → { duration, width, height, video, audio, copyVideo, copyAudio, subtitles[] }
- *   GET /api/stream?path=…&t=SECONDS      → video/mp4 (fragmented, progressive)
+ *   GET /api/stream?path=…&t=SECONDS[&a=N] → video/mp4 (a = audio stream number, default 0) (fragmented, progressive)
  *   GET /api/subtitle.vtt?path=…&i=N      → WebVTT (absolute times; the client applies offset/delay)
  *   GET /api/thumb?path=…&t=SECONDS       → JPEG frame for the seek-bar hover preview
  */
@@ -66,6 +66,12 @@ const subtitleList = (/** @type {string} */ file, /** @type {any[]} */ embedded 
     ...embedded,
   ].map((s, i) => ({ index: i, ...s }));
 
+/** The audio stream asked for with `&a=N`: only a number that exists, otherwise the first one. */
+function audioIndex(/** @type {any} */ info, /** @type {URL} */ u) {
+  const n = Math.floor(Number(u.searchParams.get("a")));
+  return Number.isFinite(n) && n > 0 && n < (info.audioTracks?.length ?? 0) ? n : 0;
+}
+
 async function probe(/** @type {string} */ file) {
   if (probeCache.has(file)) { const c = probeCache.get(file); return { ...c, subtitles: subtitleList(file, c.embedded) }; }
   const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file], { maxBuffer: 8 << 20 });
@@ -81,6 +87,13 @@ async function probe(/** @type {string} */ file) {
     copyVideo: !!v && v.codec_name === "h264" && /^(yuv420p|yuvj420p)$/.test(v.pix_fmt ?? ""),
     copyAudio: !!a && a.codec_name === "aac",
     hasAudio: !!a,
+    audioTracks: info.streams.filter((/** @type {any} */ s) => s.codec_type === "audio").map((/** @type {any} */ s, /** @type {number} */ i) => ({
+      index: i,
+      language: s.tags?.language && s.tags.language !== "und" ? String(s.tags.language).toLowerCase() : null,
+      title: s.tags?.title ? String(s.tags.title) : null,
+      codec: s.codec_name ?? "",
+      channels: s.channels ?? 0,
+    })),
     // RFC 6381 codec string of the STREAM's video, for MediaSource (copied: the file's H.264; else our High@4.0).
     codecs: { video: v && v.codec_name === "h264" && /^(yuv420p|yuvj420p)$/.test(v.pix_fmt ?? "") ? avc1(v.profile, v.level) : "avc1.640028" },
     embedded: embeddedSubs(info.streams),
@@ -95,10 +108,10 @@ async function probe(/** @type {string} */ file) {
  * run the SAME seek and read the first timestamps. -avoid_negative_ts make_zero shifts the output so
  * the earliest dts becomes 0, so that earliest dts is the offset the player must add.
  */
-function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss) {
+function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** @type {number} */ aud = 0) {
   return new Promise((resolve) => {
     const ff = spawn("ffmpeg", ["-hide_banner", "-loglevel", "quiet", "-nostdin", "-ss", ss, "-i", file,
-      "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-copyts", "-frames:v", "3", "-f", "nut", "pipe:1"], { stdio: ["ignore", "pipe", "ignore"] });
+      "-map", "0:v:0", "-map", `0:a:${aud}?`, "-c", "copy", "-copyts", "-frames:v", "3", "-f", "nut", "pipe:1"], { stdio: ["ignore", "pipe", "ignore"] });
     const pr = spawn("ffprobe", ["-v", "quiet", "-show_entries", "packet=dts_time", "-of", "csv=p=0", "-"], { stdio: ["pipe", "pipe", "ignore"] });
     ff.stdout.pipe(pr.stdin);
     pr.stdin.on("error", () => {});
@@ -221,7 +234,7 @@ export function streamRoutes(resolveVideo) {
       if (u.pathname === "/api/seekpoint") {
         const info = await probe(file);
         const t = Math.max(0, Number(u.searchParams.get("t")) || 0);
-        json(200, { start: info.copyVideo && t > 0 ? await streamOrigin(file, t.toFixed(3)) : t });
+        json(200, { start: info.copyVideo && t > 0 ? await streamOrigin(file, t.toFixed(3), audioIndex(info, u)) : t });
         return true;
       }
 
@@ -230,7 +243,7 @@ export function streamRoutes(resolveVideo) {
         const t = Math.max(0, Number(u.searchParams.get("t")) || 0);
         const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
         if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
-        args.push("-i", file, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-map_chapters", "-1");
+        args.push("-i", file, "-map", "0:v:0", "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
         if (info.copyVideo) args.push("-c:v", "copy");
         else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
         const level = u.searchParams.get("level") !== "0" ? levelFilter(await levelGain(file)) : null;
