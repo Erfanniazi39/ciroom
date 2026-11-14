@@ -43,6 +43,8 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
   /** @type {string[]} */ let wanted = []; // season keys asked for (most recent first)
   let running = /** @type {string | null} */ (null);
   let timer = /** @type {NodeJS.Timeout | null} */ (null);
+  /** Seasons already handled in this pass: never picked again until the next RECHECK, so a season that can't be finished can't loop. */
+  const tried = new Set();
 
   const stat = (/** @type {string} */ f) => { try { const s = fs.statSync(f); return { size: s.size, mtime: Math.floor(s.mtimeMs) }; } catch { return null; } };
   const row = (/** @type {string} */ f) => db.prepare("SELECT * FROM media_markers WHERE path = ?").get(key(f));
@@ -57,7 +59,8 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
     try { lib = JSON.parse(fs.readFileSync(LIB_FILE, "utf8")); } catch { return []; }
     /** @type {Season[]} */ const out = [];
     for (const s of lib.series ?? []) for (const se of s.seasons ?? []) {
-      const eps = (se.episodes ?? []).filter((/** @type {any} */ e) => e.file?.path);
+      // Only files that still exist: a missing file never gets a marker row, so its season would be picked again and again.
+      const eps = (se.episodes ?? []).filter((/** @type {any} */ e) => e.file?.path && stat(e.file.path));
       if (eps.length) out.push({ key: `${s.id}:${se.number}`, label: `${s.title} S${se.number}`, seriesId: s.id, files: eps.map((/** @type {any} */ e) => e.file.path), ids: eps.map((/** @type {any} */ e) => e.id) });
     }
     return out;
@@ -69,9 +72,11 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
     if (!all.length) return null;
     for (const k of wanted) { const s = all.find((x) => x.key === k); if (s) return s; }
     if (!BACKGROUND) return null; // test version: only seasons you open
+    const open = all.filter((s) => !tried.has(s.key));
+    if (!open.length) return null;
     const recent = db.prepare("SELECT item_id FROM watch_progress WHERE profile_id = 1 ORDER BY updated_at DESC LIMIT 50").all().map((/** @type {any} */ r) => r.item_id);
-    for (const id of recent) { const s = all.find((x) => x.ids.includes(id)); if (s) return s; }
-    return all[0];
+    for (const id of recent) { const s = open.find((x) => x.ids.includes(id)); if (s) return s; }
+    return open[0];
   }
 
   function save(/** @type {Season} */ season, /** @type {Record<string, any>} */ results) {
@@ -88,9 +93,10 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
     timer = null;
     if (running || stale()) return;
     const season = next();
-    if (!season) { if (BACKGROUND) timer = setTimeout(work, RECHECK); return; }
+    if (!season) { tried.clear(); if (BACKGROUND) timer = setTimeout(work, RECHECK); return; }
     wanted = wanted.filter((k) => k !== season.key);
-    if (season.files.length < 2) { save(season, {}); setImmediate(work); return; } // nothing to compare with
+    tried.add(season.key);
+    if (season.files.length < 2) { save(season, {}); timer = setTimeout(work, 1000); return; } // nothing to compare with
     running = season.label;
     const t = Date.now();
     const w = new Worker(new URL("./intro-worker.js", import.meta.url), { workerData: { files: season.files } });
