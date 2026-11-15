@@ -437,10 +437,10 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
       )}
 
       {takenByPc && !error && (
-        <div role="status" className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-3 bg-black/80 px-8 text-center">
+        <div role="status" onClick={continueHere} className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-3 bg-black/80 px-8 text-center">
           <MonitorUp size={compact ? 28 : 40} />
           <p className={cx("font-semibold", compact ? "text-[16px]" : "text-[19px]")}>Playing on PC</p>
-          <button onClick={continueHere} className="h-11 rounded-full bg-accent px-7 text-[15px] font-semibold text-accent-ink active:scale-95">Continue here</button>
+          <button onClick={(e) => { e.stopPropagation(); continueHere(); }} className="h-11 rounded-full bg-accent px-7 text-[15px] font-semibold text-accent-ink active:scale-95">Continue here</button>
         </div>
       )}
 
