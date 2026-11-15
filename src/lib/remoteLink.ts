@@ -12,6 +12,7 @@ import { findEpisode } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import { usePlayback } from "@/store/playback";
 import { usePlayer } from "@/store/player";
+import { useSettings } from "@/store/settings";
 import { useUser, type SubPref } from "@/store/user";
 import { getWebController } from "@/store/webControl";
 
@@ -101,7 +102,7 @@ export function useRemoteLink() {
       const m = meta();
       const body: Record<string, unknown> = { now: { meta: m, page: ctl && usePlayback.getState().session ? ctl.getState() : null } };
       const u = useUser.getState();
-      const user = JSON.stringify({ progress: u.progress, favorites: u.favorites, subPrefs: u.subPrefs, audioPrefs: u.audioPrefs });
+      const user = JSON.stringify({ progress: u.progress, favorites: u.favorites, subPrefs: u.subPrefs, audioPrefs: u.audioPrefs, prefs: { subtitleLanguages: useSettings.getState().subtitleLanguages, subtitlesDefault: useSettings.getState().subtitlesDefault } });
       if (user !== lastUser) { lastUser = user; body.user = JSON.parse(user); }
       fetch("/api/remote/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => undefined);
     }

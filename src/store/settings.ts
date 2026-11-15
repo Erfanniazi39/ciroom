@@ -57,8 +57,9 @@ export function pickSubtitle(subs: SubLike[], prefs: string, enabled: boolean): 
  * The subtitle to start with: the choice remembered for this series/movie first (same language, or off),
  * then the Settings language order. A remembered language the episode doesn't have falls back to the defaults.
  */
-export function startSubtitle(subs: SubLike[], pref: SubPref | undefined): number {
-  const { subtitleLanguages, subtitlesDefault } = useSettings.getState();
+export function startSubtitle(subs: SubLike[], pref: SubPref | undefined, prefs?: { subtitleLanguages: string; subtitlesDefault: boolean }): number {
+  // `prefs`: the phone has no settings of its own; the PC's language order comes with the remote's report.
+  const { subtitleLanguages, subtitlesDefault } = prefs ?? useSettings.getState();
   if (pref?.off) return -1;
   if (pref && subs.length) {
     const byName = subs.find((s) => s.name === pref.name);

@@ -727,12 +727,12 @@ function Volume({ volume, muted, onVolume, onMute }: { volume: number; muted: bo
 type AudioTrack = NonNullable<ProbeInfo["audioTracks"]>[number];
 
 /** Which audio stream to start with: the saved language for this title, else English (like mpv), else the first. */
-function startAudio(tracks: AudioTrack[], pref: string | undefined): number {
+export function startAudio(tracks: AudioTrack[], pref: string | undefined): number {
   const by = (codes: string[]) => tracks.find((t) => t.language && codes.includes(t.language))?.index;
   return (pref ? by([pref.toLowerCase()]) : undefined) ?? by(["en", "eng"]) ?? 0;
 }
 
-function audioLabel(t: AudioTrack | undefined): string {
+export function audioLabel(t: AudioTrack | undefined): string {
   if (!t) return "Default";
   let lang: string | null = null;
   if (t.language) { try { lang = new Intl.DisplayNames(undefined, { type: "language" }).of(t.language) ?? t.language; } catch { lang = t.language; } }

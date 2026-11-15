@@ -1,9 +1,9 @@
 /**
  * CiRoom's phone remote: the page a phone opens on the home Wi-Fi (QR code in Settings on the PC).
  * It pairs once with a PIN, then shows what plays on the PC and controls it (dev/remote.js relays).
- * It never plays video itself (yet): the picture stays on the PC.
+ * It controls the PC's player, and can also play the video itself on the phone (PhonePlayer).
  */
-import { Captions, Check, ChevronsRight, RotateCw, Maximize, Minimize, RotateCcw, ChevronLeft, Loader2, Pause, Play, Search, SkipForward, Square, Tv, Clapperboard, Volume1, Volume2, VolumeX, WifiOff, MonitorOff, X, Home as HomeIcon } from "lucide-react";
+import { Captions, Check, Smartphone, ChevronsRight, RotateCw, Maximize, Minimize, RotateCcw, ChevronLeft, Loader2, Pause, Play, Search, SkipForward, Square, Tv, Clapperboard, Volume1, Volume2, VolumeX, WifiOff, MonitorOff, X, Home as HomeIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PosterArt, StillArt } from "@/components/Artwork";
 import { cx } from "@/components/ui";
@@ -11,6 +11,7 @@ import { episodeCode, timecode, runtime as fmtRuntime } from "@/lib/format";
 import { continueWatching, findEpisode, nextUp } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import type { Episode, Movie, Progress, Series } from "@/types/media";
+import { PhonePlayer, type PhoneUser } from "./PhonePlayer";
 
 interface Now {
   source: "page" | "mpv";
@@ -30,7 +31,7 @@ interface Now {
   fullscreen?: boolean;
   subDelay?: number;
 }
-interface Live { online: boolean; now: Now | null; user: { progress: Record<string, Progress>; favorites: string[] } | null }
+interface Live { online: boolean; now: Now | null; user: (PhoneUser & { progress: Record<string, Progress>; favorites: string[] }) | null }
 
 async function post(url: string, body: unknown): Promise<{ ok: boolean; error?: string; status: number }> {
   try {
@@ -153,6 +154,14 @@ function Remote({ onLost }: { onLost: () => void }) {
     if (await send({ cmd: "play", id, fromStart })) setTab("remote");
   }, [send]);
 
+  // Watching on the phone: the video streams from the PC into this page (PhonePlayer).
+  const [watching, setWatching] = useState<{ id: string; startAt: number; user: Live["user"] } | null>(null);
+  const watchOnPhone = useCallback((id: string, fromStart = false, at?: number) => {
+    const p = live.user?.progress[id];
+    const resume = at ?? (!fromStart && p && !p.watched && p.position > 30 ? p.position : 0);
+    setWatching({ id, startAt: resume, user: live.user });
+  }, [live.user]);
+
   const status = !linked ? { text: "Can't reach the PC", ok: false } : !live.online ? { text: "CiRoom is closed on the PC", ok: false } : { text: "Connected", ok: true };
 
   return (
@@ -166,8 +175,10 @@ function Remote({ onLost }: { onLost: () => void }) {
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-6">
-        {tab === "remote" ? <NowPanel live={live} lib={lib} send={send} play={play} online={status.ok} /> : <LibraryPanel lib={lib} progress={live.user?.progress ?? {}} play={play} online={status.ok} />}
+        {tab === "remote" ? <NowPanel live={live} lib={lib} send={send} play={play} watch={watchOnPhone} online={status.ok} /> : <LibraryPanel lib={lib} progress={live.user?.progress ?? {}} play={play} watch={watchOnPhone} online={status.ok} />}
       </main>
+
+      {watching && <PhonePlayer id={watching.id} startAt={watching.startAt} user={watching.user} onClose={() => setWatching(null)} onLost={onLost} />}
 
       {toast && <div role="status" className="pointer-events-none fixed inset-x-5 bottom-24 z-50 mx-auto max-w-[480px] rounded-2xl bg-surface-3 px-4 py-3 text-center text-sm shadow-lift">{toast}</div>}
 
@@ -185,6 +196,7 @@ function Remote({ onLost }: { onLost: () => void }) {
 
 type Send = (b: Record<string, unknown>) => Promise<boolean>;
 type PlayFn = (id: string, fromStart?: boolean) => void;
+type WatchFn = (id: string, fromStart?: boolean, at?: number) => void;
 type Lib = ReturnType<typeof useLibrary.getState>["data"];
 
 /** A short-lived local override so a tap feels instant while the PC confirms. */
@@ -195,7 +207,7 @@ function useOptimistic(now: Now | null) {
   return { now: now && o ? { ...now, ...o } : now, patch };
 }
 
-function NowPanel({ live, lib, send, play, online }: { live: Live; lib: Lib; send: Send; play: PlayFn; online: boolean }) {
+function NowPanel({ live, lib, send, play, watch, online }: { live: Live; lib: Lib; send: Send; play: PlayFn; watch: WatchFn; online: boolean }) {
   const { now, patch } = useOptimistic(live.now);
   const [drag, setDrag] = useState<number | null>(null);
 
@@ -265,6 +277,19 @@ function NowPanel({ live, lib, send, play, online }: { live: Live; lib: Lib; sen
       {now.source === "page" && (
         <button onClick={() => { patch({ fullscreen: !now.fullscreen }); void send({ cmd: "fullscreen" }); }} className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white/[.08] text-[15px] font-semibold active:scale-[.98]">
           {now.fullscreen ? <Minimize size={18} /> : <Maximize size={18} />} {now.fullscreen ? "Exit fullscreen" : "Fullscreen on the PC"}
+        </button>
+      )}
+
+      {now.id && (
+        <button
+          onClick={async () => {
+            // Pause the PC (only if it is playing), then carry on from the same second on this phone.
+            if (!now.paused) await send({ cmd: "toggle" });
+            watch(now.id!, false, now.position);
+          }}
+          className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white/[.08] text-[15px] font-semibold active:scale-[.98]"
+        >
+          <Smartphone size={18} /> Continue on phone
         </button>
       )}
 
@@ -375,7 +400,7 @@ function Idle({ live, lib, play, online }: { live: Live; lib: Lib; play: PlayFn;
 }
 
 // ── Library ────────────────────────────────────────────────────────────────────────────────
-function LibraryPanel({ lib, progress, play, online }: { lib: Lib; progress: Record<string, Progress>; play: PlayFn; online: boolean }) {
+function LibraryPanel({ lib, progress, play, watch, online }: { lib: Lib; progress: Record<string, Progress>; play: PlayFn; watch: WatchFn; online: boolean }) {
   const [kind, setKind] = useState<"movie" | "series">("movie");
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Movie | Series | null>(null);
@@ -386,7 +411,7 @@ function LibraryPanel({ lib, progress, play, online }: { lib: Lib; progress: Rec
   }, [lib, kind, q]);
 
   if (!lib) return <div className="flex justify-center pt-20"><Loader2 className="animate-spin text-fg-subtle" /></div>;
-  if (open) return <Detail title={open} progress={progress} play={play} online={online} onBack={() => setOpen(null)} />;
+  if (open) return <Detail title={open} progress={progress} play={play} watch={watch} online={online} onBack={() => setOpen(null)} />;
 
   return (
     <div className="pt-2">
@@ -416,7 +441,7 @@ function LibraryPanel({ lib, progress, play, online }: { lib: Lib; progress: Rec
   );
 }
 
-function Detail({ title, progress, play, online, onBack }: { title: Movie | Series; progress: Record<string, Progress>; play: PlayFn; online: boolean; onBack: () => void }) {
+function Detail({ title, progress, play, watch, online, onBack }: { title: Movie | Series; progress: Record<string, Progress>; play: PlayFn; watch: WatchFn; online: boolean; onBack: () => void }) {
   const isMovie = title.kind === "movie";
   const seasons = isMovie ? [] : (title as Series).seasons.filter((s) => s.episodes.some((e) => e.file));
   const up = !isMovie ? nextUp(title as Series, progress) : null;
@@ -437,18 +462,31 @@ function Detail({ title, progress, play, online, onBack }: { title: Movie | Seri
       {title.overview && <p className="mt-4 line-clamp-5 text-[14px] leading-6 text-fg-muted">{title.overview}</p>}
 
       {isMovie ? (
+        <>
         <div className="mt-5 flex gap-3">
           <button disabled={!online} onClick={() => play(title.id)} className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-accent font-semibold text-accent-ink active:scale-[.97] disabled:opacity-40">
             <Play size={18} fill="currentColor" /> {resume ? `Resume ${timecode(p!.position)}` : "Play on PC"}
           </button>
           {resume && <button disabled={!online} onClick={() => play(title.id, true)} className="h-12 rounded-full bg-white/[.08] px-5 text-sm font-semibold disabled:opacity-40">Start over</button>}
         </div>
+        <div className="mt-3 flex gap-3">
+          <button onClick={() => watch(title.id)} className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-white/[.1] font-semibold active:scale-[.97]">
+            <Smartphone size={18} /> {resume ? `Watch on phone from ${timecode(p!.position)}` : "Watch on phone"}
+          </button>
+          {resume && <button onClick={() => watch(title.id, true)} className="h-12 rounded-full bg-white/[.08] px-5 text-sm font-semibold">Start over</button>}
+        </div>
+        </>
       ) : (
         <>
           {up && (
-            <button disabled={!online} onClick={() => play(up.episode.id)} className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-accent font-semibold text-accent-ink active:scale-[.97] disabled:opacity-40">
-              <Play size={18} fill="currentColor" /> {up.mode === "start" ? "Start" : up.mode === "resume" ? "Resume" : "Next"} {episodeCode(up.episode.season, up.episode.number)}
-            </button>
+            <div className="mt-5 flex gap-3">
+              <button disabled={!online} onClick={() => play(up.episode.id)} className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-accent font-semibold text-accent-ink active:scale-[.97] disabled:opacity-40">
+                <Play size={18} fill="currentColor" /> {up.mode === "start" ? "Start" : up.mode === "resume" ? "Resume" : "Next"} {episodeCode(up.episode.season, up.episode.number)}
+              </button>
+              <button onClick={() => watch(up.episode.id)} aria-label={`Watch ${episodeCode(up.episode.season, up.episode.number)} on phone`} className="flex h-12 items-center justify-center gap-2 rounded-full bg-white/[.1] px-5 text-sm font-semibold active:scale-[.97]">
+                <Smartphone size={18} /> On phone
+              </button>
+            </div>
           )}
           <div className="-mx-5 mt-5 flex gap-2 overflow-x-auto px-5 pb-1">
             {seasons.map((s) => (
@@ -459,8 +497,8 @@ function Detail({ title, progress, play, online, onBack }: { title: Movie | Seri
             {(seasons.find((s) => s.number === season)?.episodes ?? []).map((e: Episode) => {
               const ep = progress[e.id];
               return (
-                <li key={e.id}>
-                  <button disabled={!online || !e.file} onClick={() => play(e.id)} className="flex w-full items-center gap-3 rounded-2xl bg-white/[.04] px-3 py-3 text-left active:scale-[.98] disabled:opacity-40">
+                <li key={e.id} className="flex items-stretch gap-2">
+                  <button disabled={!online || !e.file} onClick={() => play(e.id)} className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl bg-white/[.04] px-3 py-3 text-left active:scale-[.98] disabled:opacity-40">
                     <span className="w-8 shrink-0 text-center font-display text-lg font-semibold text-fg-muted">{e.number}</span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[15px] font-medium">{e.title}</span>
@@ -468,6 +506,7 @@ function Detail({ title, progress, play, online, onBack }: { title: Movie | Seri
                     </span>
                     {ep?.watched ? <Check size={18} className="shrink-0 text-accent" /> : e.file ? <Play size={18} className="shrink-0 text-fg-subtle" /> : null}
                   </button>
+                  {e.file && <button aria-label={`Watch episode ${e.number} on phone`} onClick={() => watch(e.id)} className="flex w-12 shrink-0 items-center justify-center rounded-2xl bg-white/[.06] active:scale-95"><Smartphone size={19} className="text-fg-muted" /></button>}
                 </li>
               );
             })}

@@ -103,7 +103,7 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
       if (what === "probe") {
         // Same answer as /api/probe minus anything about the file's location, plus what the phone player needs.
         const filtered = (/** @type {number} */ code, /** @type {any} */ data) => json(code, code === 200 && data
-          ? { id: item.id, title: item.title, subtitle: item.subtitle, nextId: item.nextId, duration: data.duration, width: data.width, height: data.height, video: data.video, audio: data.audio, codecs: data.codecs, hasAudio: data.hasAudio, copyVideo: data.copyVideo, levelGainDb: data.levelGainDb, subtitles: (data.subtitles ?? []).map((/** @type {any} */ s) => ({ index: s.index, label: s.label, format: s.format, ...(s.embedded ? { embedded: true, stream: s.stream } : {}) })) }
+          ? { id: item.id, title: item.title, subtitle: item.subtitle, nextId: item.nextId, duration: data.duration, width: data.width, height: data.height, video: data.video, audio: data.audio, codecs: data.codecs, hasAudio: data.hasAudio, copyVideo: data.copyVideo, levelGainDb: data.levelGainDb, audioTracks: data.audioTracks, subtitles: (data.subtitles ?? []).map((/** @type {any} */ s) => ({ index: s.index, label: s.label, name: s.name, language: s.language, format: s.format, ...(s.embedded ? { embedded: true, stream: s.stream } : {}) })) }
           : { error: "Could not read the video" });
         await stream.handle(req, res, filtered, body);
       } else {
