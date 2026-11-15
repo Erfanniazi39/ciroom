@@ -7,12 +7,13 @@ const J = { "Content-Type": "application/json" };
 const post = (port, p, on) => request({ port, path: p, method: "POST", headers: J, body: JSON.stringify({ on }) });
 
 test("not reachable from the LAN until the remote or the party is on, and closed again after", { skip: !lanIp() && "no LAN address" }, async () => {
-  const s = await startServer({ loopbackOnly: true });
+  const s = await startServer({ loopbackOnly: true, env: { CIROOM_FAKE_NETWORK: "wifi:HomeWifi|HomeWifi" } });
   try {
     const lan = () => request({ host: lanIp(), port: s.port, path: "/api/ping" }).then((r) => r.status, () => "refused");
     // The switch re-listens a moment after the toggle's reply, so wait briefly for the expected state.
     const settle = async (want) => { for (let i = 0; i < 30 && (await lan() === "refused") !== want; i++) await new Promise((r) => setTimeout(r, 100)); return lan(); };
     assert.equal(await lan(), "refused");
+    assert.equal((await request({ port: s.port, path: "/api/remote/trust", method: "POST", headers: J, body: "{}" })).status, 200); // the remote only counts on a trusted network
     for (const [route, other] of [["/api/remote/enable", "/api/party/host/enable"], ["/api/party/host/enable", "/api/remote/enable"]]) {
       assert.equal((await post(s.port, route, true)).status, 200);
       assert.notEqual(await settle(false), "refused");

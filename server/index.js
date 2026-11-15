@@ -11,6 +11,7 @@
  *   CIROOM_DATA_DIR, CIROOM_CACHE_DIR, CIROOM_DEV: see server/lib/paths.js
  *   CIROOM_LISTEN_ALL=1  tests only: listen on all addresses even with the remote off
  *   CIROOM_FAKE_NETWORK=<id>|<label>  tests only: pretend this is the current network (server/lib/netid.js)
+ *  CIROOM_FAKE_NETWORK_FILE=<file>  tests only: same, read from a file each time so a test can switch networks
  */
 import fs from "node:fs";
 import http from "node:http";

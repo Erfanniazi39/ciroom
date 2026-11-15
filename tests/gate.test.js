@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { startServer, request, postJson, lanIp } from "./helpers.js";
 
 let s;
-before(async () => { s = await startServer(); });
+before(async () => { s = await startServer({ env: { CIROOM_FAKE_NETWORK: "wifi:HomeWifi|HomeWifi" } }); });
 after(() => s.stop());
 
 test("ping answers on this PC", async () => {
@@ -58,6 +58,10 @@ test("another device on the LAN: everything is 403 while the phone remote is off
 test("another device on the LAN cannot reach user data even with the remote on, and cannot pair without a PIN", { skip: !ip }, async () => {
   const en = await postJson(s.port, "/api/remote/enable", { on: true });
   assert.equal(en.status, 200);
+  // On a network the user hasn't approved, a listening server still refuses phones with 403.
+  const untrusted = await request({ port: s.port, host: ip, path: "/api/remote/me", hostHeader: `${ip}:${s.port}` });
+  assert.equal(untrusted.status, 403);
+  assert.equal((await postJson(s.port, "/api/remote/trust")).status, 200);
   const me = await request({ port: s.port, host: ip, path: "/api/remote/me", hostHeader: `${ip}:${s.port}` });
   assert.equal(me.status, 200);
   assert.equal(me.json.paired, false);
@@ -70,6 +74,7 @@ test("another device on the LAN cannot reach user data even with the remote on, 
   assert.equal(pair.status, 409);
   const play = await request({ port: s.port, host: ip, path: "/api/play", method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", hostHeader: `${ip}:${s.port}` });
   assert.equal(play.status, 401);
+  await postJson(s.port, "/api/remote/untrust", { id: "wifi:HomeWifi" });
   const dis = await postJson(s.port, "/api/remote/enable", { on: false });
   assert.equal(dis.status, 200);
 });

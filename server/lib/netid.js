@@ -3,10 +3,12 @@
  * Which network is this PC on right now? Used by the phone remote's "trusted networks": phones are served only
  * on networks the user approved. The id is stable (Wi-Fi name, or the router's MAC on a wired network).
  *
- * Tests only: CIROOM_FAKE_NETWORK=<id>|<label> returns that instead of asking the system.
+ * Tests only: CIROOM_FAKE_NETWORK=<id>|<label> returns that instead of asking the system (or CIROOM_FAKE_NETWORK_FILE=<file>
+ * holding that text, read each time, to switch networks while the server runs).
  * Never log or store real network names anywhere but the user's own data folder (remote.json).
  */
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 
 /** @typedef {{ id: string, label: string, kind: "wifi" | "wired" | "unknown" }} NetworkInfo */
 const UNKNOWN = /** @type {NetworkInfo} */ ({ id: "", label: "Unknown network", kind: "unknown" });
@@ -53,7 +55,9 @@ let cache = null;
 
 /** @returns {Promise<NetworkInfo>} */
 async function detect() {
-  const fake = process.env.CIROOM_FAKE_NETWORK;
+  let fake = process.env.CIROOM_FAKE_NETWORK;
+  // Tests that switch networks while the server runs: the file's text is the same "<id>|<label>".
+  if (process.env.CIROOM_FAKE_NETWORK_FILE) { try { fake = fs.readFileSync(process.env.CIROOM_FAKE_NETWORK_FILE, "utf8").trim(); } catch { fake = ""; } }
   if (fake !== undefined) {
     const [id, label] = fake.split("|");
     return id ? { id, label: label || id, kind: id.startsWith("wired:") ? "wired" : "wifi" } : UNKNOWN;
@@ -73,9 +77,9 @@ async function detect() {
   return UNKNOWN;
 }
 
-/** The current network, cached for 10 seconds. Never throws. @returns {Promise<NetworkInfo>} */
-export async function currentNetwork() {
-  if (cache && Date.now() - cache.at < 10_000 && process.env.CIROOM_FAKE_NETWORK === undefined) return cache.value;
+/** The current network, cached for 10 seconds unless `fresh`. Never throws. @returns {Promise<NetworkInfo>} */
+export async function currentNetwork(fresh = false) {
+  if (!fresh && cache && Date.now() - cache.at < 10_000 && process.env.CIROOM_FAKE_NETWORK === undefined && !process.env.CIROOM_FAKE_NETWORK_FILE) return cache.value;
   let value = UNKNOWN;
   try { value = await detect(); } catch { /* keep unknown */ }
   cache = { at: Date.now(), value };

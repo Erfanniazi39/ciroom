@@ -268,7 +268,7 @@ export function createCiRoom(mediaRoot) {
   let server_port = 1420;
   return {
     /** Starts the background work (skip-intro analysis). Never called by `vite build`. */
-    start: () => { intro.start(); },
+    start: () => { intro.start(); remote.start(); },
     setPort: (/** @type {number} */ p) => { server_port = p; },
     /** True when other devices may need to reach this server (phone remote or watch party on). */
     wantsNetwork: () => remote.isEnabled() || party.isEnabled(),

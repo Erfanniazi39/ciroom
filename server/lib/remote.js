@@ -5,13 +5,15 @@
  *
  * Security model:
  *  - OFF by default. While off, nothing but this PC itself is served.
+ *  - Trusted networks: even when switched on, phones are served only while this PC is on a network the user approved
+ *    (Wi-Fi name, or the router of a wired network). On any other network the remote behaves as if it were off.
  *  - On: only private-network addresses are served, and every API call except pairing needs the device's
  *    token (an HttpOnly cookie, stored hashed on the PC; revocable per phone in Settings).
  *  - Pairing PINs are random, single-use, expire after 5 minutes, and wrong guesses lock pairing for a minute.
  *  - A paired phone may only browse the library (read-only) and send the remote commands below.
  *    It cannot reach settings (API keys), file streams, subtitle downloads, artwork edits or mpv launching.
  *
- * Routes (PC window only, 127.0.0.1): /api/remote/info|enable|pair/start|pair/cancel|revoke|report|commands
+ * Routes (PC window only, 127.0.0.1): /api/remote/info|enable|trust|untrust|pair/start|pair/cancel|revoke|report|commands
  * Routes (phone): /api/remote/pair|me|events|cmd
  */
 import crypto from "node:crypto";
@@ -20,6 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { writeJsonAtomic } from "./fsutil.js";
+import { currentNetwork } from "./netid.js";
 
 const FILE = path.join(DATA_DIR, "remote.json");
 const COOKIE = "ciroom_remote";
@@ -36,8 +39,8 @@ const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).d
 
 /** @param {any} mpv adapter: { running(): boolean, snapshot(): any, command(c: any): void } */
 export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
-  /** @type {{ enabled: boolean, devices: { id: string, hash: string, name: string, created: number, lastSeen: number }[] }} */
-  let cfg = { enabled: false, devices: [] };
+  /** @type {{ enabled: boolean, trusted: { id: string, label: string, added: number }[], devices: { id: string, hash: string, name: string, created: number, lastSeen: number }[] }} */
+  let cfg = { enabled: false, trusted: [], devices: [] };
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* first run */ }
   const save = () => {
     try { writeJsonAtomic(FILE, cfg, { mode: 0o600, space: 2 }); } catch { /* read-only disk: keep in memory */ }
@@ -56,6 +59,44 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
   let lastSent = "";
   /** @type {NodeJS.Timeout | null} */
   let tick = null;
+
+  /** The network this PC is on now (refreshed every 15 s while the remote is on) and whether phones are served on it. */
+  /** @type {import("./netid.js").NetworkInfo} */
+  let netNow = { id: "", label: "Unknown network", kind: "unknown" };
+  const isTrusted = (/** @type {string} */ id) => id !== "" && cfg.trusted.some((t) => t.id === id);
+  const isActive = () => !!cfg.enabled && isTrusted(netNow.id);
+  let wasActive = false;
+  /** @type {NodeJS.Timeout | null} */
+  let netTimer = null;
+  // Vite reloads this module inside the same process: only the newest instance may keep a timer (archive §10d).
+  const G = /** @type {any} */ (globalThis);
+  const gen = (G.__ciroomRemoteGen = (G.__ciroomRemoteGen ?? 0) + 1);
+
+  /** When "phones are served" flips, drop other devices' streams (off) and re-listen on the right address. */
+  function syncActive() {
+    const a = isActive();
+    if (a === wasActive) return;
+    wasActive = a;
+    if (!a) { pairing = null; for (const r of phones) r.destroy(); phones.clear(); ensureTick(); for (const c of [...phoneStreams]) c(); }
+    onToggle();
+  }
+  async function refreshNet(fresh = false) {
+    netNow = await currentNetwork(fresh);
+    syncActive();
+  }
+  /** Runs the 15-second network check while the remote is on; never while it is off, never during `vite build`. */
+  function ensureNetTimer() {
+    if (cfg.enabled && !netTimer && G.__ciroomRemoteGen === gen) {
+      netTimer = setInterval(() => {
+        if (G.__ciroomRemoteGen !== gen || !cfg.enabled) { if (netTimer) clearInterval(netTimer); netTimer = null; return; }
+        refreshNet().catch(() => {});
+      }, 15_000);
+      netTimer.unref?.();
+    }
+    if (!cfg.enabled && netTimer) { clearInterval(netTimer); netTimer = null; }
+  }
+  /** Phone media streams (watching): closers called when phones are switched off. @type {Set<() => void>} */
+  const phoneStreams = new Set();
 
   const cookieOf = (/** @type {import("node:http").IncomingMessage} */ req) => {
     const m = String(req.headers.cookie ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]{64})`));
@@ -114,14 +155,18 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
   };
 
   return {
-    /** True while the phone remote is switched on (the server then listens for other devices). */
-    isEnabled: () => !!cfg.enabled,
+    /** True while phones are served: the remote is on AND this PC is on a trusted network (the server then listens for other devices). */
+    isEnabled: () => isActive(),
+    /** True when the user switched the remote on (even if this network isn't trusted). */
+    isSwitchedOn: () => !!cfg.enabled,
+    /** Starts the network check. Called when the server starts (never by `vite build`). */
+    start: () => { ensureNetTimer(); if (cfg.enabled) refreshNet(true).catch(() => {}); },
     /**
      * Gate for requests from other devices (this PC is never gated). Returns an HTTP status to refuse with, or 0 to continue.
      * @param {import("node:http").IncomingMessage} req @param {string} ip
      */
     gate(req, ip) {
-      if (!cfg.enabled || !PRIVATE_IP.test(ip)) return 403;
+      if (!isActive() || !PRIVATE_IP.test(ip)) return 403;
       const url = req.url ?? "/";
       if (!url.startsWith("/api/")) return 0; // the phone page itself (HTML/JS/CSS): no secrets in it
       if (url === "/api/remote/me" || url === "/api/remote/pair") return 0;
@@ -143,7 +188,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
       const route = url.split("?")[0];
 
       // ── Phone ────────────────────────────────────────────────────────────────────────────
-      if (route === "/api/remote/me" && req.method === "GET") { json(200, { enabled: cfg.enabled, paired: !!deviceOf(req) }); return true; }
+      if (route === "/api/remote/me" && req.method === "GET") { json(200, { enabled: isActive(), paired: !!deviceOf(req) }); return true; }
 
       if (route === "/api/remote/pair" && req.method === "POST") {
         const { pin, name } = await body(req);
@@ -211,8 +256,11 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
       if (!local) { json(403, { error: "This PC only" }); return true; }
 
       if (route === "/api/remote/info" && req.method === "GET") {
+        if (cfg.enabled) await refreshNet(); else netNow = await currentNetwork();
         json(200, {
-          enabled: cfg.enabled, urls: lanUrls(),
+          enabled: cfg.enabled, active: isActive(), urls: lanUrls(),
+          network: { label: netNow.label, kind: netNow.kind, trusted: isTrusted(netNow.id) },
+          trusted: cfg.trusted.map((t) => ({ id: t.id, label: t.label, added: t.added })),
           pairing: pairing && Date.now() < pairing.expires ? { pin: pairing.pin, expiresIn: Math.round((pairing.expires - Date.now()) / 1000) } : null,
           devices: cfg.devices.map((d) => ({ id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen })),
           phonesConnected: phones.size,
@@ -222,14 +270,33 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
       if (route === "/api/remote/enable" && req.method === "POST") {
         const { on } = await body(req);
         cfg.enabled = !!on;
-        if (!cfg.enabled) { pairing = null; for (const r of phones) r.end(); phones.clear(); ensureTick(); }
         save();
-        onToggle();
+        ensureNetTimer();
+        if (cfg.enabled) await refreshNet(true); else syncActive();
+        json(200, { ok: true });
+        return true;
+      }
+      if (route === "/api/remote/trust" && req.method === "POST") {
+        // The server reads the network itself: the page never says which network to trust.
+        const n = await currentNetwork(true);
+        if (n.kind === "unknown" || !n.id) { json(409, { error: "CiRoom can't tell which network this is, so it can't be trusted." }); return true; }
+        if (!isTrusted(n.id)) { cfg.trusted.push({ id: n.id, label: n.label, added: Date.now() }); save(); }
+        netNow = n;
+        syncActive();
+        json(200, { ok: true });
+        return true;
+      }
+      if (route === "/api/remote/untrust" && req.method === "POST") {
+        const { id } = await body(req);
+        cfg.trusted = cfg.trusted.filter((t) => t.id !== id);
+        save();
+        syncActive();
         json(200, { ok: true });
         return true;
       }
       if (route === "/api/remote/pair/start" && req.method === "POST") {
         if (!cfg.enabled) { json(409, { error: "Turn the phone remote on first." }); return true; }
+        if (!isActive()) { json(409, { error: "Trust this network first: phones are off on networks you haven't approved." }); return true; }
         pairing = { pin: String(crypto.randomInt(0, 1_000_000)).padStart(6, "0"), expires: Date.now() + PIN_TTL_MS, tries: 0 };
         json(200, { pin: pairing.pin, expiresIn: PIN_TTL_MS / 1000 });
         return true;
