@@ -11,7 +11,8 @@
  *   GET /api/remote/watch/subtitle.vtt?id=&i=|e=
  */
 import fs from "node:fs";
-import { LIBRARY_FILE } from "./paths.js";
+import path from "node:path";
+import { DATA_DIR, LIBRARY_FILE } from "./paths.js";
 
 const ID = /^[a-z0-9-]{1,200}$/;
 export const MAX_STREAMS_PER_DEVICE = 2;
@@ -19,31 +20,47 @@ const UNAVAILABLE = "This video isn't available";
 
 /** @typedef {{ id: string, title: string, subtitle: string | null, path: string, nextId: string | null }} Playable */
 
-let libCache = /** @type {{ mtime: number, items: Map<string, Playable> } | null} */ (null);
+/** TMDB titles by library id (metadata/index.json), re-read when the file changes: the PC shows `md?.title ?? scanTitle`, so the phone must too. */
+const META_INDEX = path.join(DATA_DIR, "metadata", "index.json");
+let metaCache = /** @type {{ mtime: number, idx: any } | null} */ (null);
+function metaIndex() {
+  let st;
+  try { st = fs.statSync(META_INDEX); } catch { return {}; }
+  if (metaCache && metaCache.mtime === st.mtimeMs) return metaCache.idx;
+  let idx = {};
+  try { idx = JSON.parse(fs.readFileSync(META_INDEX, "utf8")) ?? {}; } catch { /* unreadable: scan titles */ }
+  metaCache = { mtime: st.mtimeMs, idx };
+  return idx;
+}
+const str = (/** @type {unknown} */ v) => (typeof v === "string" && v.trim() ? v : null);
+
+let libCache = /** @type {{ mtime: number, meta: number, items: Map<string, Playable> } | null} */ (null);
 
 /** Every playable item of the saved library by exact id; reloaded when library.json changes. */
 export function libraryItems() {
   let st;
   try { st = fs.statSync(LIBRARY_FILE); } catch { return new Map(); }
-  if (libCache && libCache.mtime === st.mtimeMs) return libCache.items;
+  const meta = metaIndex();
+  if (libCache && libCache.mtime === st.mtimeMs && libCache.meta === (metaCache?.mtime ?? 0)) return libCache.items;
   /** @type {Map<string, Playable>} */
   const items = new Map();
   try {
     const lib = JSON.parse(fs.readFileSync(LIBRARY_FILE, "utf8"));
     for (const m of lib.movies ?? []) {
-      if (m?.file?.status === "present" && typeof m.file.path === "string") items.set(String(m.id), { id: String(m.id), title: String(m.title ?? ""), subtitle: null, path: m.file.path, nextId: null });
+      if (m?.file?.status === "present" && typeof m.file.path === "string") items.set(String(m.id), { id: String(m.id), title: str(meta[String(m.id)]?.title) ?? String(m.title ?? ""), subtitle: null, path: m.file.path, nextId: null });
     }
     for (const s of lib.series ?? []) {
+      const md = meta[String(s.id)];
       /** @type {{ id: string, title: string, subtitle: string, path: string, key: number }[]} */
       const eps = [];
       for (const se of s.seasons ?? []) for (const e of se.episodes ?? []) {
-        if (e?.file?.status === "present" && typeof e.file.path === "string") eps.push({ id: String(e.id), title: String(s.title ?? ""), subtitle: `S${e.season}E${e.number}`, path: e.file.path, key: Number(e.season) * 10000 + Number(e.number) });
+        if (e?.file?.status === "present" && typeof e.file.path === "string") eps.push({ id: String(e.id), title: str(md?.title) ?? String(s.title ?? ""), subtitle: [`S${e.season}:E${e.number}`, str(md?.seasons?.[String(e.season)]?.episodes?.[String(e.number)]?.title) ?? (str(e.title) && !/^Episode \d+$/.test(e.title) ? e.title : null)].filter(Boolean).join(" · "), path: e.file.path, key: Number(e.season) * 10000 + Number(e.number) });
       }
       eps.sort((a, b) => a.key - b.key);
       eps.forEach((e, i) => items.set(e.id, { id: e.id, title: e.title, subtitle: e.subtitle, path: e.path, nextId: eps[i + 1]?.id ?? null }));
     }
   } catch { /* unreadable library: nothing is available */ }
-  libCache = { mtime: st.mtimeMs, items };
+  libCache = { mtime: st.mtimeMs, meta: metaCache?.mtime ?? 0, items };
   return items;
 }
 

@@ -33,6 +33,9 @@ before(async () => {
     collections: [], roots: [], review: [], scannedAt: new Date().toISOString(),
   };
   fs.writeFileSync(path.join(s.data, "library.json"), JSON.stringify(lib));
+  // TMDB titles: the PC shows these, so the phone must too (scan titles are "Tiny" / "Show").
+  fs.mkdirSync(path.join(s.data, "metadata"), { recursive: true });
+  fs.writeFileSync(path.join(s.data, "metadata", "index.json"), JSON.stringify({ tiny: { title: "Tiny II" }, show: { title: "Show Meta", seasons: { 1: { episodes: { 1: { title: "Pilot" } } } } } }));
   phone = await pairedPhone(s);
 });
 after(() => { if (s) s.stop(); fs.rmSync(netFile, { force: true }); });
@@ -66,14 +69,14 @@ test("no cookie = 401; not on the phone allow-list = 403", { skip }, async () =>
 test("probe answers without any file path, with title, episode code and nextId", { skip }, async () => {
   const m = await phone.get(`${W}/probe?id=tiny`);
   assert.equal(m.status, 200);
-  assert.equal(m.json.title, "Tiny");
+  assert.equal(m.json.title, "Tiny II");
   assert.equal(m.json.nextId, null);
   assert.ok(m.json.duration > 5 && m.json.duration < 7);
   assert.ok(m.json.subtitles.length >= 1);
   assert.ok(!m.text.includes(s.media) && !/"path"|"file"/.test(m.text), "no paths: " + m.text);
   const e = await phone.get(`${W}/probe?id=show-s1e1`);
-  assert.equal(e.json.title, "Show");
-  assert.equal(e.json.subtitle, "S1E1");
+  assert.equal(e.json.title, "Show Meta");
+  assert.equal(e.json.subtitle, "S1:E1 · Pilot");
   assert.equal(e.json.nextId, "show-s1e2");
   assert.equal((await phone.get(`${W}/probe?id=show-s1e2`)).json.nextId, null);
 });
@@ -223,4 +226,14 @@ test("subtitle choice: validated, then sent to the window as subPref", { skip },
   assert.equal(got[1].pref.language, "fa");
   assert.equal(got[1].pref.name.length, 200);
   w.close();
+});
+
+test("titles: the phone gets the metadata title, like the PC (movie, episode with its own title, episode without)", { skip }, async () => {
+  const movie = await phone.get(`${W}/probe?id=tiny`);
+  assert.equal(movie.json.title, "Tiny II");
+  const e1 = await phone.get(`${W}/probe?id=show-s1e1`);
+  assert.equal(e1.json.title, "Show Meta");
+  assert.equal(e1.json.subtitle, "S1:E1 · Pilot");
+  const e2 = await phone.get(`${W}/probe?id=show-s1e2`);
+  assert.equal(e2.json.subtitle, "S1:E2", "no title known yet: just the code");
 });
