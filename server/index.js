@@ -9,6 +9,8 @@
  *   CIROOM_MEDIA_ROOT  folder holding Movies/ and Series/ (default: Settings → Library folder, else the folder above the app folder)
  *   CIROOM_DIST        built page folder (default: ../dist)
  *   CIROOM_DATA_DIR, CIROOM_CACHE_DIR, CIROOM_DEV: see server/lib/paths.js
+ *   CIROOM_LISTEN_ALL=1  tests only: listen on all addresses even with the remote off
+ *   CIROOM_FAKE_NETWORK=<id>|<label>  tests only: pretend this is the current network (server/lib/netid.js)
  */
 import fs from "node:fs";
 import http from "node:http";
