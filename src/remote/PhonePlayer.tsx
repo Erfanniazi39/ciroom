@@ -121,6 +121,8 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   idRef.current = curId;
   const pcRef = useRef(pc);
   pcRef.current = pc;
+  const lastRep = useRef(startAt); // position of the last progress save: an idle player never saves again
+  const pcAt = useRef(Date.now()); // when the PC's position was last heard (it keeps moving while the PC plays)
   const elsewhere = useRef(false); // while true this phone must not save progress (the PC has the newer position)
 
   const wake = useCallback(() => {
@@ -137,9 +139,10 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     const pos = Math.max(0, Math.min(v.currentTime, p.duration));
     const w = Math.min(120, Math.round(watched.current));
     if (pos < 1 && w === 0) return true;
+    if (w === 0 && Math.abs(pos - lastRep.current) < 1) return true; // nothing moved since the last save
     let r = await post("/api/remote/progress", { id: idRef.current, position: pos, duration: p.duration, watched: w, final }, true);
     if (!r.ok && r.status === 429 && final) { await new Promise((res) => setTimeout(res, 650)); r = await post("/api/remote/progress", { id: idRef.current, position: pos, duration: p.duration, watched: w, final }, true); }
-    if (r.ok) watched.current = Math.max(0, watched.current - w);
+    if (r.ok) { watched.current = Math.max(0, watched.current - w); lastRep.current = pos; }
     return r.ok;
   }, []);
 
@@ -184,6 +187,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
       }, source(curId, low));
       mse.current = m;
       const at = Math.max(0, Math.min(startRef.current, Math.max(0, p.duration - 5)));
+      lastRep.current = at;
       await m.start(at);
       if (!alive) return;
       setLoading(false);
@@ -248,22 +252,24 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     return () => { window.clearInterval(t); window.clearInterval(beat); document.removeEventListener("visibilitychange", hide); window.removeEventListener("pagehide", gone); };
   }, [report, sendState]);
 
-  // The PC started playing this video (its play button, Space, Send to PC…): pause here and offer "Continue here".
-  // Edge only (paused → playing), so the two screens can't ping-pong.
-  const pcWasPaused = useRef(true);
+  // The PC started playing this video (its play button, Space, Send to PC…): this phone has the older position, playing or
+  // paused. Pause if playing, stop saving, and offer "Continue here". Edge only (paused → playing), so they can't ping-pong.
+  const pcPlaying = !!pc && pc.id === curId && !pc.paused;
+  const pcWasPlaying = useRef(pcPlaying); // already playing when this player opened: not an edge (opening it here takes over)
+  useEffect(() => { pcAt.current = Date.now(); }, [pc?.position, pc?.paused, pc?.id]);
   useEffect(() => {
-    const playingNow = !!pc && pc.id === curId && !pc.paused;
-    const was = !pcWasPaused.current;
-    pcWasPaused.current = !playingNow;
+    const was = pcWasPlaying.current;
+    pcWasPlaying.current = pcPlaying;
+    if (!pcPlaying || was) return;
     const v = video.current;
-    if (playingNow && !was && v && !v.paused) {
+    if (v && !v.paused) {
       void report(true); // the last save of this phone (the PC continues from here), then no more saves
-      elsewhere.current = true;
       v.pause();
       sendState(false);
-      setTakenByPc(true); setControls(true);
     }
-  }, [pc, curId, report, sendState]);
+    elsewhere.current = true;
+    setTakenByPc(true); setControls(true);
+  }, [pcPlaying, report, sendState]);
   useEffect(() => { elsewhere.current = false; setTakenByPc(false); }, [curId]);
 
   // Fullscreen state, and landscape while in it (Android Chrome allows the lock only in fullscreen).
@@ -307,7 +313,10 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     if (!v) return;
     const p = pcRef.current;
     elsewhere.current = false; setTakenByPc(false);
-    if (p && p.id === idRef.current && Number.isFinite(p.position) && Math.abs(p.position - v.currentTime) > 2) seekTo(p.position);
+    if (p && p.id === idRef.current && Number.isFinite(p.position)) {
+      const there = p.position + (p.paused ? 0 : Math.max(0, (Date.now() - pcAt.current) / 1000));
+      if (Math.abs(there - v.currentTime) > 2) { seekTo(there); lastRep.current = there; }
+    }
     void v.play().catch(() => setNeedsTap(true));
     wake();
   };
