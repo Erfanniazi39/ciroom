@@ -1,10 +1,13 @@
-import { Smartphone, Trash2 } from "lucide-react";
+import { ShieldCheck, ShieldAlert, Smartphone, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { qrMatrix } from "@/lib/qr";
 import { Button, cx } from "./ui";
 
 interface Info {
   enabled: boolean;
+  active: boolean;
+  network: { label: string; kind: "wifi" | "wired" | "unknown"; trusted: boolean };
+  trusted: { id: string; label: string; added: number }[];
   urls: string[];
   pairing: { pin: string; expiresIn: number } | null;
   devices: { id: string; name: string; created: number; lastSeen: number }[];
@@ -43,6 +46,28 @@ export function PhoneRemoteSettings({ Row, Toggle }: { Row: React.ComponentType<
         <Toggle on={info.enabled} onChange={async (v) => { await post("/api/remote/enable", { on: v }); void refresh(); }} label="Phone remote" />
       </Row>
       {info.enabled && (
+        <Row
+          label="This network"
+          hint={
+            info.network.kind === "unknown"
+              ? "CiRoom can't tell which network this is, so phones are off here."
+              : info.network.trusted
+                ? "Phones can connect while this PC is on this network."
+                : "Not trusted: phones can't connect here. Trust it only if it's your own network (home Wi-Fi or your phone's hotspot)."
+          }
+        >
+          <div className="flex items-center gap-3">
+            <span className={cx("flex items-center gap-2 text-sm font-semibold", info.network.trusted ? "text-fg" : "text-danger")}>
+              {info.network.trusted ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
+              {info.network.kind === "unknown" ? "Unknown network" : `${info.network.label} · ${info.network.trusted ? "Trusted ✓" : "Not trusted"}`}
+            </span>
+            {!info.network.trusted && info.network.kind !== "unknown" && (
+              <Button variant="primary" icon={<ShieldCheck size={16} />} onClick={async () => { const r = await post("/api/remote/trust"); if (r.error) setMsg(r.error); void refresh(); }}>Trust this network</Button>
+            )}
+          </div>
+        </Row>
+      )}
+      {info.enabled && info.active && (
         <>
           <Row
             label="Pair a phone"
@@ -66,6 +91,19 @@ export function PhoneRemoteSettings({ Row, Toggle }: { Row: React.ComponentType<
           {info.devices.map((d) => (
             <Row key={d.id} label={d.name} hint={`Paired ${new Date(d.created).toLocaleDateString()} · last seen ${new Date(d.lastSeen).toLocaleString()}`}>
               <button aria-label={`Remove ${d.name}`} onClick={async () => { await post("/api/remote/revoke", { id: d.id }); void refresh(); }} className={cx("flex h-10 items-center gap-2 rounded-full bg-white/[.08] px-4 text-sm font-semibold hover:bg-white/[.16]")}>
+                <Trash2 size={15} /> Remove
+              </button>
+            </Row>
+          ))}
+        </>
+      )}
+      {info.enabled && !info.active && msg && <div className="px-5 py-3 text-sm text-danger">{msg}</div>}
+      {info.trusted.length > 0 && (
+        <>
+          <div className="meta border-t border-white/[.06] px-5 pb-2 pt-4">Trusted networks</div>
+          {info.trusted.map((t) => (
+            <Row key={t.id} label={t.label} hint={`Trusted ${new Date(t.added).toLocaleDateString()}${info.network.trusted && t.label === info.network.label ? " · this network" : ""}`}>
+              <button aria-label={`Stop trusting ${t.label}`} onClick={async () => { await post("/api/remote/untrust", { id: t.id }); void refresh(); }} className="flex h-10 items-center gap-2 rounded-full bg-white/[.08] px-4 text-sm font-semibold hover:bg-white/[.16]">
                 <Trash2 size={15} /> Remove
               </button>
             </Row>
