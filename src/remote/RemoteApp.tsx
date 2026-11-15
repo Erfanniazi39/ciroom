@@ -62,7 +62,7 @@ export default function RemoteApp() {
         <Center>
           <MonitorOff size={40} className="text-fg-subtle" />
           <h1 className="mt-4 font-display text-2xl font-semibold">Remote is off</h1>
-          <p className="meta mt-2 max-w-xs text-center">On the PC, open CiRoom → Settings → Phone remote and turn it on.</p>
+          <p className="meta mt-2 max-w-xs text-center">On the PC, open CiRoom → Settings → Phone remote, turn it on, and trust this network.</p>
           <button onClick={check} className="mt-6 h-11 rounded-full bg-white/[.1] px-6 text-sm font-semibold">Try again</button>
         </Center>
       )}

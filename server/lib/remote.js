@@ -271,7 +271,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         const msg = { cmd: "progress", id: item.id, position, duration, watched: watchedRaw, at: now };
         if (windows.size) { for (const w of windows) w.write(`data: ${JSON.stringify(msg)}\n\n`); json(200, { ok: true, delivered: true }); return true; }
         const old = pending[item.id];
-        pending[item.id] = { id: item.id, position, duration, watched: (old?.watched ?? 0) + watchedRaw, at: now };
+        pending[item.id] = { id: item.id, position, duration, watched: Math.min(43200, (old?.watched ?? 0) + watchedRaw), at: now };
         savePending();
         json(200, { ok: true, delivered: false });
         return true;

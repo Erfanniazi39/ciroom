@@ -69,7 +69,8 @@ export function useRemoteLink() {
           const u = useUser.getState();
           // A late save from the phone must never rewind something the PC saved after the phone's report.
           if (!((u.progress[c.id]?.updatedAt ?? 0) > (c.at ?? Date.now()))) u.savePosition(c.id, c.position!, c.duration!);
-          if (Number.isFinite(c.watched) && c.watched! > 0 && c.watched! <= 120) u.addWatchTime(title, c.watched!);
+          // One live report is at most 120 s; a hand-over of what was watched while this window was closed can add up to 12 h.
+          if (Number.isFinite(c.watched) && c.watched! > 0 && c.watched! <= 43200) u.addWatchTime(title, c.watched!);
           break;
         }
         case "subPref": {
@@ -87,6 +88,14 @@ export function useRemoteLink() {
           const lib = useLibrary.getState().data;
           if (!lib || !(lib.movies.some((m) => m.id === c.id) || findEpisode(lib, c.id))) break;
           if (usePlayer.getState().current) usePlayer.getState().stop();
+          // Already on this video (e.g. paused by "Continue on phone", then "Send to PC"): the route doesn't change, so
+          // jump to the position the phone just saved and carry on instead of staying where the PC had paused.
+          if (!c.fromStart && ctl && usePlayback.getState().session?.id === c.id) {
+            const saved = useUser.getState().progress[c.id];
+            if (saved && saved.position > 1) ctl.seekTo(saved.position); // the phone just saved it (even on an already-watched episode)
+            if (ctl.getState().paused) ctl.toggle();
+            break;
+          }
           navigate(`/watch/${c.id}${c.fromStart ? "?t=0" : ""}`);
           break;
         }

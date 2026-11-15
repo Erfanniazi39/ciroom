@@ -32,7 +32,7 @@ const saveQuality = (q: Quality) => { try { localStorage.setItem(QUALITY_KEY, q)
 
 /** What a failed request means, in plain words. */
 function explain(status: number, fallback?: string): string {
-  if (status === 0) return "CiRoom isn't open on the PC, or this phone isn't on the same network any more.";
+  if (status === 0) return "Can't reach CiRoom on the PC. It may be closed, or phones are turned off on this network (trust it in CiRoom's Settings on the PC).";
   if (status === 401) return "This phone isn't paired any more. Pair it again from CiRoom's Settings on the PC.";
   if (status === 403) return "Phones are turned off on this network. Trust it in CiRoom's Settings on the PC.";
   if (status === 404) return "This video isn't available.";
@@ -139,7 +139,11 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
       const sIdx = startSubtitle(p.subtitles, user?.subPrefs?.[key], user?.prefs);
       setAudio(aIdx); setSubs(sIdx);
       mse.current?.destroy();
-      const m = new MseStream(v, "", p.duration, mime, true, aIdx, (msg) => setError(msg.replace(/ or use the full player\.?|Try the full player\.?/g, "").trim()), source(curId, low));
+      const m = new MseStream(v, "", p.duration, mime, true, aIdx, (msg) => {
+        const text = msg.replace(/ or use the full player\.?|Try the full player\.?/g, "").trim();
+        // A stream that dies because phones were switched off (another network) deserves the real reason.
+        fetch("/api/remote/me").then((r) => setError(r.status === 403 ? explain(403) : text), () => setError(text));
+      }, source(curId, low));
       mse.current = m;
       const at = Math.max(0, Math.min(startRef.current, Math.max(0, p.duration - 5)));
       await m.start(at);
@@ -180,6 +184,19 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
     }, 1000);
     const fast = window.setInterval(() => { const t = v.currentTime; setTime(t); const c = cues.current.find((x) => t >= x.start && t <= x.end); setCue(c?.text ?? ""); }, 250);
     return () => { window.clearInterval(tick); window.clearInterval(fast); };
+  }, []);
+
+  // Is the PC still reachable? (The video keeps playing from what is loaded, so tell the user why it will stop.)
+  useEffect(() => {
+    let misses = 0;
+    const t = window.setInterval(async () => {
+      try {
+        const r = await fetch("/api/remote/me");
+        misses = r.status === 403 ? 2 : 0;
+        if (r.status === 403) setError(explain(403));
+      } catch { if (++misses >= 2) setError(explain(0)); }
+    }, 5000);
+    return () => window.clearInterval(t);
   }, []);
 
   // Progress: every 10 s while playing; on pause, close, hide.
