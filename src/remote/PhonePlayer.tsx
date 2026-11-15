@@ -4,13 +4,13 @@
  * as the watch-party guest. Progress and watch time go back through the PC window (/api/remote/progress), never to
  * the database directly. "Send to PC" hands the current position to the PC window and starts it there.
  */
-import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
+import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RectangleHorizontal, RectangleVertical, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
 import { audioLabel, startAudio } from "@/components/WebPlayer";
 import { cx } from "@/components/ui";
-import { timecode } from "@/lib/format";
 import { findEpisode } from "@/lib/library";
+import { episodeCode, timecode } from "@/lib/format";
 import { lowStreamMime, MseStream, streamMime, type StreamSource } from "@/lib/mse";
 import { useLibrary } from "@/store/library";
 import { startSubtitle, subPrefFor } from "@/store/settings";
@@ -52,6 +52,25 @@ const source = (id: string, low: boolean): StreamSource => ({
   streamUrl: (_p, t, level = true, a = 0) => `/api/remote/watch/stream?id=${q(id)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}${low ? "&q=low" : ""}${a ? `&a=${a}` : ""}`,
 });
 
+const LOCK_KEY = "ciroom.phone.portraitlock";
+const HINT_KEY = "ciroom.phone.fshint";
+const readFlag = (k: string) => { try { return localStorage.getItem(k) === "1"; } catch { return false; } };
+const saveFlag = (k: string, on: boolean) => { try { localStorage.setItem(k, on ? "1" : "0"); } catch { /* private mode: not remembered */ } };
+type Orientable = { lock?: (o: string) => Promise<void> };
+
+/** Follows a CSS media query (the phone's orientation) live. */
+function useMediaQuery(query: string): boolean {
+  const [on, setOn] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const f = () => setOn(m.matches);
+    f();
+    m.addEventListener("change", f);
+    return () => m.removeEventListener("change", f);
+  }, [query]);
+  return on;
+}
+
 const post = (url: string, body: unknown, keepalive = false) =>
   fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive }).then(
     async (r) => ({ ok: r.ok, status: r.status, error: ((await r.json().catch(() => ({}))) as { error?: string }).error }),
@@ -83,6 +102,11 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const [note, setNote] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
   const [takenByPc, setTakenByPc] = useState(false); // the PC started this video: this phone paused and offers "Continue here"
+
+  const portrait = useMediaQuery("(orientation: portrait)");
+  const [portraitLock, setPortraitLock] = useState(() => readFlag(LOCK_KEY)); // full screen stays portrait
+  const [lockOk, setLockOk] = useState(() => typeof (screen.orientation as Orientable | undefined)?.lock === "function");
+  const [hint, setHint] = useState(false);
 
   const box = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -256,9 +280,23 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     try {
       if (document.fullscreenElement) { await document.exitFullscreen(); return; }
       await box.current?.requestFullscreen();
-      try { await (screen.orientation as ScreenOrientation & { lock: (o: string) => Promise<void> }).lock("landscape"); } catch { /* the phone may not allow it */ }
+      try { await (screen.orientation as Orientable).lock?.(readFlag(LOCK_KEY) ? "portrait" : "landscape"); } catch { /* the phone may not allow it */ }
     } catch { say("This browser didn't allow fullscreen."); }
   };
+  /** In full screen: switch between landscape and portrait. The choice is remembered. */
+  const toggleLock = async () => {
+    const to = !portraitLock;
+    try { await (screen.orientation as Orientable).lock?.(to ? "portrait" : "landscape"); setPortraitLock(to); saveFlag(LOCK_KEY, to); }
+    catch { setLockOk(false); } // this phone/browser can't lock: hide the button
+  };
+
+  // Rotated to landscape while not in full screen: the player fills the screen; a browser can't go full screen by itself, so hint once.
+  useEffect(() => {
+    if (portrait || full || readFlag(HINT_KEY)) { setHint(false); return; }
+    saveFlag(HINT_KEY, true); setHint(true);
+    const t = window.setTimeout(() => setHint(false), 3000);
+    return () => window.clearTimeout(t);
+  }, [portrait, full]);
 
   const duration = probe?.duration ?? 0;
   const shown = drag ?? time;
@@ -276,13 +314,13 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const toggle = () => { const v = video.current; if (!v) return; if (elsewhere.current) { continueHere(); return; } if (v.paused) void v.play().catch(() => setNeedsTap(true)); else v.pause(); wake(); };
 
   const close = async () => { video.current?.pause(); await report(true); sendState(false, true); onClose(); };
-  const next = async () => {
-    if (!probe?.nextId) return;
+  /** Play another episode on the phone (Next episode, the up-next card, the season list). A different id, so the PC isn't touched. */
+  const goTo = async (id: string) => {
     video.current?.pause();
     await report(true);
     sendState(false, true);
     startRef.current = 0;
-    setCurId(probe.nextId);
+    setCurId(id);
   };
   const sendToPc = async () => {
     video.current?.pause();
@@ -310,8 +348,24 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const nearEnd = !!probe?.nextId && (ended || (duration > 0 && duration - time < 25));
   const tracks = probe?.audioTracks ?? [];
 
+  const compact = portrait && !full; // portrait page: video on top, details below
+  const season = lib && !lib.movies.some((m) => m.id === curId) ? findEpisode(lib, curId) : undefined;
+  const seasonEps = season ? (season.series.seasons.find((x) => x.number === season.episode.season)?.episodes ?? []).filter((e) => e.file) : [];
+  const upNext = probe?.nextId && lib ? findEpisode(lib, probe.nextId) : undefined;
+
+  const tools = (
+    <>
+      {probe && probe.subtitles.length > 0 && <Tool label="Subtitles" on={subs >= 0} onClick={() => setMenu("subs")}><Captions size={22} /></Tool>}
+      {tracks.length > 1 && <Tool label="Audio" onClick={() => setMenu("audio")}><AudioLines size={22} /></Tool>}
+      <Tool label="Quality" on={quality === "low"} onClick={() => setMenu("quality")}><Gauge size={22} /></Tool>
+    </>
+  );
+
   return (
-    <div ref={box} className="fixed inset-0 z-[60] select-none bg-black text-white" onPointerMove={wake}>
+    <div ref={box} className={cx("fixed inset-0 z-[60] select-none text-white", compact ? "overflow-y-auto overflow-x-hidden bg-bg text-fg" : "overflow-hidden bg-black")} onPointerMove={wake}>
+      {/* The stage keeps the same <video> in both layouts (rotating must not restart the stream). */}
+      <div className={cx(compact ? "sticky top-0 z-10 aspect-video w-full bg-black pt-[env(safe-area-inset-top)]" : "absolute inset-0")} style={compact ? { boxSizing: "content-box" } : undefined}>
+      <div className="absolute inset-0 overflow-hidden" style={compact ? { top: "env(safe-area-inset-top)" } : undefined}>
       <video
         ref={video} playsInline preload="auto" className="absolute inset-0 h-full w-full bg-black object-contain"
         onClick={() => { if (menu) setMenu(null); else if (controls && !paused) setControls(false); else wake(); }}
@@ -321,17 +375,17 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
         onWaiting={() => mse.current?.onWaiting()}
       />
 
-      {cue && <div dir="auto" className={cx("pointer-events-none absolute inset-x-4 text-center", controls ? "bottom-36" : "bottom-10")}><span className="whitespace-pre-line rounded bg-black/70 px-2 py-1 text-[clamp(15px,3.8vw,22px)] leading-snug">{cue}</span></div>}
+      {cue && <div dir="auto" className={cx("pointer-events-none absolute inset-x-3 text-center", compact ? (controls ? "bottom-14" : "bottom-6") : controls ? "bottom-36" : "bottom-10")}><span className={cx("whitespace-pre-line rounded bg-black/70 px-2 py-1 leading-snug", compact ? "text-[clamp(13px,3.6vw,18px)]" : "text-[clamp(15px,3.8vw,22px)]")}>{cue}</span></div>}
 
-      {(loading || (!error && !paused && video.current && video.current.readyState < 3)) && !error && <div className="pointer-events-none absolute inset-0 flex items-center justify-center"><Loader2 className="animate-spin" size={44} /></div>}
+      {(loading || (!error && !paused && video.current && video.current.readyState < 3)) && !error && <div className="pointer-events-none absolute inset-0 flex items-center justify-center"><Loader2 className="animate-spin" size={compact ? 32 : 44} /></div>}
 
       {needsTap && !error && !loading && (
         <button onClick={toggle} className="absolute inset-0 flex items-center justify-center bg-black/50" aria-label="Play"><span className="flex h-20 w-20 items-center justify-center rounded-full bg-accent text-accent-ink"><Play size={34} fill="currentColor" className="ml-1" /></span></button>
       )}
 
       {error && (
-        <div role="alert" className="absolute inset-0 flex flex-col items-center justify-center gap-5 bg-black/85 px-8 text-center">
-          <p className="max-w-xs text-[17px] leading-6">{error}</p>
+        <div role="alert" className="absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-y-auto bg-black/85 px-6 text-center">
+          <p className={cx("max-w-xs leading-6", compact ? "text-[14px] leading-5" : "text-[17px]")}>{error}</p>
           <div className="flex gap-3">
             <button onClick={() => { startRef.current = video.current?.currentTime ?? startRef.current; setReload((n) => n + 1); }} className="h-11 rounded-full bg-white/[.14] px-6 text-sm font-semibold">Try again</button>
             <button onClick={() => void close()} className="h-11 rounded-full bg-accent px-6 text-sm font-semibold text-accent-ink">Back</button>
@@ -340,36 +394,37 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
       )}
 
       {nearEnd && !error && (
-        <button onClick={() => void next()} className={cx("absolute right-4 flex h-12 items-center gap-2 rounded-full bg-white px-5 text-[15px] font-bold text-black shadow-lift active:scale-95", controls ? "bottom-32" : "bottom-8")}>
-          <SkipForward size={18} fill="currentColor" /> Next episode
+        <button onClick={() => void goTo(probe!.nextId!)} className={cx("absolute right-3 flex items-center gap-2 rounded-full bg-white font-bold text-black shadow-lift active:scale-95", compact ? "h-9 px-4 text-[13px]" : "h-12 px-5 text-[15px]", controls ? (compact ? "bottom-14" : "bottom-32") : "bottom-6")}>
+          <SkipForward size={compact ? 15 : 18} fill="currentColor" /> Next episode
         </button>
       )}
 
       {takenByPc && !error && (
-        <div role="status" className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-4 bg-black/80 px-8 text-center">
-          <MonitorUp size={40} />
-          <p className="text-[19px] font-semibold">Playing on PC</p>
-          <button onClick={continueHere} className="h-12 rounded-full bg-accent px-7 text-[15px] font-semibold text-accent-ink active:scale-95">Continue here</button>
+        <div role="status" className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-3 bg-black/80 px-8 text-center">
+          <MonitorUp size={compact ? 28 : 40} />
+          <p className={cx("font-semibold", compact ? "text-[16px]" : "text-[19px]")}>Playing on PC</p>
+          <button onClick={continueHere} className="h-11 rounded-full bg-accent px-7 text-[15px] font-semibold text-accent-ink active:scale-95">Continue here</button>
         </div>
       )}
 
-      {note && <div role="status" className="pointer-events-none absolute inset-x-6 top-20 mx-auto max-w-sm rounded-2xl bg-surface-3 px-4 py-3 text-center text-sm shadow-lift">{note}</div>}
+      {hint && !compact && !full && <div className="pointer-events-none absolute inset-x-6 top-16 mx-auto max-w-xs rounded-2xl bg-surface-3 px-4 py-2 text-center text-sm shadow-lift">Tap <Maximize size={14} className="inline" /> for full screen</div>}
 
       <div className={cx("absolute inset-0 flex flex-col justify-between bg-gradient-to-b from-black/70 via-transparent to-black/80 transition-opacity duration-200 pointer-events-none", controls ? "opacity-100" : "invisible opacity-0")}>
         {/* top */}
-        <div className="pointer-events-auto flex items-center gap-3 px-4 pt-[max(12px,env(safe-area-inset-top))]">
-          <button aria-label="Close" onClick={() => void close()} className="flex h-12 w-12 items-center justify-center rounded-full bg-black/40 active:scale-90"><X size={26} /></button>
-          <div className="min-w-0 flex-1"><div className="truncate text-[16px] font-semibold">{title}</div>{quality === "low" && <div className="text-xs text-white/70">Low data (480p)</div>}</div>
-          <button aria-label="Send to the PC" onClick={() => void sendToPc()} className="flex h-12 items-center gap-2 rounded-full bg-black/40 px-4 text-sm font-semibold active:scale-95"><MonitorUp size={20} /> <span className="hidden min-[400px]:inline">Send to PC</span></button>
+        <div className={cx("pointer-events-auto flex items-center gap-3", compact ? "px-2 pt-2" : "px-4 pt-[max(12px,env(safe-area-inset-top))]")}>
+          <button aria-label="Close" onClick={() => void close()} className={cx("flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-10 w-10" : "h-12 w-12")}><X size={compact ? 22 : 26} /></button>
+          {!compact && <div className="min-w-0 flex-1"><div className="truncate text-[16px] font-semibold">{title}</div>{quality === "low" && <div className="text-xs text-white/70">Low data (480p)</div>}</div>}
+          {compact && <div className="flex-1" />}
+          {!compact && <button aria-label="Send to the PC" onClick={() => void sendToPc()} className="flex h-12 items-center gap-2 rounded-full bg-black/40 px-4 text-sm font-semibold active:scale-95"><MonitorUp size={20} /> <span className="hidden min-[400px]:inline">Send to PC</span></button>}
         </div>
         {/* centre */}
-        <div className="pointer-events-auto flex items-center justify-center gap-10">
-          <button aria-label="Back 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) - 10)} className="relative flex h-16 w-16 items-center justify-center rounded-full bg-black/40 active:scale-90"><RotateCcw size={34} strokeWidth={1.8} /><small className="absolute text-[11px] font-bold">10</small></button>
-          <button aria-label={paused ? "Play" : "Pause"} onClick={toggle} className="flex h-20 w-20 items-center justify-center rounded-full bg-accent text-accent-ink shadow-lift active:scale-95">{paused ? <Play size={34} fill="currentColor" className="ml-1" /> : <Pause size={34} fill="currentColor" />}</button>
-          <button aria-label="Forward 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) + 10)} className="relative flex h-16 w-16 items-center justify-center rounded-full bg-black/40 active:scale-90"><RotateCw size={34} strokeWidth={1.8} /><small className="absolute text-[11px] font-bold">10</small></button>
+        <div className={cx("pointer-events-auto flex items-center justify-center", compact ? "gap-8" : "gap-10")}>
+          <button aria-label="Back 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) - 10)} className={cx("relative flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-12 w-12" : "h-16 w-16")}><RotateCcw size={compact ? 26 : 34} strokeWidth={1.8} /><small className="absolute text-[10px] font-bold">10</small></button>
+          <button aria-label={paused ? "Play" : "Pause"} onClick={toggle} className={cx("flex items-center justify-center rounded-full bg-accent text-accent-ink shadow-lift active:scale-95", compact ? "h-14 w-14" : "h-20 w-20")}>{paused ? <Play size={compact ? 26 : 34} fill="currentColor" className="ml-1" /> : <Pause size={compact ? 26 : 34} fill="currentColor" />}</button>
+          <button aria-label="Forward 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) + 10)} className={cx("relative flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-12 w-12" : "h-16 w-16")}><RotateCw size={compact ? 26 : 34} strokeWidth={1.8} /><small className="absolute text-[10px] font-bold">10</small></button>
         </div>
         {/* bottom */}
-        <div className="pointer-events-auto px-5 pb-[max(14px,env(safe-area-inset-bottom))]">
+        <div className={cx("pointer-events-auto", compact ? "px-3 pb-1" : "px-5 pb-[max(14px,env(safe-area-inset-bottom))]")}>
           <input
             type="range" min={0} max={Math.max(1, Math.floor(duration))} step={1} value={Math.min(shown, duration || shown)} aria-label="Position" className="remote-range w-full"
             style={{ ["--p" as string]: `${duration ? (shown / duration) * 100 : 0}%` }}
@@ -377,20 +432,58 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
             onPointerUp={() => { if (drag !== null) { seekTo(drag); setDrag(null); } }}
             onKeyUp={() => { if (drag !== null) { seekTo(drag); setDrag(null); } }}
           />
-          <div className="mt-1 flex items-center justify-between text-xs tabular-nums text-white/80">
+          <div className="flex items-center justify-between text-xs tabular-nums text-white/80">
             <span>{timecode(shown)} / {timecode(duration)}</span>
             <div className="flex items-center gap-1">
-              {probe && probe.subtitles.length > 0 && <Tool label="Subtitles" on={subs >= 0} onClick={() => setMenu("subs")}><Captions size={22} /></Tool>}
-              {tracks.length > 1 && <Tool label="Audio" onClick={() => setMenu("audio")}><AudioLines size={22} /></Tool>}
-              <Tool label="Quality" on={quality === "low"} onClick={() => setMenu("quality")}><Gauge size={22} /></Tool>
+              {!compact && tools}
+              {full && lockOk && <Tool label={portraitLock ? "Landscape full screen" : "Portrait full screen"} on={portraitLock} onClick={toggleLock}>{portraitLock ? <RectangleVertical size={22} /> : <RectangleHorizontal size={22} />}</Tool>}
               <Tool label={full ? "Exit fullscreen" : "Fullscreen"} onClick={() => void toggleFull()}>{full ? <Minimize size={22} /> : <Maximize size={22} />}</Tool>
             </div>
           </div>
         </div>
       </div>
+      </div>
+      </div>
+
+      {note && <div role="status" className="pointer-events-none fixed inset-x-6 top-20 z-20 mx-auto max-w-sm rounded-2xl bg-surface-3 px-4 py-3 text-center text-sm text-fg shadow-lift">{note}</div>}
+
+      {compact && (
+        <div className="px-5 pb-[max(28px,env(safe-area-inset-bottom))] pt-4">
+          <h1 className="font-display text-[22px] font-semibold leading-tight">{probe?.title ?? ""}</h1>
+          {probe?.subtitle && <p className="meta mt-1 text-[15px]">{probe.subtitle}</p>}
+          {quality === "low" && <p className="meta mt-1 text-xs">Low data (480p)</p>}
+          <div className="mt-4 grid grid-cols-2 gap-2.5">
+            {probe && probe.subtitles.length > 0 && <Big icon={<Captions size={20} />} on={subs >= 0} onClick={() => setMenu("subs")}>Subtitles</Big>}
+            {tracks.length > 1 && <Big icon={<AudioLines size={20} />} onClick={() => setMenu("audio")}>Audio</Big>}
+            <Big icon={<Gauge size={20} />} on={quality === "low"} onClick={() => setMenu("quality")}>Quality</Big>
+            <Big icon={<MonitorUp size={20} />} onClick={() => void sendToPc()}>Send to PC</Big>
+          </div>
+          {upNext && (
+            <div className="mt-5">
+              <div className="mb-2 text-[13px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Up next</div>
+              <button onClick={() => void goTo(upNext.episode.id)} className="flex w-full items-center gap-3 rounded-2xl bg-white/[.07] p-3 text-left active:scale-[.99]">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink"><Play size={20} fill="currentColor" className="ml-0.5" /></span>
+                <span className="min-w-0"><span className="block truncate text-[15px] font-semibold">{upNext.episode.title}</span><span className="meta block text-[13px]">{episodeCode(upNext.episode.season, upNext.episode.number)}</span></span>
+              </button>
+            </div>
+          )}
+          {season && seasonEps.length > 1 && (
+            <div className="mt-5">
+              <div className="mb-2 text-[13px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Season {season.episode.season}</div>
+              {seasonEps.map((e) => (
+                <button key={e.id} onClick={() => e.id !== curId && void goTo(e.id)} className={cx("mb-1.5 flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-[15px]", e.id === curId ? "bg-accent text-accent-ink" : "bg-white/[.05]")}>
+                  <span className="w-8 shrink-0 text-[13px] font-semibold tabular-nums opacity-70">{e.number}</span>
+                  <span className="min-w-0 flex-1 truncate font-medium">{e.title}</span>
+                  {e.id === curId && <span className="text-xs font-semibold">Playing</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {menu && (
-        <div className="absolute inset-0 z-10 flex items-end bg-black/50" onClick={() => setMenu(null)}>
+        <div className="fixed inset-0 z-30 flex items-end bg-black/50 text-white" onClick={() => setMenu(null)}>
           <div className="max-h-[70%] w-full overflow-y-auto rounded-t-3xl bg-surface-2 p-4 pb-[max(16px,env(safe-area-inset-bottom))]" onClick={(e) => e.stopPropagation()}>
             {menu === "subs" && (
               <>
@@ -422,6 +515,9 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   );
 }
 
+const Big = ({ icon, on, onClick, children }: { icon: React.ReactNode; on?: boolean; onClick: () => void; children: React.ReactNode }) => (
+  <button onClick={onClick} className={cx("flex h-14 items-center justify-center gap-2 rounded-2xl text-[15px] font-semibold active:scale-[.98]", on ? "bg-accent text-accent-ink" : "bg-white/[.08]")}>{icon}{children}</button>
+);
 const Heading = ({ children }: { children: string }) => <div className="mb-2 px-1 text-[13px] font-semibold uppercase tracking-[0.08em] text-white/60">{children}</div>;
 const Choice = ({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: React.ReactNode }) => (
   <button onClick={onClick} className={cx("mb-1.5 flex min-h-12 w-full items-center rounded-xl px-4 py-2 text-left text-[15px] font-medium", selected ? "bg-accent text-accent-ink" : "bg-white/[.07]")}>{children}</button>
