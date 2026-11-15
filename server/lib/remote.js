@@ -130,16 +130,17 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   const eventStreams = new Map();
   const freshPhones = () => [...phoneNow.values()].filter((p) => Date.now() - p.at < PHONE_FRESH_MS);
   const sendWindows = (/** @type {any} */ msg) => { const s = `data: ${JSON.stringify(msg)}\n\n`; for (const w of windows) w.write(s); };
-  /** A phone just started playing `id`: pause the PC if it is playing the same title. */
+  /** A phone just started playing `id`: if the PC shows the same title (playing OR paused) it must take the phone's spot and stop saving its own. */
   function phoneTookOver(/** @type {string} */ id, /** @type {number} */ position) {
     const metaId = report.now?.meta?.id ?? null;
     if (mpv.running()) {
-      const s = mpv.snapshot(true);
-      if (metaId === id && !s.paused) { mpv.command({ cmd: "pause" }); sendWindows({ cmd: "yield", id, position, by: "phone" }); pushPhones(); }
+      if (metaId !== id) return;
+      if (!mpv.snapshot(true).paused) { mpv.command({ cmd: "pause" }); pushPhones(); }
+      sendWindows({ cmd: "yield", id, position, by: "phone" });
       return;
     }
     const page = report.now?.page;
-    if (windows.size && Date.now() - report.at < 6000 && page && !page.paused && metaId === id) sendWindows({ cmd: "yield", id, position, by: "phone" });
+    if (windows.size && Date.now() - report.at < 6000 && page && metaId === id) sendWindows({ cmd: "yield", id, position, by: "phone" });
   }
 
   /** Open streams per device (watching on the phone), so one phone can't start unlimited ffmpeg processes. @type {Map<string, { n: number }>} */

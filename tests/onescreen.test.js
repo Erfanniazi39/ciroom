@@ -74,11 +74,11 @@ test("yield: only on a paused → playing edge, only for the title the PC plays"
   assert.ok(win.msgs.some((m) => m.cmd === "phoneState" && m.id === "tiny" && m.playing === true && m.position === 110), "window sees the phone's live state");
   await wait(1200); await st("tiny", false); await wait(2100);
 
-  // the PC is paused: nothing to yield
+  // the PC shows the same title but is paused: it still has to take the phone's spot (and stop saving its own)
   win.msgs.length = 0;
   await report(pcPaused("tiny"));
   await st("tiny", true); await wait(150);
-  assert.equal(yields(win).length, 0, "PC paused → no yield");
+  assert.equal(yields(win).length, 1, "PC paused on the same title → yield");
   await st("tiny", false); await wait(2100);
 
   // the PC plays a different title: both keep playing
@@ -143,15 +143,19 @@ test("mpv path + stale phone state (fake mpv, fake clock)", async () => {
     skew += 20_000; mpv.cmds.length = 0;
     assert.equal((await st("tiny", true)).status, 200);
     assert.equal(mpv.cmds.length, 1, "stale entry (>15 s) is not 'already playing'");
-    // mpv already paused → untouched
+    // mpv already paused on the same title → no pause command, but the window is still told
     mpv.paused = true; mpv.cmds.length = 0; skew += 20_000;
-    await st("tiny", true);
+    await wait(150); const y0 = yields(w).length;
+    await st("tiny", true); await wait(100);
     assert.equal(mpv.cmds.length, 0);
+    assert.equal(yields(w).length, y0 + 1, "paused mpv on the same title → yield");
     // mpv plays a different title → untouched
     mpv.paused = false; skew += 20_000;
     await postJson(port, "/api/remote/report", { now: { meta: { id: "other" }, page: null }, user: null });
-    await st("tiny", true);
+    await wait(150); const y1 = yields(w).length;
+    await st("tiny", true); await wait(100);
     assert.equal(mpv.cmds.length, 0);
+    assert.equal(yields(w).length, y1, "different title → nothing");
     // stale entries are not listed in info
     skew += 20_000;
     assert.deepEqual((await request({ port, path: "/api/remote/info" })).json.phones, []);
