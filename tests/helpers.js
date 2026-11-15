@@ -67,3 +67,36 @@ export const request = (o) => new Promise((resolve, reject) => {
 
 export const postJson = (/** @type {number} */ port, /** @type {string} */ p, /** @type {any} */ body = {}, /** @type {Record<string,string>} */ headers = {}, method = "POST") =>
   request({ port, path: p, method, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+
+/** Switch the phone remote on, trust the (fake) network and pair a phone through the real flow. Returns { ip, cookie, get, post }. */
+export async function pairedPhone(/** @type {{ port: number }} */ s, name = "test phone") {
+  const ip = lanIp();
+  if (!ip) throw new Error("no LAN address");
+  const host = `${ip}:${s.port}`;
+  await postJson(s.port, "/api/remote/enable", { on: true });
+  await postJson(s.port, "/api/remote/trust");
+  await new Promise((r) => setTimeout(r, 400)); // the server re-listens on all addresses a moment after
+  const start = await postJson(s.port, "/api/remote/pair/start");
+  const cookie = await new Promise((resolve, reject) => {
+    const q = http.request({ host: ip, port: s.port, path: "/api/remote/pair", method: "POST", headers: { Host: host, "Content-Type": "application/json" } }, (r) => { r.resume(); resolve(String(r.headers["set-cookie"] ?? "").split(";")[0]); });
+    q.on("error", reject);
+    q.end(JSON.stringify({ pin: start.json.pin, name }));
+  });
+  if (!cookie) throw new Error("pairing failed");
+  const hdr = (/** @type {Record<string,string>} */ h = {}) => ({ Cookie: cookie, ...h });
+  return {
+    ip, host, cookie,
+    get: (/** @type {string} */ p, /** @type {Record<string,string>} */ h = {}) => request({ port: s.port, host: ip, path: p, hostHeader: host, headers: hdr(h) }),
+    post: (/** @type {string} */ p, /** @type {any} */ b = {}) => request({ port: s.port, host: ip, path: p, method: "POST", hostHeader: host, headers: hdr({ "Content-Type": "application/json" }), body: JSON.stringify(b) }),
+    /** Opens a GET and gives back the first bytes and the live response (call res.destroy() when done). */
+    open: (/** @type {string} */ p, /** @type {number} */ bytes = 4096) => new Promise((resolve, reject) => {
+      const q = http.get({ host: ip, port: s.port, path: p, headers: { Host: host, Cookie: cookie }, agent: false }, (res) => {
+        const chunks = []; let n = 0;
+        res.on("data", (c) => { chunks.push(c); n += c.length; if (n >= bytes) resolve({ status: res.statusCode, buf: Buffer.concat(chunks), res }); });
+        res.on("end", () => resolve({ status: res.statusCode, buf: Buffer.concat(chunks), res }));
+        if (res.statusCode !== 200) res.on("end", () => {});
+      });
+      q.on("error", reject);
+    }),
+  };
+}

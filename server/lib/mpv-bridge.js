@@ -244,11 +244,11 @@ export function createCiRoom(mediaRoot) {
   }
   /** @type {(() => void)[]} called when the phone remote or the watch party is switched on/off */
   const netListeners = [];
-  const remote = remoteRoutes({ running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip }, () => server_port, () => netListeners.forEach((f) => f()));
 
   const art = artworkRoutes();
   const userdb = userdbRoutes();
   const stream = streamRoutes(resolveVideo);
+  const remote = remoteRoutes({ running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip }, () => server_port, () => netListeners.forEach((f) => f()), { resolveVideo, stream });
   const meta = metadataRoutes();
   const scanner = scannerRoutes(rootAbs);
   const subSearch = subtitleSearchRoutes(resolveVideo);

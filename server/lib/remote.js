@@ -23,6 +23,7 @@ import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { currentNetwork } from "./netid.js";
+import { phoneWatchRoutes } from "./phone-watch.js";
 
 const FILE = path.join(DATA_DIR, "remote.json");
 const COOKIE = "ciroom_remote";
@@ -32,13 +33,17 @@ const PRIVATE_IP = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
 const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|tailscale|virbr|vboxnet|vmnet|lo$|vethernet|virtualbox|vmware|loopback|bluetooth)/i;
 
 /** What a paired phone may call. Everything else under /api is for this PC only. */
-const PHONE_GET = [/^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/thumb\?/, /^\/api\/remote\/events$/];
+const PHONE_GET = [/^\/api\/remote\/watch\/(probe|seekpoint|stream|subtitle\.vtt)\?/, /^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/thumb\?/, /^\/api\/remote\/events$/];
 const PHONE_POST = [/^\/api\/remote\/cmd$/];
 
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 
-/** @param {any} mpv adapter: { running(): boolean, snapshot(): any, command(c: any): void } */
-export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
+/**
+ * @param {any} mpv adapter: { running(): boolean, snapshot(): any, command(c: any): void }
+ * @param {() => number} [getPort] @param {() => void} [onToggle]
+ * @param {{ resolveVideo: (p: string) => string, stream: any } | null} [media] what phone watching needs (file lookup + streaming)
+ */
+export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, media = null) {
   /** @type {{ enabled: boolean, trusted: { id: string, label: string, added: number }[], devices: { id: string, hash: string, name: string, created: number, lastSeen: number }[] }} */
   let cfg = { enabled: false, trusted: [], devices: [] };
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* first run */ }
@@ -97,6 +102,14 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
   }
   /** Phone media streams (watching): closers called when phones are switched off. @type {Set<() => void>} */
   const phoneStreams = new Set();
+
+  /** Open streams per device (watching on the phone), so one phone can't start unlimited ffmpeg processes. @type {Map<string, { n: number }>} */
+  const streamCounts = new Map();
+  const watch = media ? phoneWatchRoutes({
+    resolveVideo: media.resolveVideo, stream: media.stream,
+    streamsOf: (id) => { let c = streamCounts.get(id); if (!c) streamCounts.set(id, (c = { n: 0 })); return c; },
+    onStream: (close) => { phoneStreams.add(close); return () => phoneStreams.delete(close); },
+  }) : null;
 
   const cookieOf = (/** @type {import("node:http").IncomingMessage} */ req) => {
     const m = String(req.headers.cookie ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]{64})`));
@@ -211,6 +224,12 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}) {
         res.setHeader("Set-Cookie", `${COOKIE}=${token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`);
         json(200, { ok: true });
         return true;
+      }
+
+      if (route.startsWith("/api/remote/watch/") && watch) {
+        const dev = deviceOf(req);
+        if (!dev) { json(401, { error: "Not paired" }); return true; }
+        return watch.handle(req, res, json, body, dev.id);
       }
 
       if (route === "/api/remote/events" && req.method === "GET") {
