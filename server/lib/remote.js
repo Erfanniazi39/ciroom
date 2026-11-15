@@ -14,7 +14,11 @@
  *    It cannot reach settings (API keys), file streams, subtitle downloads, artwork edits or mpv launching.
  *
  * Routes (PC window only, 127.0.0.1): /api/remote/info|enable|trust|untrust|pair/start|pair/cancel|revoke|report|commands
- * Routes (phone): /api/remote/pair|me|events|cmd|progress, /api/remote/watch/* (server/lib/phone-watch.js)
+ * Routes (phone): /api/remote/pair|me|events|cmd|progress|state, /api/remote/watch/* (server/lib/phone-watch.js)
+ *
+ * One screen at a time: the same title plays on one screen only. A phone reports {id, position, playing} to /api/remote/state;
+ * on a paused → playing edge for the title the PC is playing, the PC is paused (mpv directly, the page player through a
+ * "yield" message on the commands stream). The PC window's own paused → playing edge is seen by the phone through /events.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -36,7 +40,7 @@ const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|tailscale|virbr|vboxnet
 
 /** What a paired phone may call. Everything else under /api is for this PC only. */
 const PHONE_GET = [/^\/api\/remote\/watch\/(probe|seekpoint|stream|subtitle\.vtt)\?/, /^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/thumb\?/, /^\/api\/remote\/events$/];
-const PHONE_POST = [/^\/api\/remote\/cmd$/, /^\/api\/remote\/progress$/];
+const PHONE_POST = [/^\/api\/remote\/cmd$/, /^\/api\/remote\/progress$/, /^\/api\/remote\/state$/];
 
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 
@@ -84,7 +88,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     const a = isActive();
     if (a === wasActive) return;
     wasActive = a;
-    if (!a) { pairing = null; for (const r of phones) r.destroy(); phones.clear(); ensureTick(); for (const c of [...phoneStreams]) c(); }
+    if (!a) { pairing = null; phoneNow.clear(); eventStreams.clear(); for (const r of phones) r.destroy(); phones.clear(); ensureTick(); for (const c of [...phoneStreams]) c(); }
     onToggle();
   }
   async function refreshNet(fresh = false) {
@@ -116,6 +120,27 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   };
   /** Last accepted progress report per device (rate limit). @type {Map<string, number>} */
   const lastProgress = new Map();
+
+  /** What each phone is doing now (reported by /api/remote/state): fresh within 15 s, else it counts as not playing. @type {Map<string, { id: string, position: number, playing: boolean, at: number, name: string }>} */
+  const phoneNow = new Map();
+  const PHONE_FRESH_MS = 15_000;
+  /** Recent state posts per device (rate limit: 4 per 2 s). @type {Map<string, number[]>} */
+  const stateHits = new Map();
+  /** Open event streams per device, to drop a phone's state when its last one closes. @type {Map<string, number>} */
+  const eventStreams = new Map();
+  const freshPhones = () => [...phoneNow.values()].filter((p) => Date.now() - p.at < PHONE_FRESH_MS);
+  const sendWindows = (/** @type {any} */ msg) => { const s = `data: ${JSON.stringify(msg)}\n\n`; for (const w of windows) w.write(s); };
+  /** A phone just started playing `id`: pause the PC if it is playing the same title. */
+  function phoneTookOver(/** @type {string} */ id, /** @type {number} */ position) {
+    const metaId = report.now?.meta?.id ?? null;
+    if (mpv.running()) {
+      const s = mpv.snapshot(true);
+      if (metaId === id && !s.paused) { mpv.command({ cmd: "pause" }); sendWindows({ cmd: "yield", id, position, by: "phone" }); pushPhones(); }
+      return;
+    }
+    const page = report.now?.page;
+    if (windows.size && Date.now() - report.at < 6000 && page && !page.paused && metaId === id) sendWindows({ cmd: "yield", id, position, by: "phone" });
+  }
 
   /** Open streams per device (watching on the phone), so one phone can't start unlimited ffmpeg processes. @type {Map<string, { n: number }>} */
   const streamCounts = new Map();
@@ -249,7 +274,12 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
       if (route === "/api/remote/events" && req.method === "GET") {
         sse(res);
         phones.add(res);
-        res.on("close", () => { phones.delete(res); ensureTick(); });
+        const evDev = deviceOf(req)?.id;
+        if (evDev) eventStreams.set(evDev, (eventStreams.get(evDev) ?? 0) + 1);
+        res.on("close", () => {
+          phones.delete(res); ensureTick();
+          if (evDev) { const n = (eventStreams.get(evDev) ?? 1) - 1; if (n > 0) eventStreams.set(evDev, n); else { eventStreams.delete(evDev); phoneNow.delete(evDev); } }
+        });
         ensureTick();
         res.write(`data: ${JSON.stringify(publicState())}\n\n`);
         return true;
@@ -274,6 +304,27 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         pending[item.id] = { id: item.id, position, duration, watched: Math.min(43200, (old?.watched ?? 0) + watchedRaw), at: now };
         savePending();
         json(200, { ok: true, delivered: false });
+        return true;
+      }
+
+      if (route === "/api/remote/state" && req.method === "POST") {
+        const dev = deviceOf(req);
+        if (!dev) { json(401, { error: "Not paired" }); return true; }
+        const b = await body(req);
+        const item = itemFor(b.id);
+        const position = Number(b.position);
+        if (!item || !Number.isFinite(position) || position < 0 || position > 24 * 3600 || typeof b.playing !== "boolean") { json(400, { error: "Bad state" }); return true; }
+        const now = Date.now();
+        const hits = (stateHits.get(dev.id) ?? []).filter((t) => now - t < 2000);
+        if (hits.length >= 4) { stateHits.set(dev.id, hits); json(429, { error: "Too fast" }); return true; }
+        hits.push(now); stateHits.set(dev.id, hits);
+        const prev = phoneNow.get(dev.id);
+        const wasPlaying = !!prev && prev.playing && prev.id === item.id && now - prev.at < PHONE_FRESH_MS;
+        phoneNow.set(dev.id, { id: item.id, position, playing: b.playing, at: now, name: dev.name });
+        // Edges only: a heartbeat of an already playing phone never pauses the PC again.
+        if (b.playing && !wasPlaying) phoneTookOver(item.id, position);
+        sendWindows({ cmd: "phoneState", id: item.id, position, playing: b.playing, at: now });
+        json(200, { ok: true });
         return true;
       }
 
@@ -330,6 +381,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
           pairing: pairing && Date.now() < pairing.expires ? { pin: pairing.pin, expiresIn: Math.round((pairing.expires - Date.now()) / 1000) } : null,
           devices: cfg.devices.map((d) => ({ id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen })),
           phonesConnected: phones.size,
+          phones: freshPhones().map((p) => ({ name: p.name, id: p.id, position: p.position, playing: p.playing, at: p.at })),
         });
         return true;
       }
@@ -371,6 +423,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
       if (route === "/api/remote/revoke" && req.method === "POST") {
         const { id } = await body(req);
         cfg.devices = cfg.devices.filter((d) => d.id !== id);
+        phoneNow.delete(id);
         save();
         json(200, { ok: true });
         return true;

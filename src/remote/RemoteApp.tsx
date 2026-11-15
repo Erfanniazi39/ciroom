@@ -178,7 +178,7 @@ function Remote({ onLost }: { onLost: () => void }) {
         {tab === "remote" ? <NowPanel live={live} lib={lib} send={send} play={play} watch={watchOnPhone} online={status.ok} /> : <LibraryPanel lib={lib} progress={live.user?.progress ?? {}} play={play} watch={watchOnPhone} online={status.ok} />}
       </main>
 
-      {watching && <PhonePlayer id={watching.id} startAt={watching.startAt} user={watching.user} onClose={() => setWatching(null)} onLost={onLost} />}
+      {watching && <PhonePlayer id={watching.id} startAt={watching.startAt} user={watching.user} pc={live.now ? { id: live.now.id, paused: live.now.paused, position: live.now.position } : null} onClose={() => setWatching(null)} onLost={onLost} />}
 
       {toast && <div role="status" className="pointer-events-none fixed inset-x-5 bottom-24 z-50 mx-auto max-w-[480px] rounded-2xl bg-surface-3 px-4 py-3 text-center text-sm shadow-lift">{toast}</div>}
 

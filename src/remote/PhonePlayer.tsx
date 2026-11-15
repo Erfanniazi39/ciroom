@@ -58,7 +58,10 @@ const post = (url: string, body: unknown, keepalive = false) =>
     () => ({ ok: false, status: 0, error: undefined as string | undefined }),
   );
 
-export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { id: string; startAt: number; user: PhoneUser | null; onClose: () => void; onLost: () => void }) {
+/** What the PC says it is playing (from /api/remote/events). */
+export interface PcNow { id: string | null; paused: boolean; position: number }
+
+export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }: { id: string; startAt: number; user: PhoneUser | null; pc: PcNow | null; onClose: () => void; onLost: () => void }) {
   const lib = useLibrary((s) => s.data);
   const [curId, setCurId] = useState(firstId);
   const [reload, setReload] = useState(0); // bumps to rebuild the player at the current spot (quality change)
@@ -79,6 +82,7 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
   const [needsTap, setNeedsTap] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
+  const [takenByPc, setTakenByPc] = useState(false); // the PC started this video: this phone paused and offers "Continue here"
 
   const box = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -91,6 +95,9 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
   const hideTimer = useRef<number>();
   const titleKey = useCallback((id: string) => (lib?.movies.some((m) => m.id === id) ? id : lib ? findEpisode(lib, id)?.series.id ?? id : id), [lib]);
   idRef.current = curId;
+  const pcRef = useRef(pc);
+  pcRef.current = pc;
+  const elsewhere = useRef(false); // while true this phone must not save progress (the PC has the newer position)
 
   const wake = useCallback(() => {
     setControls(true);
@@ -102,7 +109,7 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
   /** Progress through the PC window. `final`: the last save of this moment (pause, close, hide), allowed to come sooner. */
   const report = useCallback(async (final = false) => {
     const v = video.current, p = probeRef.current;
-    if (!v || !p || !p.duration) return true;
+    if (!v || !p || !p.duration || elsewhere.current) return true;
     const pos = Math.max(0, Math.min(v.currentTime, p.duration));
     const w = Math.min(120, Math.round(watched.current));
     if (pos < 1 && w === 0) return true;
@@ -110,6 +117,13 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
     if (!r.ok && r.status === 429 && final) { await new Promise((res) => setTimeout(res, 650)); r = await post("/api/remote/progress", { id: idRef.current, position: pos, duration: p.duration, watched: w, final }, true); }
     if (r.ok) watched.current = Math.max(0, watched.current - w);
     return r.ok;
+  }, []);
+
+  /** One screen at a time: tell the PC whether this phone is playing (it pauses its own player when the phone starts). */
+  const sendState = useCallback((playing: boolean, keepalive = false) => {
+    const v = video.current, p = probeRef.current;
+    if (!v || !p) return;
+    void post("/api/remote/state", { id: idRef.current, position: Math.max(0, Math.min(v.currentTime, p.duration || v.currentTime)), playing }, keepalive);
   }, []);
 
   // ── Load the video (again when the episode or the quality changes) ──────────────────────────
@@ -199,15 +213,34 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
     return () => window.clearInterval(t);
   }, []);
 
-  // Progress: every 10 s while playing; on pause, close, hide.
+  // Progress: every 10 s while playing; on pause, close, hide. Playing state every 5 s while playing.
   useEffect(() => {
     const t = window.setInterval(() => { if (!video.current?.paused) void report(false); }, 10_000);
+    const beat = window.setInterval(() => { if (video.current && !video.current.paused) sendState(true); }, 5_000);
     const hide = () => { if (document.visibilityState === "hidden") void report(true); };
-    const gone = () => void report(true);
+    const gone = () => { void report(true); sendState(false, true); };
     document.addEventListener("visibilitychange", hide);
     window.addEventListener("pagehide", gone);
-    return () => { window.clearInterval(t); document.removeEventListener("visibilitychange", hide); window.removeEventListener("pagehide", gone); };
-  }, [report]);
+    return () => { window.clearInterval(t); window.clearInterval(beat); document.removeEventListener("visibilitychange", hide); window.removeEventListener("pagehide", gone); };
+  }, [report, sendState]);
+
+  // The PC started playing this video (its play button, Space, Send to PC…): pause here and offer "Continue here".
+  // Edge only (paused → playing), so the two screens can't ping-pong.
+  const pcWasPaused = useRef(true);
+  useEffect(() => {
+    const playingNow = !!pc && pc.id === curId && !pc.paused;
+    const was = !pcWasPaused.current;
+    pcWasPaused.current = !playingNow;
+    const v = video.current;
+    if (playingNow && !was && v && !v.paused) {
+      void report(true); // the last save of this phone (the PC continues from here), then no more saves
+      elsewhere.current = true;
+      v.pause();
+      sendState(false);
+      setTakenByPc(true); setControls(true);
+    }
+  }, [pc, curId, report, sendState]);
+  useEffect(() => { elsewhere.current = false; setTakenByPc(false); }, [curId]);
 
   // Fullscreen state, and landscape while in it (Android Chrome allows the lock only in fullscreen).
   useEffect(() => {
@@ -230,19 +263,31 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
   const duration = probe?.duration ?? 0;
   const shown = drag ?? time;
   const seekTo = (t: number) => { const to = Math.max(0, Math.min(duration - 0.5, t)); mse.current?.seek(to); setTime(to); wake(); };
-  const toggle = () => { const v = video.current; if (!v) return; if (v.paused) void v.play().catch(() => setNeedsTap(true)); else v.pause(); wake(); };
+  /** "Continue here": take the PC's live position (if it shows this video), then play. Playing pauses the PC. */
+  const continueHere = () => {
+    const v = video.current;
+    if (!v) return;
+    const p = pcRef.current;
+    elsewhere.current = false; setTakenByPc(false);
+    if (p && p.id === idRef.current && Number.isFinite(p.position) && Math.abs(p.position - v.currentTime) > 2) seekTo(p.position);
+    void v.play().catch(() => setNeedsTap(true));
+    wake();
+  };
+  const toggle = () => { const v = video.current; if (!v) return; if (elsewhere.current) { continueHere(); return; } if (v.paused) void v.play().catch(() => setNeedsTap(true)); else v.pause(); wake(); };
 
-  const close = async () => { video.current?.pause(); await report(true); onClose(); };
+  const close = async () => { video.current?.pause(); await report(true); sendState(false, true); onClose(); };
   const next = async () => {
     if (!probe?.nextId) return;
     video.current?.pause();
     await report(true);
+    sendState(false, true);
     startRef.current = 0;
     setCurId(probe.nextId);
   };
   const sendToPc = async () => {
     video.current?.pause();
     const saved = await report(true);
+    sendState(false, true);
     if (!saved) { say(explain(0)); return; }
     const r = await post("/api/remote/cmd", { cmd: "play", id: curId });
     if (!r.ok) { say(r.status === 409 ? "CiRoom isn't open on the PC." : explain(r.status, r.error)); void video.current?.play().catch(() => undefined); return; }
@@ -270,8 +315,8 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
       <video
         ref={video} playsInline preload="auto" className="absolute inset-0 h-full w-full bg-black object-contain"
         onClick={() => { if (menu) setMenu(null); else if (controls && !paused) setControls(false); else wake(); }}
-        onPlay={() => { setPaused(false); setNeedsTap(false); setEnded(false); wake(); }}
-        onPause={() => { setPaused(true); setControls(true); if (!video.current?.ended) void report(true); }}
+        onPlay={() => { setPaused(false); setNeedsTap(false); setEnded(false); wake(); sendState(true); }}
+        onPause={() => { setPaused(true); setControls(true); if (!video.current?.ended) void report(true); sendState(false); }}
         onEnded={() => { setEnded(true); setControls(true); void report(true); }}
         onWaiting={() => mse.current?.onWaiting()}
       />
@@ -298,6 +343,14 @@ export function PhonePlayer({ id: firstId, startAt, user, onClose, onLost }: { i
         <button onClick={() => void next()} className={cx("absolute right-4 flex h-12 items-center gap-2 rounded-full bg-white px-5 text-[15px] font-bold text-black shadow-lift active:scale-95", controls ? "bottom-32" : "bottom-8")}>
           <SkipForward size={18} fill="currentColor" /> Next episode
         </button>
+      )}
+
+      {takenByPc && !error && (
+        <div role="status" className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-4 bg-black/80 px-8 text-center">
+          <MonitorUp size={40} />
+          <p className="text-[19px] font-semibold">Playing on PC</p>
+          <button onClick={continueHere} className="h-12 rounded-full bg-accent px-7 text-[15px] font-semibold text-accent-ink active:scale-95">Continue here</button>
+        </div>
       )}
 
       {note && <div role="status" className="pointer-events-none absolute inset-x-6 top-20 mx-auto max-w-sm rounded-2xl bg-surface-3 px-4 py-3 text-center text-sm shadow-lift">{note}</div>}
