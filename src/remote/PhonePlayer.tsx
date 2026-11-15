@@ -71,6 +71,21 @@ function useMediaQuery(query: string): boolean {
   return on;
 }
 
+/** Height of an element, kept up to date (so the subtitle can sit exactly above the controls, on any phone). */
+function useHeight(): [React.RefObject<HTMLDivElement>, number] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [h, setH] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setH(el.offsetHeight));
+    ro.observe(el);
+    setH(el.offsetHeight);
+    return () => ro.disconnect();
+  });
+  return [ref, h];
+}
+
 const post = (url: string, body: unknown, keepalive = false) =>
   fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive }).then(
     async (r) => ({ ok: r.ok, status: r.status, error: ((await r.json().catch(() => ({}))) as { error?: string }).error }),
@@ -107,6 +122,10 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const [portraitLock, setPortraitLock] = useState(() => readFlag(LOCK_KEY)); // full screen stays portrait
   const [lockOk, setLockOk] = useState(() => typeof (screen.orientation as Orientable | undefined)?.lock === "function");
   const [hint, setHint] = useState(false);
+  const [stageRef, stageH] = useHeight();
+  const [topRef, topH] = useHeight();
+  const [barRef, barH] = useHeight();
+  const [cueRef, cueH] = useHeight();
 
   const box = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -362,6 +381,15 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const seasonEps = season ? (season.series.seasons.find((x) => x.number === season.episode.season)?.episodes ?? []).filter((e) => e.file) : [];
   const upNext = probe?.nextId && lib ? findEpisode(lib, probe.nextId) : undefined;
 
+  // The subtitle's bottom edge sits just above the control bar while the controls show (measured, not guessed).
+  const cueBottom = controls ? barH + 8 : compact ? 10 : 28;
+  const centreY = topH + (stageH - topH - barH) / 2; // the ±10/play row is centred between the top bar and the bottom bar
+  const cueTop = stageH - cueBottom - cueH;
+  // Short screens: if the subtitle would reach the ±10 buttons, drop those (the play button stays).
+  const hideSide = !compact && !!cue && controls && cueH > 0 && cueTop < centreY + 32 + 4;
+  // The small portrait video has no free middle: with a subtitle showing, the button row moves up into the space above it.
+  const lift = compact && !!cue && controls && cueH > 0 ? Math.max(4, cueTop / 2 - 28) : null;
+
   const tools = (
     <>
       {probe && probe.subtitles.length > 0 && <Tool label="Subtitles" on={subs >= 0} onClick={() => setMenu("subs")}><Captions size={22} /></Tool>}
@@ -374,7 +402,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     <div ref={box} className={cx("fixed inset-0 z-[60] select-none text-white", compact ? "overflow-y-auto overflow-x-hidden bg-bg text-fg" : "overflow-hidden bg-black")} onPointerMove={wake}>
       {/* The stage keeps the same <video> in both layouts (rotating must not restart the stream). */}
       <div className={cx(compact ? "sticky top-0 z-10 aspect-video w-full bg-black pt-[env(safe-area-inset-top)]" : "absolute inset-0")} style={compact ? { boxSizing: "content-box" } : undefined}>
-      <div className="absolute inset-0 overflow-hidden" style={compact ? { top: "env(safe-area-inset-top)" } : undefined}>
+      <div ref={stageRef} className="absolute inset-0 overflow-hidden" style={compact ? { top: "env(safe-area-inset-top)" } : undefined}>
       <video
         ref={video} playsInline preload="auto" className="absolute inset-0 h-full w-full bg-black object-contain"
         onClick={() => { if (menu) setMenu(null); else if (controls && !paused) setControls(false); else wake(); }}
@@ -384,7 +412,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
         onWaiting={() => mse.current?.onWaiting()}
       />
 
-      {cue && <div dir="auto" className={cx("pointer-events-none absolute inset-x-3 text-center", compact ? (controls ? "bottom-14" : "bottom-6") : controls ? "bottom-36" : "bottom-10")}><span className={cx("whitespace-pre-line rounded bg-black/70 px-2 py-1 leading-snug", compact ? "text-[clamp(13px,3.6vw,18px)]" : "text-[clamp(15px,3.8vw,22px)]")}>{cue}</span></div>}
+      {cue && <div ref={cueRef} dir="auto" className="pointer-events-none absolute inset-x-3 text-center transition-[bottom] duration-200" style={{ bottom: cueBottom }}><span className={cx("mx-auto line-clamp-2 w-fit max-w-full whitespace-pre-line rounded bg-black/70 px-2 py-1 leading-snug", compact ? "text-[clamp(13px,3.6vw,18px)]" : "text-[clamp(15px,3.8vw,22px)]")}>{cue}</span></div>}
 
       {(loading || (!error && !paused && video.current && video.current.readyState < 3)) && !error && <div className="pointer-events-none absolute inset-0 flex items-center justify-center"><Loader2 className="animate-spin" size={compact ? 32 : 44} /></div>}
 
@@ -420,20 +448,20 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
 
       <div className={cx("absolute inset-0 flex flex-col justify-between bg-gradient-to-b from-black/70 via-transparent to-black/80 transition-opacity duration-200 pointer-events-none", controls ? "opacity-100" : "invisible opacity-0")}>
         {/* top */}
-        <div className={cx("pointer-events-auto flex items-center gap-3", compact ? "px-2 pt-2" : "px-4 pt-[max(12px,env(safe-area-inset-top))]")}>
+        <div ref={topRef} className={cx("pointer-events-auto flex items-center gap-3", compact ? "px-2 pt-2" : "px-4 pt-[max(12px,env(safe-area-inset-top))]")}>
           <button aria-label="Close" onClick={() => void close()} className={cx("flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-10 w-10" : "h-12 w-12")}><X size={compact ? 22 : 26} /></button>
           {!compact && <div className="min-w-0 flex-1"><div className="truncate text-[16px] font-semibold">{title}</div>{quality === "low" && <div className="text-xs text-white/70">Low data (480p)</div>}</div>}
           {compact && <div className="flex-1" />}
           {!compact && <button aria-label="Send to the PC" onClick={() => void sendToPc()} className="flex h-12 items-center gap-2 rounded-full bg-black/40 px-4 text-sm font-semibold active:scale-95"><MonitorUp size={20} /> <span className="hidden min-[400px]:inline">Send to PC</span></button>}
         </div>
         {/* centre */}
-        <div className={cx("pointer-events-auto flex items-center justify-center", compact ? "gap-8" : "gap-10")}>
-          <button aria-label="Back 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) - 10)} className={cx("relative flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-12 w-12" : "h-16 w-16")}><RotateCcw size={compact ? 26 : 34} strokeWidth={1.8} /><small className="absolute text-[10px] font-bold">10</small></button>
+        <div className={cx("pointer-events-auto flex items-center justify-center", compact ? "gap-8" : "gap-10", lift !== null && "absolute inset-x-0")} style={lift !== null ? { top: lift } : undefined}>
+          {!hideSide && <button aria-label="Back 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) - 10)} className={cx("relative flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-12 w-12" : "h-16 w-16")}><RotateCcw size={compact ? 26 : 34} strokeWidth={1.8} /><small className="absolute text-[10px] font-bold">10</small></button>}
           <button aria-label={paused ? "Play" : "Pause"} onClick={toggle} className={cx("flex items-center justify-center rounded-full bg-accent text-accent-ink shadow-lift active:scale-95", compact ? "h-14 w-14" : "h-20 w-20")}>{paused ? <Play size={compact ? 26 : 34} fill="currentColor" className="ml-1" /> : <Pause size={compact ? 26 : 34} fill="currentColor" />}</button>
-          <button aria-label="Forward 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) + 10)} className={cx("relative flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-12 w-12" : "h-16 w-16")}><RotateCw size={compact ? 26 : 34} strokeWidth={1.8} /><small className="absolute text-[10px] font-bold">10</small></button>
+          {!hideSide && <button aria-label="Forward 10 seconds" onClick={() => seekTo((video.current?.currentTime ?? 0) + 10)} className={cx("relative flex items-center justify-center rounded-full bg-black/40 active:scale-90", compact ? "h-12 w-12" : "h-16 w-16")}><RotateCw size={compact ? 26 : 34} strokeWidth={1.8} /><small className="absolute text-[10px] font-bold">10</small></button>}
         </div>
         {/* bottom */}
-        <div className={cx("pointer-events-auto", compact ? "px-3 pb-1" : "px-5 pb-[max(14px,env(safe-area-inset-bottom))]")}>
+        <div ref={barRef} className={cx("pointer-events-auto", compact ? "px-3 pb-1" : "px-5 pb-[max(14px,env(safe-area-inset-bottom))]")}>
           <input
             type="range" min={0} max={Math.max(1, Math.floor(duration))} step={1} value={Math.min(shown, duration || shown)} aria-label="Position" className="remote-range w-full"
             style={{ ["--p" as string]: `${duration ? (shown / duration) * 100 : 0}%` }}
