@@ -16,7 +16,7 @@ import { useSettings } from "@/store/settings";
 import { useUser, type SubPref } from "@/store/user";
 import { getWebController } from "@/store/webControl";
 
-interface Cmd { cmd: string; value?: number; id?: string; fromStart?: boolean; pref?: SubPref; position?: number; duration?: number; watched?: number; at?: number }
+interface Cmd { cmd: string; value?: number; id?: string; fromStart?: boolean; pref?: SubPref; position?: number; duration?: number; watched?: number; at?: number; playing?: boolean; by?: string }
 
 /** Movie id, or the series id of an episode: what watch time and subtitle choices are kept under. Null for an unknown id. */
 function titleIdOf(id: string): string | null {
@@ -73,6 +73,23 @@ export function useRemoteLink() {
           if (Number.isFinite(c.watched) && c.watched! > 0 && c.watched! <= 43200) u.addWatchTime(title, c.watched!);
           break;
         }
+        case "phoneState": {
+          // What a phone is doing now: used to continue from its position when the PC plays this title again.
+          if (c.id && Number.isFinite(c.position) && typeof c.playing === "boolean") {
+            usePlayback.setState((st) => ({ phoneNow: { ...st.phoneNow, [c.id!]: { position: c.position!, playing: c.playing!, at: c.at ?? Date.now() } } }));
+          }
+          break;
+        }
+        case "yield": {
+          // A phone started playing this title: pause here, and don't save this (older) position over the phone's.
+          const pb = usePlayback.getState();
+          const onPage = !!ctl && pb.session?.id === c.id;
+          const inMpv = usePlayer.getState().current?.id === c.id; // the server already paused mpv
+          if (!c.id || !(onPage || inMpv)) break;
+          usePlayback.setState({ elsewhere: { id: c.id, at: Date.now() } });
+          if (onPage) ctl!.pause();
+          break;
+        }
         case "subPref": {
           const title = c.id ? titleIdOf(c.id) : null;
           const p = c.pref;
@@ -91,6 +108,7 @@ export function useRemoteLink() {
           // Already on this video (e.g. paused by "Continue on phone", then "Send to PC"): the route doesn't change, so
           // jump to the position the phone just saved and carry on instead of staying where the PC had paused.
           if (!c.fromStart && ctl && usePlayback.getState().session?.id === c.id) {
+            usePlayback.setState({ elsewhere: null }); // the phone handed it over with its own saved position
             const saved = useUser.getState().progress[c.id];
             if (saved && saved.position > 1) ctl.seekTo(saved.position); // the phone just saved it (even on an already-watched episode)
             if (ctl.getState().paused) ctl.toggle();
@@ -117,6 +135,13 @@ export function useRemoteLink() {
     }
     report();
     const t = window.setInterval(report, 1000);
-    return () => { alive = false; es.close(); window.clearInterval(t); };
+    // A play/pause on this PC must reach the phone within a moment (it pauses itself on our paused → playing edge), not a second later.
+    let lastShape = "";
+    const edge = window.setInterval(() => {
+      const ctl = getWebController();
+      const shape = `${usePlayback.getState().session?.id ?? ""}|${ctl ? ctl.getState().paused : ""}`;
+      if (shape !== lastShape) { lastShape = shape; report(); }
+    }, 200);
+    return () => { alive = false; es.close(); window.clearInterval(t); window.clearInterval(edge); };
   }, [navigate]);
 }

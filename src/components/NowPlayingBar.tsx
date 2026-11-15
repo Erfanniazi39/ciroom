@@ -11,6 +11,7 @@ import { isCompleted, useUser } from "@/store/user";
 import { StillArt } from "./Artwork";
 import { MenuItem, MenuTitle, Popover } from "./Popover";
 import { Button, IconButton, cx } from "./ui";
+import { isElsewhere, takeBack } from "@/lib/oneScreen";
 
 const UP_NEXT_SECONDS = 10;
 const POLL_MS = 500;
@@ -28,6 +29,7 @@ export function NowPlayingBar() {
   // Watch time for Stats (mpv sessions): seconds while mpv is really playing (not paused, position moving).
   const watched = useRef(0);
   const lastPos = useRef<number | null>(null);
+  const wasPaused = useRef(false);
   // Subtitle/audio track seen last poll: a change after start (mpv menu, keys, this bar) is remembered per series.
   const lastTracks = useRef<{ sid: number | null; aid: number | null } | null>(null);
   const trackPolls = useRef(0);
@@ -38,6 +40,7 @@ export function NowPlayingBar() {
     lastSaved.current = current.startAt;
     sawRunning.current = false;
     lastPos.current = null;
+    wasPaused.current = false;
     lastTracks.current = null;
     trackPolls.current = 0;
     const titleId = current.titleId ?? current.id;
@@ -50,6 +53,12 @@ export function NowPlayingBar() {
       if (snap.running) {
         sawRunning.current = true;
         sync(snap);
+        // One screen at a time: a phone had this title and the PC plays it again → continue from the phone's position.
+        if (wasPaused.current && !snap.paused && isElsewhere(cur.id)) {
+          const to = takeBack(cur.id, snap.position);
+          if (to !== null) usePlayer.getState().seek(to);
+        }
+        wasPaused.current = snap.paused;
         // Count real playing time: unpaused and the position actually advanced (not stuck loading).
         const moved = lastPos.current !== null && snap.position > lastPos.current && snap.position - lastPos.current < 5;
         if (!snap.paused && moved) watched.current += POLL_MS / 1000;
@@ -78,7 +87,7 @@ export function NowPlayingBar() {
         const saved = useUser.getState().subDelays[cur.id] ?? 0;
         if (Math.abs(saved - snap.subDelay) > 0.001) useUser.getState().setSubDelay(cur.id, snap.subDelay);
         const dur = snap.duration || cur.duration;
-        if (Math.abs(snap.position - lastSaved.current) >= 10) {
+        if (!isElsewhere(cur.id) && Math.abs(snap.position - lastSaved.current) >= 10) {
           savePosition(cur.id, snap.position, dur);
           lastSaved.current = snap.position;
         }
@@ -88,7 +97,7 @@ export function NowPlayingBar() {
       flush();
       const dur = snap.duration || cur.duration;
       const pos = snap.ended ? dur : snap.position;
-      savePosition(cur.id, pos, dur);
+      if (!isElsewhere(cur.id) || snap.ended) savePosition(cur.id, pos, dur); // a phone has the newer position: don't rewind it
       const next = (snap.ended || isCompleted(pos, dur)) && cur.nextId ? resolveEpisode(cur.nextId) : undefined;
       if (next) setUpNext(buildRequest(next, 0));
       else usePlayer.setState({ current: null });

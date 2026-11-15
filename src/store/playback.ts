@@ -20,6 +20,10 @@ interface PlaybackState {
   /** "Fullscreen" without the browser API (which needs a real click, so a phone can't trigger it): the player fills the app window. Survives episode changes. */
   cover: boolean;
   setCover: (on: boolean) => void;
+  /** One screen at a time: this title was taken over by a phone (the PC paused; it must not save its old position). `at` = when. */
+  elsewhere: { id: string; at: number } | null;
+  /** What phones report, by title id (newest, with the server's time). */
+  phoneNow: Record<string, { position: number; playing: boolean; at: number }>;
   requestFinder: () => void;
   /** Stop the in-page player and mark this id as playing in the full player. */
   handOff: (id: string) => void;
@@ -35,13 +39,15 @@ export const usePlayback = create<PlaybackState>((set, get) => ({
   handedOff: null,
   finderRequest: 0,
   cover: false,
+  elsewhere: null,
+  phoneNow: {},
   setCover: (on) => set({ cover: on }),
   requestFinder: () => set((s) => ({ finderRequest: s.finderRequest + 1 })),
-  handOff: (id) => set({ session: null, handedOff: id, cover: false }),
+  handOff: (id) => set({ session: null, handedOff: id, cover: false, elsewhere: null }),
   clearHandoff: () => set({ handedOff: null }),
   open: (id, startAt) => {
     if (get().session?.id === id) return; // already playing this one (e.g. coming back from the mini player)
-    set({ session: { id, startAt, key: ++counter } });
+    set({ session: { id, startAt, key: ++counter }, elsewhere: null });
   },
   close: () => set({ session: null, cover: false }),
 }));

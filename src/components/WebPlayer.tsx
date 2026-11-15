@@ -10,6 +10,7 @@ import { timecode } from "@/lib/format";
 import { SubtitleFinder } from "./SubtitleFinder";
 import type { SearchContext } from "@/api/subsearch";
 import { usePlayback } from "@/store/playback";
+import { isElsewhere, takeBack } from "@/lib/oneScreen";
 import { pickSubtitle, startSubtitle, subPrefFor, useSettings } from "@/store/settings";
 import { useUser } from "@/store/user";
 import { cx } from "./ui";
@@ -202,6 +203,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   }, [finderRequest, find, mini]);
 
   const save = useCallback(() => {
+    if (isElsewhere(id)) return; // a phone has this title: our older position must not rewind its progress
     if (duration > 0) savePosition(id, timeRef.current, duration);
     lastSaved.current = timeRef.current;
   }, [id, duration, savePosition]);
@@ -315,10 +317,26 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     else restartAt(0);
   }
 
+  // Playing again after a phone had this title: continue from the phone's position.
+  const [toast, setToast] = useState<string | null>(null);
+  const resumeFromPhone = () => {
+    const to = takeBack(id, timeRef.current);
+    if (to === null) return;
+    wantPlay.current = true;
+    seekRef.current(to);
+    setToast(`Continued from your phone at ${timecode(to)}`);
+    window.setTimeout(() => setToast(null), 3000);
+  };
+  const resumeRef = useRef(resumeFromPhone);
+  resumeRef.current = resumeFromPhone;
+  const elsewhere = usePlayback((s) => s.elsewhere);
+  const onPhone = !mini && elsewhere?.id === id;
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
     if (ended) { replay(); return; }
+    if (v.paused) resumeRef.current();
     if (v.paused) v.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true));
     else { wantPlay.current = false; v.pause(); save(); }
   }, [ended, save]);
@@ -374,7 +392,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       skip: skipRef.current,
     }),
     toggle: togglePlay,
-    play: () => { const v = videoRef.current; if (v && v.paused) { if (ended) replay(); else v.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true)); } },
+    play: () => { const v = videoRef.current; if (v && v.paused) { if (ended) replay(); else { resumeRef.current(); v.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true)); } } },
     pause: () => { const v = videoRef.current; wantPlay.current = false; if (v && !v.paused) { v.pause(); save(); } },
     seekTo: seek,
     setVolume,
@@ -464,7 +482,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
         onDoubleClick={toggleFullscreen}
         onLoadedMetadata={() => { pending.current = null; }}
         onLoadedData={() => { const v = videoRef.current; if (v) { v.playbackRate = speed; v.volume = Math.min(volumePref, 100) / 100; } }}
-        onPlay={() => { wantPlay.current = true; setPlaying(true); setNeedsGesture(false); poke(); }}
+        onPlay={() => { if (isElsewhere(id)) resumeRef.current(); wantPlay.current = true; setPlaying(true); setNeedsGesture(false); poke(); }}
         onPause={() => setPlaying(false)}
         onWaiting={() => { setWaiting(true); mseRef.current?.onWaiting(); }}
         onPlaying={() => setWaiting(false)}
@@ -492,6 +510,17 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
           </span>
         </div>
       )}
+
+      {/* One screen at a time: a phone is playing this title */}
+      {onPhone && !error && (
+        <div className="absolute inset-x-0 top-4 z-20 flex justify-center px-4">
+          <div className="flex items-center gap-3 rounded-full bg-[#141419]/95 py-2 pl-5 pr-2 text-[14px] font-semibold text-white shadow-[0_18px_50px_-12px_rgb(0_0_0/.9)] ring-1 ring-white/10">
+            Playing on your phone
+            <button onClick={(e) => { e.stopPropagation(); togglePlay(); }} className="rounded-full bg-violet-500 px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-violet-400">Continue here</button>
+          </div>
+        </div>
+      )}
+      {toast && !mini && <div role="status" className="pointer-events-none absolute inset-x-0 top-4 z-20 flex justify-center"><span className="rounded-full bg-[#141419]/95 px-5 py-2 text-[14px] font-semibold text-white ring-1 ring-white/10">{toast}</span></div>}
 
       {/* Loading / errors / big play */}
       {waiting && !error && !needsGesture && !ended && (
