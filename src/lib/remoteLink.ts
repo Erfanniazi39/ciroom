@@ -12,10 +12,18 @@ import { findEpisode } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import { usePlayback } from "@/store/playback";
 import { usePlayer } from "@/store/player";
-import { useUser } from "@/store/user";
+import { useUser, type SubPref } from "@/store/user";
 import { getWebController } from "@/store/webControl";
 
-interface Cmd { cmd: string; value?: number; id?: string; fromStart?: boolean }
+interface Cmd { cmd: string; value?: number; id?: string; fromStart?: boolean; pref?: SubPref; position?: number; duration?: number; watched?: number; at?: number }
+
+/** Movie id, or the series id of an episode: what watch time and subtitle choices are kept under. Null for an unknown id. */
+function titleIdOf(id: string): string | null {
+  const lib = useLibrary.getState().data;
+  if (!lib) return null;
+  if (lib.movies.some((m) => m.id === id)) return id;
+  return findEpisode(lib, id)?.series.id ?? null;
+}
 
 export function meta() {
   const full = usePlayer.getState().current;
@@ -52,6 +60,23 @@ export function useRemoteLink() {
         case "subDelay": if (ctl && Number.isFinite(c.value)) ctl.setSubDelay(c.value!); break;
         case "subtitle": if (ctl && Number.isFinite(c.value)) ctl.setSub(c.value!); break;
         case "skip": ctl?.skip(); break;
+        case "progress": {
+          // Watched on the phone: the phone never writes to the database itself (this window owns it).
+          if (!c.id || !Number.isFinite(c.position) || !Number.isFinite(c.duration)) break;
+          const title = titleIdOf(c.id);
+          if (!title) break;
+          const u = useUser.getState();
+          // A late save from the phone must never rewind something the PC saved after the phone's report.
+          if (!((u.progress[c.id]?.updatedAt ?? 0) > (c.at ?? Date.now()))) u.savePosition(c.id, c.position!, c.duration!);
+          if (Number.isFinite(c.watched) && c.watched! > 0 && c.watched! <= 120) u.addWatchTime(title, c.watched!);
+          break;
+        }
+        case "subPref": {
+          const title = c.id ? titleIdOf(c.id) : null;
+          const p = c.pref;
+          if (title && p && (p.off === true || (typeof p.name === "string" && (p.language === null || typeof p.language === "string")))) useUser.getState().setSubPref(title, p);
+          break;
+        }
         case "stop":
           usePlayback.getState().close();
           if (location.hash.startsWith("#/watch/")) navigate("/");
@@ -76,7 +101,7 @@ export function useRemoteLink() {
       const m = meta();
       const body: Record<string, unknown> = { now: { meta: m, page: ctl && usePlayback.getState().session ? ctl.getState() : null } };
       const u = useUser.getState();
-      const user = JSON.stringify({ progress: u.progress, favorites: u.favorites });
+      const user = JSON.stringify({ progress: u.progress, favorites: u.favorites, subPrefs: u.subPrefs, audioPrefs: u.audioPrefs });
       if (user !== lastUser) { lastUser = user; body.user = JSON.parse(user); }
       fetch("/api/remote/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => undefined);
     }

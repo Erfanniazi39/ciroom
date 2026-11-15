@@ -128,3 +128,99 @@ test("switching to another network closes open phone streams", { skip }, async (
   fs.writeFileSync(netFile, "wifi:HomeWifi|HomeWifi");
   await request({ port: s.port, path: "/api/remote/info" });
 });
+
+// ── W2: progress and subtitle choice go through the PC window ────────────────────────────────────────────
+import http from "node:http";
+
+/** The PC window's command stream (loopback). Collects the data lines. */
+function windowStream(port) {
+  const msgs = [];
+  let res;
+  const ready = new Promise((resolve) => {
+    http.get({ host: "127.0.0.1", port, path: "/api/remote/commands", agent: false }, (r) => {
+      res = r;
+      r.setEncoding("utf8");
+      let buf = "";
+      r.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = chunk.match(/^data: (.*)$/m); if (m) msgs.push(JSON.parse(m[1])); } });
+      resolve();
+    });
+  });
+  return { msgs, ready, close: () => res?.destroy() };
+}
+const prog = (body) => phone.post("/api/remote/progress", body);
+const fastWait = () => wait(3100);
+
+test("progress: bad ids and bad numbers are 400", { skip }, async () => {
+  await fastWait();
+  for (const b of [
+    { id: "nope", position: 1, duration: 10 }, { id: "../x", position: 1, duration: 10 }, { id: "tiny", position: -1, duration: 10 },
+    { id: "tiny", position: 11, duration: 10 }, { id: "tiny", position: 1, duration: 90000 }, { id: "tiny", position: 1, duration: 10, watched: 500 },
+    { id: "tiny", position: 1, duration: 10, watched: -2 }, { id: "tiny", position: "x", duration: 10 }, { id: "tiny", duration: 10 }, { id: "tiny", position: 1, duration: 0 },
+  ]) {
+    const r = await prog({ ...b, final: true });
+    assert.equal(r.status, 400, JSON.stringify(b));
+    await wait(600);
+  }
+});
+
+test("progress: a connected PC window gets it on the command stream; the rate limit is 1 per 3 s", { skip }, async () => {
+  await fastWait();
+  const w = windowStream(s.port);
+  await w.ready; await wait(200);
+  const a = await prog({ id: "show-s1e1", position: 2.5, duration: 6, watched: 10 });
+  assert.equal(a.status, 200);
+  assert.equal(a.json.delivered, true);
+  const b = await prog({ id: "show-s1e1", position: 3, duration: 6 });
+  assert.equal(b.status, 429);
+  await wait(600);
+  const c = await prog({ id: "show-s1e1", position: 3, duration: 6, final: true }); // a final save only waits 0.5 s
+  assert.equal(c.status, 200);
+  await wait(300);
+  const got = w.msgs.filter((m) => m.cmd === "progress");
+  assert.equal(got.length, 2);
+  assert.deepEqual({ id: got[0].id, position: got[0].position, duration: got[0].duration, watched: got[0].watched }, { id: "show-s1e1", position: 2.5, duration: 6, watched: 10 });
+  assert.ok(got[0].at > 0);
+  w.close();
+});
+
+test("progress without a window is kept (0600) and handed over first when a window connects", { skip }, async () => {
+  await fastWait();
+  await wait(300); // the previous window's stream has closed
+  const a = await prog({ id: "tiny", position: 1, duration: 6, watched: 4 });
+  assert.equal(a.status, 200);
+  assert.equal(a.json.delivered, false);
+  await wait(600);
+  const b = await prog({ id: "tiny", position: 2, duration: 6, watched: 3, final: true }); // newest per id wins, watch time adds up
+  assert.equal(b.status, 200);
+  const file = path.join(s.data, "phone-pending.json");
+  assert.ok(fs.existsSync(file));
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(saved.tiny.position, 2);
+  assert.equal(saved.tiny.watched, 7);
+  const w = windowStream(s.port);
+  await w.ready; await wait(300);
+  assert.equal(w.msgs[0].cmd, "progress");
+  assert.equal(w.msgs[0].id, "tiny");
+  assert.equal(w.msgs[0].position, 2);
+  assert.equal(fs.existsSync(file), false);
+  w.close();
+});
+
+test("subtitle choice: validated, then sent to the window as subPref", { skip }, async () => {
+  const w = windowStream(s.port);
+  await w.ready; await wait(300);
+  // The window counts as online once it reports (or is connected).
+  for (const bad of [{ cmd: "subPref", id: "nope", pref: { off: true } }, { cmd: "subPref", id: "tiny" }, { cmd: "subPref", id: "tiny", pref: { language: 5, name: "x" } }, { cmd: "subPref", id: "tiny", pref: { language: "fa" } }]) {
+    assert.equal((await phone.post("/api/remote/cmd", bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await phone.post("/api/remote/cmd", { cmd: "subPref", id: "tiny", pref: { off: true } })).status, 200);
+  assert.equal((await phone.post("/api/remote/cmd", { cmd: "subPref", id: "show-s1e1", pref: { language: "fa", name: "x".repeat(500) } })).status, 200);
+  await wait(300);
+  const got = w.msgs.filter((m) => m.cmd === "subPref");
+  assert.equal(got.length, 2);
+  assert.deepEqual(got[0].pref, { off: true });
+  assert.equal(got[1].pref.language, "fa");
+  assert.equal(got[1].pref.name.length, 200);
+  w.close();
+});

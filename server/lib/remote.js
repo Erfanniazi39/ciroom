@@ -14,7 +14,7 @@
  *    It cannot reach settings (API keys), file streams, subtitle downloads, artwork edits or mpv launching.
  *
  * Routes (PC window only, 127.0.0.1): /api/remote/info|enable|trust|untrust|pair/start|pair/cancel|revoke|report|commands
- * Routes (phone): /api/remote/pair|me|events|cmd
+ * Routes (phone): /api/remote/pair|me|events|cmd|progress, /api/remote/watch/* (server/lib/phone-watch.js)
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -23,9 +23,11 @@ import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { currentNetwork } from "./netid.js";
-import { phoneWatchRoutes } from "./phone-watch.js";
+import { itemFor, phoneWatchRoutes } from "./phone-watch.js";
 
 const FILE = path.join(DATA_DIR, "remote.json");
+/** Progress from a phone while the PC window is closed: the newest entry per video, handed over when a window connects. */
+const PENDING_FILE = path.join(DATA_DIR, "phone-pending.json");
 const COOKIE = "ciroom_remote";
 const PIN_TTL_MS = 5 * 60_000;
 const PRIVATE_IP = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
@@ -34,7 +36,7 @@ const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|tailscale|virbr|vboxnet
 
 /** What a paired phone may call. Everything else under /api is for this PC only. */
 const PHONE_GET = [/^\/api\/remote\/watch\/(probe|seekpoint|stream|subtitle\.vtt)\?/, /^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/thumb\?/, /^\/api\/remote\/events$/];
-const PHONE_POST = [/^\/api\/remote\/cmd$/];
+const PHONE_POST = [/^\/api\/remote\/cmd$/, /^\/api\/remote\/progress$/];
 
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 
@@ -102,6 +104,18 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   }
   /** Phone media streams (watching): closers called when phones are switched off. @type {Set<() => void>} */
   const phoneStreams = new Set();
+
+  /** @type {Record<string, { id: string, position: number, duration: number, watched: number, at: number }>} */
+  let pending = {};
+  try { pending = JSON.parse(fs.readFileSync(PENDING_FILE, "utf8")) ?? {}; } catch { /* none */ }
+  const savePending = () => {
+    try {
+      if (Object.keys(pending).length) writeJsonAtomic(PENDING_FILE, pending, { mode: 0o600, space: 0 });
+      else fs.rmSync(PENDING_FILE, { force: true });
+    } catch { /* read-only disk: keep in memory */ }
+  };
+  /** Last accepted progress report per device (rate limit). @type {Map<string, number>} */
+  const lastProgress = new Map();
 
   /** Open streams per device (watching on the phone), so one phone can't start unlimited ffmpeg processes. @type {Map<string, { n: number }>} */
   const streamCounts = new Map();
@@ -241,6 +255,28 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         return true;
       }
 
+      if (route === "/api/remote/progress" && req.method === "POST") {
+        // The phone never writes to the database: the PC window owns it (a window save replaces the whole state).
+        const dev = deviceOf(req);
+        if (!dev) { json(401, { error: "Not paired" }); return true; }
+        const b = await body(req);
+        const item = itemFor(b.id);
+        const position = Number(b.position), duration = Number(b.duration), watchedRaw = b.watched === undefined ? 0 : Number(b.watched);
+        if (!item || !Number.isFinite(position) || !Number.isFinite(duration) || !Number.isFinite(watchedRaw)
+          || position < 0 || duration <= 0 || position > duration || duration > 24 * 3600 || watchedRaw < 0 || watchedRaw > 120) { json(400, { error: "Bad progress" }); return true; }
+        // 1 per 3 s per phone; a final save (closing, pausing, leaving) only needs 0.5 s so it isn't lost.
+        const now = Date.now();
+        if (now - (lastProgress.get(dev.id) ?? 0) < (b.final ? 500 : 3000)) { json(429, { error: "Too fast" }); return true; }
+        lastProgress.set(dev.id, now);
+        const msg = { cmd: "progress", id: item.id, position, duration, watched: watchedRaw, at: now };
+        if (windows.size) { for (const w of windows) w.write(`data: ${JSON.stringify(msg)}\n\n`); json(200, { ok: true, delivered: true }); return true; }
+        const old = pending[item.id];
+        pending[item.id] = { id: item.id, position, duration, watched: (old?.watched ?? 0) + watchedRaw, at: now };
+        savePending();
+        json(200, { ok: true, delivered: false });
+        return true;
+      }
+
       if (route === "/api/remote/cmd" && req.method === "POST") {
         const c = await body(req);
         const cmd = String(c.cmd ?? "");
@@ -263,9 +299,20 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         }
         if (mpv.running() && cmd === "fullscreen") { json(409, { error: "The full player (mpv) is already fullscreen." }); return true; }
         if (mpv.running() && cmd === "next") { json(409, { error: "Next episode isn't available from the phone while the full player (mpv) is open." }); return true; }
-        const allowed = ["toggle", "seekBy", "seekTo", "volume", "mute", "next", "stop", "subtitle", "subDelay", "fullscreen", "play", "skip"];
+        const allowed = ["toggle", "seekBy", "seekTo", "volume", "mute", "next", "stop", "subtitle", "subDelay", "fullscreen", "play", "skip", "subPref"];
         if (!allowed.includes(cmd)) { json(400, { error: "Unknown command" }); return true; }
-        const msg = JSON.stringify({ cmd, value: Number.isFinite(value) ? value : undefined, id: typeof c.id === "string" ? c.id.slice(0, 200) : undefined, fromStart: !!c.fromStart });
+        /** @type {any} */
+        let pref;
+        if (cmd === "subPref") {
+          // The phone's subtitle choice for a series/movie: off, or a language + file name. The window applies it.
+          const p = c.pref;
+          const str = (/** @type {unknown} */ v, /** @type {number} */ n) => (typeof v === "string" ? v.slice(0, n) : null);
+          if (!itemFor(c.id)) { json(400, { error: "Bad id" }); return true; }
+          if (p && p.off === true) pref = { off: true };
+          else if (p && typeof p === "object" && (p.language === null || typeof p.language === "string") && typeof p.name === "string") pref = { language: str(p.language, 20), name: str(p.name, 200) ?? "" };
+          else { json(400, { error: "Bad subtitle choice" }); return true; }
+        }
+        const msg = JSON.stringify({ cmd, value: Number.isFinite(value) ? value : undefined, id: typeof c.id === "string" ? c.id.slice(0, 200) : undefined, fromStart: !!c.fromStart, pref });
         for (const w of windows) w.write(`data: ${msg}\n\n`);
         json(200, { ok: true });
         return true;
@@ -337,6 +384,9 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
       }
       if (route === "/api/remote/commands" && req.method === "GET") {
         sse(res);
+        // Hand over what phones watched while no window was open (before anything else on this stream).
+        for (const p of Object.values(pending)) res.write(`data: ${JSON.stringify({ cmd: "progress", ...p })}\n\n`);
+        if (Object.keys(pending).length) { pending = {}; savePending(); }
         windows.add(res);
         res.on("close", () => { windows.delete(res); pushPhones(); });
         pushPhones(true);
