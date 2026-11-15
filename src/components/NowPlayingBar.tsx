@@ -97,7 +97,7 @@ export function NowPlayingBar() {
       flush();
       const dur = snap.duration || cur.duration;
       const pos = snap.ended ? dur : snap.position;
-      if (!isElsewhere(cur.id) || snap.ended) savePosition(cur.id, pos, dur); // a phone has the newer position: don't rewind it
+      if (snap.ended || (!isElsewhere(cur.id) && Math.abs(pos - lastSaved.current) >= 1)) savePosition(cur.id, pos, dur); // a phone has the newer position: don't rewind it
       const next = (snap.ended || isCompleted(pos, dur)) && cur.nextId ? resolveEpisode(cur.nextId) : undefined;
       if (next) setUpNext(buildRequest(next, 0));
       else usePlayer.setState({ current: null });

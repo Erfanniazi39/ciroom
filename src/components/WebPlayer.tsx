@@ -204,6 +204,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
 
   const save = useCallback(() => {
     if (isElsewhere(id)) return; // a phone has this title: our older position must not rewind its progress
+    if (Math.abs(timeRef.current - lastSaved.current) < 1) return; // nothing moved since the last save: an idle player never writes
     if (duration > 0) savePosition(id, timeRef.current, duration);
     lastSaved.current = timeRef.current;
   }, [id, duration, savePosition]);
