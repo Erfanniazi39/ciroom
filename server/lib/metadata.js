@@ -20,6 +20,7 @@ import zlib from "node:zlib";
 import readline from "node:readline";
 import { DATA_DIR, readArtIndex, searchTmdb, tmdb } from "./artwork-store.js";
 import { bestMatch } from "./match.js";
+import { defineRoutes } from "./routes.js";
 import { writeJsonAtomic } from "./fsutil.js";
 
 const META_DIR = path.join(DATA_DIR, "metadata");
@@ -179,12 +180,14 @@ export function metadataRoutes() {
   }
 
   return {
-    /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(r:any)=>Promise<any>} */ body, /** @type {(c:number,d:unknown)=>void} */ json) {
-      const url = String(req.url);
-      if (url === "/api/meta" && req.method === "GET") { json(200, index()); return true; }
-      if (url === "/api/meta/unmatched" && req.method === "GET") { json(200, readJson(UNMATCHED, {})); return true; }
-      if (url === "/api/meta/fetch" && req.method === "POST") {
+    routes: defineRoutes("metadata", [
+      { method: "GET", path: "/api/meta", audience: "phone", handler: async ({ json }) => {
+        json(200, index()); return true;
+      } },
+      { method: "GET", path: "/api/meta/unmatched", audience: "pc", handler: async ({ json }) => {
+        json(200, readJson(UNMATCHED, {})); return true;
+      } },
+      { method: "POST", path: "/api/meta/fetch", audience: "pc", handler: async ({ req, json, body }) => {
         const b = await body(req);
         if (!b.id || !b.query) throw new Error("id and query are required");
         json(200, await fetchOne({
@@ -192,21 +195,22 @@ export function metadataRoutes() {
           year: Number(b.year) || undefined, seasons: Array.isArray(b.seasons) ? b.seasons.map(Number) : [], tmdbId: Number(b.tmdbId) || undefined,
         }));
         return true;
-      }
-      if (url === "/api/meta/trailer" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/meta/trailer", audience: "pc", handler: async ({ req, json, body }) => {
         const { id } = await body(req);
         json(200, { trailer: await trailerFor(String(id)) });
         return true;
-      }
-      if (url === "/api/meta/imdb" && req.method === "POST") { json(200, await refreshImdb()); return true; }
-      if (url === "/api/meta/reset" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/meta/imdb", audience: "pc", handler: async ({ json }) => {
+        json(200, await refreshImdb()); return true;
+      } },
+      { method: "POST", path: "/api/meta/reset", audience: "pc", handler: async ({ req, json, body }) => {
         const { id } = await body(req);
         const idx = index();
         delete idx[String(id)];
         writeJson(INDEX, idx);
         json(200, {}); return true;
-      }
-      return false;
-    },
+      } },
+    ]),
   };
 }

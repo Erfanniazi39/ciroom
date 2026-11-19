@@ -28,6 +28,7 @@ import { DATA_DIR } from "./artwork-store.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { currentNetwork } from "./netid.js";
 import { itemFor, phoneWatchRoutes } from "./phone-watch.js";
+import { defineRoutes } from "./routes.js";
 
 const FILE = path.join(DATA_DIR, "remote.json");
 /** Progress from a phone while the PC window is closed: the newest entry per video, handed over when a window connects. */
@@ -37,10 +38,6 @@ const PIN_TTL_MS = 5 * 60_000;
 const PRIVATE_IP = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
 // Linux names, then Windows adapter names (Hyper-V/WSL "vEthernet", VirtualBox, VMware, loopback).
 const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|tailscale|virbr|vboxnet|vmnet|lo$|vethernet|virtualbox|vmware|loopback|bluetooth)/i;
-
-/** What a paired phone may call. Everything else under /api is for this PC only. */
-const PHONE_GET = [/^\/api\/remote\/watch\/(probe|seekpoint|stream|subtitle\.vtt|thumb)\?/, /^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/remote\/events$/];
-const PHONE_POST = [/^\/api\/remote\/cmd$/, /^\/api\/remote\/progress$/, /^\/api\/remote\/state$/];
 
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 
@@ -255,34 +252,27 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     start: () => { mpvTimer(); ensureNetTimer(); if (cfg.enabled) refreshNet(true).catch(() => {}); },
     /**
      * Gate for requests from other devices (this PC is never gated). Returns an HTTP status to refuse with, or 0 to continue.
-     * @param {import("node:http").IncomingMessage} req @param {string} ip
+     * mode "page": the phone page itself (HTML/JS/CSS, no secrets). "open": a phone that is not paired yet (to pair). "phone": a paired phone.
+     * "refuse": the route is not for phones, so the answer is always a refusal (a phone that isn't paired is told so).
+     * @param {import("node:http").IncomingMessage} req @param {string} ip @param {"page" | "open" | "phone" | "refuse"} mode
      */
-    gate(req, ip) {
+    gate(req, ip, mode) {
       if (!isActive() || !PRIVATE_IP.test(ip)) return 403;
-      const url = req.url ?? "/";
-      if (!url.startsWith("/api/")) return 0; // the phone page itself (HTML/JS/CSS): no secrets in it
-      if (url === "/api/remote/me" || url === "/api/remote/pair") return 0;
+      if (mode === "page" || mode === "open") return 0;
       const dev = deviceOf(req);
       if (!dev) return 401;
-      const ok = (req.method === "GET" ? PHONE_GET : req.method === "POST" ? PHONE_POST : []).some((re) => re.test(url));
-      if (!ok) return 403;
+      if (mode === "refuse") return 403;
       if (Date.now() - dev.lastSeen > 60_000) { dev.lastSeen = Date.now(); save(); }
       return 0;
     },
 
-    /**
-     * @param {import("node:http").IncomingMessage} req @param {import("node:http").ServerResponse} res
-     * @param {(code: number, data: unknown) => void} json @param {(req: any) => Promise<any>} body @param {boolean} local
-     */
-    async handle(req, res, json, body, local) {
-      const url = req.url ?? "";
-      if (!url.startsWith("/api/remote/")) return false;
-      const route = url.split("?")[0];
-
+    routes: defineRoutes("remote", [
       // ── Phone ────────────────────────────────────────────────────────────────────────────
-      if (route === "/api/remote/me" && req.method === "GET") { json(200, { enabled: isActive(), paired: !!deviceOf(req) }); return true; }
+      { method: "GET", path: "/api/remote/me", audience: "phone", open: true, handler: async ({ req, json }) => {
+        json(200, { enabled: isActive(), paired: !!deviceOf(req) }); return true;
+      } },
 
-      if (route === "/api/remote/pair" && req.method === "POST") {
+      { method: "POST", path: "/api/remote/pair", audience: "phone", open: true, handler: async ({ req, res, json, body }) => {
         const { pin, name } = await body(req);
         if (Date.now() < lockedUntil) { json(429, { error: "Too many wrong PINs. Wait a minute and try again." }); return true; }
         if (!pairing || Date.now() > pairing.expires) { json(409, { error: "No pairing is open. On the PC, open Settings → Phone remote → Pair a phone." }); return true; }
@@ -303,15 +293,19 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         res.setHeader("Set-Cookie", `${COOKIE}=${token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`);
         json(200, { ok: true });
         return true;
-      }
+      } },
 
-      if (route.startsWith("/api/remote/watch/") && watch) {
-        const dev = deviceOf(req);
-        if (!dev) { json(401, { error: "Not paired" }); return true; }
-        return watch.handle(req, res, json, body, dev.id);
-      }
+      // What a paired phone watches: addressed by library id, never by path (server/lib/phone-watch.js).
+      ...(watch ? ["probe", "seekpoint", "stream", "subtitle.vtt", "thumb"].map((what) => ({
+        method: "GET", path: `/api/remote/watch/${what}`, audience: "phone",
+        handler: async (/** @type {import("./routes.js").Ctx} */ { req, res, json, body }) => {
+          const dev = deviceOf(req);
+          if (!dev) return json(401, { error: "Not paired" });
+          await watch.serve(req, res, json, body, dev.id, what);
+        },
+      })) : []),
 
-      if (route === "/api/remote/events" && req.method === "GET") {
+      { method: "GET", path: "/api/remote/events", audience: "phone", handler: async ({ req, res }) => {
         sse(res);
         phones.add(res);
         announcePhones();
@@ -324,9 +318,9 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         ensureTick();
         res.write(`data: ${JSON.stringify(publicState())}\n\n`);
         return true;
-      }
+      } },
 
-      if (route === "/api/remote/progress" && req.method === "POST") {
+      { method: "POST", path: "/api/remote/progress", audience: "phone", handler: async ({ req, json, body }) => {
         // The phone never writes to the database: the PC window owns it (a window save replaces the whole state).
         const dev = deviceOf(req);
         if (!dev) { json(401, { error: "Not paired" }); return true; }
@@ -346,9 +340,9 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         savePending();
         json(200, { ok: true, delivered: false });
         return true;
-      }
+      } },
 
-      if (route === "/api/remote/state" && req.method === "POST") {
+      { method: "POST", path: "/api/remote/state", audience: "phone", handler: async ({ req, json, body }) => {
         const dev = deviceOf(req);
         if (!dev) { json(401, { error: "Not paired" }); return true; }
         const b = await body(req);
@@ -367,9 +361,9 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         sendWindows({ cmd: "phoneState", id: item.id, position, playing: b.playing, at: now });
         json(200, { ok: true });
         return true;
-      }
+      } },
 
-      if (route === "/api/remote/cmd" && req.method === "POST") {
+      { method: "POST", path: "/api/remote/cmd", audience: "phone", handler: async ({ req, json, body }) => {
         const c = await body(req);
         const cmd = String(c.cmd ?? "");
         const value = Number(c.value);
@@ -408,12 +402,11 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         for (const w of windows) w.write(`data: ${msg}\n\n`);
         json(200, { ok: true });
         return true;
-      }
+      } },
 
       // ── This PC only ───────────────────────────────────────────────────────────────────
-      if (!local) { json(403, { error: "This PC only" }); return true; }
 
-      if (route === "/api/remote/info" && req.method === "GET") {
+      { method: "GET", path: "/api/remote/info", audience: "pc", handler: async ({ json }) => {
         if (cfg.enabled) await refreshNet(); else netNow = await currentNetwork();
         json(200, {
           enabled: cfg.enabled, active: isActive(), urls: lanUrls(),
@@ -425,8 +418,8 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
           phones: freshPhones().map((p) => ({ name: p.name, id: p.id, position: p.position, playing: p.playing, at: p.at })),
         });
         return true;
-      }
-      if (route === "/api/remote/enable" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/remote/enable", audience: "pc", handler: async ({ req, json, body }) => {
         const { on } = await body(req);
         cfg.enabled = !!on;
         save();
@@ -434,8 +427,8 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         if (cfg.enabled) await refreshNet(true); else syncActive();
         json(200, { ok: true });
         return true;
-      }
-      if (route === "/api/remote/trust" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/remote/trust", audience: "pc", handler: async ({ json }) => {
         // The server reads the network itself: the page never says which network to trust.
         const n = await currentNetwork(true);
         if (n.kind === "unknown" || !n.id) { json(409, { error: "CiRoom can't tell which network this is, so it can't be trusted." }); return true; }
@@ -444,39 +437,41 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         syncActive();
         json(200, { ok: true });
         return true;
-      }
-      if (route === "/api/remote/untrust" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/remote/untrust", audience: "pc", handler: async ({ req, json, body }) => {
         const { id } = await body(req);
         cfg.trusted = cfg.trusted.filter((t) => t.id !== id);
         save();
         syncActive();
         json(200, { ok: true });
         return true;
-      }
-      if (route === "/api/remote/pair/start" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/remote/pair/start", audience: "pc", handler: async ({ json }) => {
         if (!cfg.enabled) { json(409, { error: "Turn the phone remote on first." }); return true; }
         if (!isActive()) { json(409, { error: "Trust this network first: phones are off on networks you haven't approved." }); return true; }
         pairing = { pin: String(crypto.randomInt(0, 1_000_000)).padStart(6, "0"), expires: Date.now() + PIN_TTL_MS, tries: 0 };
         json(200, { pin: pairing.pin, expiresIn: PIN_TTL_MS / 1000 });
         return true;
-      }
-      if (route === "/api/remote/pair/cancel" && req.method === "POST") { pairing = null; json(200, { ok: true }); return true; }
-      if (route === "/api/remote/revoke" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/remote/pair/cancel", audience: "pc", handler: async ({ json }) => {
+        pairing = null; json(200, { ok: true }); return true;
+      } },
+      { method: "POST", path: "/api/remote/revoke", audience: "pc", handler: async ({ req, json, body }) => {
         const { id } = await body(req);
         cfg.devices = cfg.devices.filter((d) => d.id !== id);
         phoneNow.delete(id);
         save();
         json(200, { ok: true });
         return true;
-      }
-      if (route === "/api/remote/report" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/remote/report", audience: "pc", handler: async ({ req, json, body }) => {
         const b = await body(req);
         report = { at: Date.now(), now: b.now ?? null, user: b.user ?? report.user };
         json(200, { ok: true });
         pushPhones();
         return true;
-      }
-      if (route === "/api/remote/commands" && req.method === "GET") {
+      } },
+      { method: "GET", path: "/api/remote/commands", audience: "pc", handler: async ({ res }) => {
         sse(res);
         // Hand over what phones watched while no window was open (before anything else on this stream).
         for (const p of Object.values(pending)) res.write(`data: ${JSON.stringify({ cmd: "progress", ...p })}\n\n`);
@@ -486,8 +481,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         res.on("close", () => { windows.delete(res); pushPhones(); });
         pushPhones(true);
         return true;
-      }
-      return false;
-    },
+      } },
+    ]),
   };
 }

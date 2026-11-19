@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR as PATHS_DATA_DIR } from "./paths.js";
+import { defineRoutes } from "./routes.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { assertPublicHost } from "./netguard.js";
 import { bestMatch, norm, similarity } from "./match.js";
@@ -127,12 +128,10 @@ export function artworkRoutes() {
   };
 
   return {
-    /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(r:any)=>Promise<any>} */ body, /** @type {(c:number,d:unknown)=>void} */ json) {
-      const url = String(req.url);
+    routes: defineRoutes("artwork", [
 
-      if (url.startsWith("/api/art/file/") && req.method === "GET") {
-        const name = path.basename(decodeURIComponent(url.slice("/api/art/file/".length).split("?")[0]));
+      { method: "GET", path: "/api/art/file/*", audience: "phone", handler: async ({ res, json, u }) => {
+        const name = path.basename(decodeURIComponent(u.pathname.slice("/api/art/file/".length)));
         const f = path.join(ART_DIR, name);
         if (!fs.existsSync(f)) { json(404, { error: "Not found" }); return true; }
         const ext = path.extname(f).slice(1);
@@ -140,25 +139,27 @@ export function artworkRoutes() {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable"); // names are unique per version
         fs.createReadStream(f).pipe(res);
         return true;
-      }
-      if (url === "/api/art" && req.method === "GET") { json(200, publicIndex()); return true; }
+      } },
+      { method: "GET", path: "/api/art", audience: "phone", handler: async ({ json }) => {
+        json(200, publicIndex()); return true;
+      } },
 
-      if (url === "/api/art/url" && req.method === "POST") {
+      { method: "POST", path: "/api/art/url", audience: "pc", handler: async ({ req, json, body }) => {
         const { id, kind, url: link } = await body(req);
         if (!["poster", "backdrop"].includes(kind)) throw new Error("kind must be poster or backdrop");
         const { buf, mime } = await download(String(link));
         store(String(id), kind, buf, mime, { source: "manual" });
         json(200, publicIndex()[id]); return true;
-      }
-      if (url === "/api/art/upload" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/art/upload", audience: "pc", limit: 20971520, handler: async ({ req, json, body }) => {
         const { id, kind, dataUrl } = await body(req);
         if (!["poster", "backdrop"].includes(kind)) throw new Error("kind must be poster or backdrop");
         const m = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/);
         if (!m) throw new Error("Invalid image data");
         store(String(id), kind, Buffer.from(m[2], "base64"), m[1], { source: "manual" });
         json(200, publicIndex()[id]); return true;
-      }
-      if (url === "/api/art/reset" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/art/reset", audience: "pc", handler: async ({ req, json, body }) => {
         const { id, kind } = await body(req);
         const idx = index();
         for (const k of kind ? [kind] : ["poster", "backdrop"]) {
@@ -167,36 +168,37 @@ export function artworkRoutes() {
         if (idx[id] && !idx[id].poster && !idx[id].backdrop) delete idx[id];
         writeJson(INDEX, idx);
         json(200, publicIndex()[id] ?? {}); return true;
-      }
+      } },
 
-      if (url === "/api/settings" && req.method === "GET") { json(200, { hasTmdbKey: !!settings().tmdbKey }); return true; }
-      if (url === "/api/settings" && req.method === "POST") {
+      { method: "GET", path: "/api/settings", audience: "pc", handler: async ({ json }) => {
+        json(200, { hasTmdbKey: !!settings().tmdbKey }); return true;
+      } },
+      { method: "POST", path: "/api/settings", audience: "pc", handler: async ({ req, json, body }) => {
         const { tmdbKey } = await body(req);
         const s = settings();
         if (tmdbKey) s.tmdbKey = String(tmdbKey).trim(); else delete s.tmdbKey;
         writeJsonAtomic(SETTINGS, s, { space: 2, mode: 0o600 });
         if (s.tmdbKey) await tmdb("/configuration"); // validate now, so the user gets immediate feedback
         json(200, { hasTmdbKey: !!s.tmdbKey }); return true;
-      }
+      } },
 
-      if (url === "/api/tmdb/search" && req.method === "POST") {
+      { method: "POST", path: "/api/tmdb/search", audience: "pc", handler: async ({ req, json, body }) => {
         const { type, query, year } = await body(req);
         json(200, await searchTmdb(type === "tv" ? "tv" : "movie", String(query), year)); return true;
-      }
-      if (url === "/api/tmdb/apply" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/tmdb/apply", audience: "pc", handler: async ({ req, json, body }) => {
         const { id, type, tmdbId } = await body(req);
         await apply(String(id), type === "tv" ? "tv" : "movie", Number(tmdbId));
         json(200, publicIndex()[id]); return true;
-      }
-      if (url === "/api/tmdb/match" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/tmdb/match", audience: "pc", handler: async ({ req, json, body }) => {
         const { id, type, title, year } = await body(req);
         const t = type === "tv" ? "tv" : "movie";
         const m = await bestMatch(searchTmdb, t, String(title), year);
         if (!m.matched) { json(200, { matched: false, reason: m.reason, candidates: m.candidates }); return true; }
         await apply(String(id), t, m.best.tmdbId);
         json(200, { matched: true, title: m.best.title, year: m.best.year, score: Number(m.score.toFixed(2)), art: publicIndex()[id] }); return true;
-      }
-      return false;
-    },
+      } },
+    ]),
   };
 }

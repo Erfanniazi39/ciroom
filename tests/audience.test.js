@@ -26,7 +26,7 @@ export const ROUTES = [
   ["GET", "/api/remote/me"], ["POST", "/api/remote/pair"], ["GET", "/api/remote/events"], ["POST", "/api/remote/progress"], ["POST", "/api/remote/state"], ["POST", "/api/remote/cmd"],
   ["GET", "/api/remote/watch/probe?id=x"], ["GET", "/api/remote/watch/seekpoint?id=x"], ["GET", "/api/remote/watch/stream?id=x"], ["GET", "/api/remote/watch/subtitle.vtt?id=x"], ["GET", "/api/remote/watch/thumb?id=x"], ["GET", "/api/remote/watch/other?id=x"],
   ["GET", "/api/remote/info"], ["POST", "/api/remote/enable"], ["POST", "/api/remote/trust"], ["POST", "/api/remote/untrust"], ["POST", "/api/remote/pair/start"], ["POST", "/api/remote/pair/cancel"], ["POST", "/api/remote/revoke"], ["POST", "/api/remote/report"], ["GET", "/api/remote/commands"],
-  ["GET", "/party"], ["GET", "/party/app.css"], ["GET", "/party/nope"],
+  ["GET", "/party"], ["GET", "/party/app.js"], ["GET", "/party/app.css"], ["GET", "/party/nope"],
   ["GET", "/api/party/me"], ["POST", "/api/party/join"], ["POST", "/api/party/status"], ["POST", "/api/party/chat"], ["POST", "/api/party/cmd"], ["GET", "/api/party/events"],
   ["GET", "/api/party/probe?k=x"], ["GET", "/api/party/seekpoint?k=x"], ["GET", "/api/party/stream?k=x"], ["GET", "/api/party/subtitle.vtt?k=x"],
   ["GET", "/api/party/host/info"], ["POST", "/api/party/host/enable"], ["POST", "/api/party/host/invite"], ["POST", "/api/party/host/invite/cancel"], ["POST", "/api/party/host/revoke"], ["POST", "/api/party/host/settings"], ["POST", "/api/party/host/state"], ["POST", "/api/party/host/chat"], ["GET", "/api/party/host/events"], ["GET", "/api/party/host/nope"],
@@ -42,14 +42,14 @@ export const EXPECT = /** @type {Record<string, [number, number, number]>} */ ({
   "GET /api/library": [401, 200, 401],
   "POST /api/library/scan": [401, 403, 401],
   "GET /api/meta": [401, 200, 401],
-  "GET /api/meta?x=1": [401, 404, 401],
+  "GET /api/meta?x=1": [401, 200, 401], // deliberate fix (task 19): routes match on the path, a query string no longer turns a phone away from a valid route,
   "GET /api/meta/unmatched": [401, 403, 401],
   "POST /api/meta/fetch": [401, 403, 401],
   "POST /api/meta/trailer": [401, 403, 401],
   "POST /api/meta/imdb": [401, 403, 401],
   "POST /api/meta/reset": [401, 403, 401],
   "GET /api/art": [401, 200, 401],
-  "GET /api/art?x=1": [401, 404, 401],
+  "GET /api/art?x=1": [401, 200, 401], // same fix,
   "GET /api/art/file/none.jpg": [401, 404, 401],
   "POST /api/art/url": [401, 403, 401],
   "POST /api/art/upload": [401, 403, 401],
@@ -105,6 +105,7 @@ export const EXPECT = /** @type {Record<string, [number, number, number]>} */ ({
   "POST /api/remote/report": [401, 403, 401],
   "GET /api/remote/commands": [401, 403, 401],
   "GET /party": [200, 200, 200],
+  "GET /party/app.js": [200, 200, 200],
   "GET /party/app.css": [200, 200, 200],
   "GET /party/nope": [401, 401, 404],
   "GET /api/party/me": [200, 200, 200],
@@ -183,4 +184,40 @@ test("this PC's own calls to a few safe routes still work", { skip: !ip }, async
   assert.equal((await request({ port: s.port, path: "/api/library" })).status, 200);
   assert.equal((await request({ port: s.port, path: "/api/nope" })).status, 404);
   assert.equal((await request({ port: s.port, path: "/api/party/host/nope" })).status, 404);
+});
+
+// ── The table itself ───────────────────────────────────────────────────────────────────────────
+const { createCiRoom } = await import("../server/lib/mpv-bridge.js");
+const { defineRoutes, AUDIENCES, matchRoute } = await import("../server/lib/routes.js");
+
+test("every route in the table names an audience, and defineRoutes refuses one without", () => {
+  const app = createCiRoom(process.env.TMPDIR || "/tmp");
+  assert.ok(app.routes.length > 50);
+  for (const r of app.routes) assert.ok(AUDIENCES.includes(r.audience), `${r.method} ${r.path}`);
+  const h = () => {};
+  assert.throws(() => defineRoutes("x", [{ method: "GET", path: "/api/x", handler: h }]), /no audience/);
+  assert.throws(() => defineRoutes("x", [{ method: "GET", path: "/api/x", audience: "everyone", handler: h }]), /no audience/);
+  assert.throws(() => defineRoutes("x", [{ method: "GET", path: "/api/x", audience: "pc", open: true, handler: h }]), /only phone and guest/);
+});
+
+test("the snapshot above covers every route in the table (a new route needs an entry)", () => {
+  const app = createCiRoom(process.env.TMPDIR || "/tmp");
+  const uncovered = app.routes.filter((r) => !ROUTES.some(([m, p]) => m === r.method && matchRoute([r], m, p.split("?")[0]) === r));
+  assert.deepEqual(uncovered.map((r) => `${r.method} ${r.path}`), []);
+});
+
+test("phones and guests reach exactly these routes (everything else is for this PC)", () => {
+  const app = createCiRoom(process.env.TMPDIR || "/tmp");
+  const of = (/** @type {string} */ a) => app.routes.filter((r) => r.audience === a).map((r) => `${r.method} ${r.path}${r.open ? " (open)" : ""}`).sort();
+  assert.deepEqual(of("phone"), [
+    "GET /api/art", "GET /api/art/file/*", "GET /api/library", "GET /api/meta", "GET /api/remote/events", "GET /api/remote/me (open)",
+    "GET /api/remote/watch/probe", "GET /api/remote/watch/seekpoint", "GET /api/remote/watch/stream", "GET /api/remote/watch/subtitle.vtt", "GET /api/remote/watch/thumb",
+    "POST /api/remote/cmd", "POST /api/remote/pair (open)", "POST /api/remote/progress", "POST /api/remote/state",
+  ].sort());
+  assert.deepEqual(of("guest"), [
+    "GET /api/party/events", "GET /api/party/me (open)", "GET /api/party/probe", "GET /api/party/seekpoint", "GET /api/party/stream", "GET /api/party/subtitle.vtt",
+    "GET /party (open)", "GET /party/app.css (open)", "GET /party/app.js (open)",
+    "POST /api/party/chat", "POST /api/party/cmd", "POST /api/party/join (open)", "POST /api/party/leave", "POST /api/party/status",
+  ].sort());
+  assert.deepEqual(of("public"), []);
 });

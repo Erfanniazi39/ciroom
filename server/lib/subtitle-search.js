@@ -21,6 +21,7 @@ import path from "node:path";
 import { DATA_DIR } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { listZip, readZipEntry } from "./zip.js";
+import { defineRoutes } from "./routes.js";
 
 const DATA = DATA_DIR;
 const SETTINGS = path.join(DATA, "settings.json");
@@ -92,15 +93,19 @@ const slug = (/** @type {string} */ s) => s.replace(EXT, "").replace(/[^\w.-]+/g
 
 /** @param {(expected: string) => string} resolveVideo */
 export function subtitleSearchRoutes(resolveVideo) {
+  /** The search service's failures: a missing key is 401 (the page asks for it), anything else 502. */
+  const guarded = (/** @type {(c: import("./routes.js").Ctx) => Promise<unknown>} */ fn) => async (/** @type {import("./routes.js").Ctx} */ c) => {
+    try { await fn(c); } catch (e) {
+      c.json(/** @type {any} */ (e)?.code === "key" ? 401 : 502, { error: e instanceof Error ? e.message : "Subtitle search failed", code: /** @type {any} */ (e)?.code });
+    }
+  };
   return {
-    async handle(/** @type {any} */ req, /** @type {any} */ _res, /** @type {(c:number,d:unknown)=>void} */ json, /** @type {(r:any)=>Promise<any>} */ body) {
-      const u = new URL(req.url, "http://localhost");
-      const p = u.pathname;
-      if (!p.startsWith("/api/subsearch/")) return false;
-      try {
-        if (p === "/api/subsearch/config") { json(200, { hasKey: !!key() }); return true; }
+    routes: defineRoutes("subtitle-search", [
+        { method: "GET", path: "/api/subsearch/config", audience: "pc", handler: async ({ json }) => {
+          json(200, { hasKey: !!key() }); return true;
+        } },
 
-        if (p === "/api/subsearch/key" && req.method === "POST") {
+        { method: "POST", path: "/api/subsearch/key", audience: "pc", handler: async ({ req, json, body }) => {
           const { key: k } = await body(req);
           const s = readJson(SETTINGS, {});
           const next = String(k ?? "").trim();
@@ -121,24 +126,24 @@ export function subtitleSearchRoutes(resolveVideo) {
           }
           json(200, { hasKey: !!key() });
           return true;
-        }
+        } },
 
-        if (p === "/api/subsearch/downloaded") {
+        { method: "GET", path: "/api/subsearch/downloaded", audience: "pc", handler: async ({ u, json }) => {
           const file = resolveVideo(String(u.searchParams.get("path") ?? ""));
           json(200, { files: foundSubtitles(file).map((f) => path.basename(f)) });
           return true;
-        }
+        } },
 
-        if (p === "/api/subsearch/remove" && req.method === "POST") {
+        { method: "POST", path: "/api/subsearch/remove", audience: "pc", handler: async ({ req, json, body }) => {
           const b = await body(req);
           const file = resolveVideo(String(b.path ?? ""));
           const target = path.join(foundDirFor(file), path.basename(String(b.file ?? "")));
           if (fs.existsSync(target)) fs.rmSync(target, { force: true });
           json(200, { files: foundSubtitles(file).map((f) => path.basename(f)) });
           return true;
-        }
+        } },
 
-        if (p === "/api/subsearch/search" && req.method === "POST") {
+        { method: "POST", path: "/api/subsearch/search", audience: "pc", handler: async ({ req, json, body }) => {
           const k = key();
           if (!k) { json(400, { error: "Add your SubDL API key first.", code: "nokey" }); return true; }
           const b = await body(req);
@@ -170,9 +175,9 @@ export function subtitleSearchRoutes(resolveVideo) {
             langs.indexOf(a.language) - langs.indexOf(c.language) || Number(a.fullSeason) - Number(c.fullSeason) || c.score - a.score);
           json(200, { results: list.slice(0, 40), videoName });
           return true;
-        }
+        } },
 
-        if (p === "/api/subsearch/download" && req.method === "POST") {
+        { method: "POST", path: "/api/subsearch/download", audience: "pc", handler: async ({ req, json, body }) => {
           const b = await body(req);
           const file = resolveVideo(String(b.path ?? ""));
           const url = String(b.url ?? "").split("?")[0];
@@ -209,12 +214,7 @@ export function subtitleSearchRoutes(resolveVideo) {
             json(200, { file: name });
           }
           return true;
-        }
-      } catch (e) {
-        json(/** @type {any} */ (e)?.code === "key" ? 401 : 502, { error: e instanceof Error ? e.message : "Subtitle search failed", code: /** @type {any} */ (e)?.code });
-        return true;
-      }
-      return false;
-    },
+        } },
+    ].map((r) => ({ ...r, handler: guarded(r.handler) }))),
   };
 }

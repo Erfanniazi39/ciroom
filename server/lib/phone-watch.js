@@ -79,15 +79,11 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
   return {
     /**
      * @param {import("node:http").IncomingMessage} req @param {import("node:http").ServerResponse} res
-     * @param {(code: number, data: unknown) => void} json @param {(r: any) => Promise<any>} body @param {string} deviceId
+     * @param {(code: number, data: unknown) => void} json @param {(r: any) => Promise<any>} body @param {string} deviceId @param {string} what probe | seekpoint | stream | subtitle.vtt | thumb (the route table only sends these)
      * @returns {Promise<boolean>}
      */
-    async handle(req, res, json, body, deviceId) {
+    async serve(req, res, json, body, deviceId, what) {
       const u = new URL(req.url ?? "/", "http://x");
-      const route = u.pathname;
-      if (!route.startsWith("/api/remote/watch/") || req.method !== "GET") return false;
-      const what = route.slice("/api/remote/watch/".length);
-      if (!["probe", "seekpoint", "stream", "subtitle.vtt", "thumb"].includes(what)) { fail(res, 404, "Unknown endpoint"); return true; }
       const rawId = u.searchParams.get("id") ?? "";
       if (!ID.test(rawId)) { fail(res, 400, "Bad id"); return true; }
       const item = libraryItems().get(rawId);
@@ -125,9 +121,9 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
         const filtered = (/** @type {number} */ code, /** @type {any} */ data) => json(code, code === 200 && data
           ? { id: item.id, title: item.title, subtitle: item.subtitle, nextId: item.nextId, duration: data.duration, width: data.width, height: data.height, video: data.video, audio: data.audio, codecs: data.codecs, hasAudio: data.hasAudio, copyVideo: data.copyVideo, levelGainDb: data.levelGainDb, audioTracks: data.audioTracks, subtitles: (data.subtitles ?? []).map((/** @type {any} */ s) => ({ index: s.index, label: s.label, name: s.name, language: s.language, format: s.format, ...(s.embedded ? { embedded: true, stream: s.stream } : {}) })) }
           : { error: "Could not read the video" });
-        await stream.handle(req, res, filtered, body);
+        await stream.serve(req, res, filtered);
       } else {
-        await stream.handle(req, res, json, body);
+        await stream.serve(req, res, json);
       }
       return true;
     },

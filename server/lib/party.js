@@ -11,7 +11,7 @@
  *    Joining sets a guest cookie (256 random bits, HttpOnly, SameSite=Strict, stored hashed, revocable,
  *    expires after 30 days, and only valid while the party is on).
  *  - The guest never loads CiRoom's app: she gets one self-contained page (/party, strict CSP). Everything
- *    outside /party and /api/party/* is refused to her by the gate in mpv-bridge.js / remote.js.
+ *    outside /party and /api/party/* is refused to her by the route table (server/lib/routes.js).
  *  - She can only stream the file the host is playing RIGHT NOW: the file path never leaves this PC; her
  *    stream requests carry a media key and are rewritten here to the host's current file.
  *  - POSTs must be JSON (cross-site forms can't send that without a CORS preflight, which we never allow).
@@ -27,6 +27,7 @@ import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "./fsutil.js";
+import { defineRoutes } from "./routes.js";
 
 const FILE = path.join(DATA_DIR, "party.json");
 const COOKIE = "ciroom_guest";
@@ -58,7 +59,7 @@ const PAGE = `<!doctype html>
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /**
- * @param {{ resolveVideo: (p: string) => string, stream: { handle: Function }, getPort: () => number, onToggle?: () => void }} deps
+ * @param {{ resolveVideo: (p: string) => string, stream: { serve: Function }, getPort: () => number, onToggle?: () => void }} deps
  */
 export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {} }) {
   /** @type {{ enabled: boolean, hostName: string, guestControl: boolean, guests: { id: string, hash: string, name: string, created: number, lastSeen: number, expires: number }[] }} */
@@ -204,31 +205,43 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
     },
 
     /**
-     * @param {import("node:http").IncomingMessage} req @param {import("node:http").ServerResponse} res
-     * @param {string} peer @param {boolean} local
-     * @param {(code: number, data: unknown) => void} json @param {(req: any) => Promise<any>} body
+     * The gate for every party route (the table calls it before the handler). Returns null after answering a refusal, or { guest } to go on.
+     * Host routes are for this PC's window only. Guest routes need the party to be on and the device to be on this PC, the home network
+     * or Tailscale; all but the `open` ones (the page, who-am-I, join) need a joined guest.
+     * @param {import("node:http").IncomingMessage} req @param {import("node:http").ServerResponse} res @param {string} peer @param {boolean} local
+     * @param {{ audience: string, open?: boolean }} r
+     * @returns {{ guest?: any } | null}
      */
-    async handle(req, res, peer, local, json, body) {
-      const u = new URL(req.url ?? "/", "http://localhost");
-      const route = u.pathname;
+    gate(req, res, peer, local, r) {
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Referrer-Policy", "no-referrer");
-
-      if (req.method === "POST" && !/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) return deny(res, 415, "JSON only");
-
-      // ── Host (this PC's window only) ─────────────────────────────────────────────────────────
-      if (route.startsWith("/api/party/host/")) {
-        if (!local) return deny(res, 403, "This PC only");
+      if (r.audience === "pc") {
+        if (!local) { deny(res, 403, "This PC only"); return null; }
         res.setHeader("Cache-Control", "no-store");
-        if (route === "/api/party/host/info" && req.method === "GET") {
+        return {};
+      }
+      if (!local && !TAILSCALE_IP.test(peer) && !PRIVATE_IP.test(peer)) { deny(res, 403, "Not allowed from this network"); return null; }
+      if (!cfg.enabled) { deny(res, 403, "There's no watch party right now."); return null; }
+      res.setHeader("Cache-Control", "no-store");
+      if (r.open) return {};
+      // Everything else needs a joined guest.
+      const g = guestOf(req);
+      if (!g) { deny(res, 401, "Not joined"); return null; }
+      if (Date.now() - g.lastSeen > 60_000) { g.lastSeen = Date.now(); save(); }
+      return { guest: g };
+    },
+
+    routes: defineRoutes("party", [
+      // ── Host (this PC's window only) ─────────────────────────────────────────────────────────
+      { method: "GET", path: "/api/party/host/info", audience: "pc", handler: async ({ json }) => {
           json(200, {
             enabled: cfg.enabled, hostName: cfg.hostName, guestControl: cfg.guestControl, urls: urls(),
             invite: invite && Date.now() < invite.expires ? { expiresIn: Math.round((invite.expires - Date.now()) / 1000) } : null,
             guests: guestList(), media: media ? { id: media.id, title: media.title } : null,
           });
           return true;
-        }
-        if (route === "/api/party/host/enable" && req.method === "POST") {
+        } },
+        { method: "POST", path: "/api/party/host/enable", audience: "pc", handler: async ({ req, json, body }) => {
           const { on } = await body(req);
           cfg.enabled = !!on;
           if (!cfg.enabled) {
@@ -242,8 +255,8 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
           onToggle();
           json(200, { ok: true });
           return true;
-        }
-        if (route === "/api/party/host/invite" && req.method === "POST") {
+        } },
+        { method: "POST", path: "/api/party/host/invite", audience: "pc", handler: async ({ json }) => {
           if (!cfg.enabled) { json(409, { error: "Turn the watch party on first." }); return true; }
           if (cfg.guests.length >= MAX_GUESTS) { json(409, { error: `At most ${MAX_GUESTS} guests. Remove one first.` }); return true; }
           const token = crypto.randomBytes(18).toString("base64url"); // 144 bits
@@ -252,9 +265,11 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
           const base = urls();
           json(200, { token, links: base.map((b) => ({ label: b.label, url: `${b.url}#i=${token}` })), expiresIn: INVITE_TTL_MS / 1000 });
           return true;
-        }
-        if (route === "/api/party/host/invite/cancel" && req.method === "POST") { invite = null; json(200, { ok: true }); return true; }
-        if (route === "/api/party/host/revoke" && req.method === "POST") {
+        } },
+        { method: "POST", path: "/api/party/host/invite/cancel", audience: "pc", handler: async ({ json }) => {
+          invite = null; json(200, { ok: true }); return true;
+        } },
+        { method: "POST", path: "/api/party/host/revoke", audience: "pc", handler: async ({ req, json, body }) => {
           const { id } = await body(req);
           const g = cfg.guests.find((x) => x.id === id);
           cfg.guests = cfg.guests.filter((x) => x.id !== id);
@@ -263,8 +278,8 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
           pushGuests();
           json(200, { ok: true });
           return true;
-        }
-        if (route === "/api/party/host/settings" && req.method === "POST") {
+        } },
+        { method: "POST", path: "/api/party/host/settings", audience: "pc", handler: async ({ req, json, body }) => {
           const b = await body(req);
           if (typeof b.hostName === "string") cfg.hostName = clean(b.hostName, 24) || "Host";
           if (typeof b.guestControl === "boolean") cfg.guestControl = b.guestControl;
@@ -272,8 +287,8 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
           pushState();
           json(200, { ok: true });
           return true;
-        }
-        if (route === "/api/party/host/state" && req.method === "POST") {
+        } },
+        { method: "POST", path: "/api/party/host/state", audience: "pc", handler: async ({ req, json, body }) => {
           const b = await body(req);
           hostSeen = Date.now();
           const m = b.media;
@@ -292,59 +307,53 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
           if (changed) pushState();
           json(200, { ok: true });
           return true;
-        }
-        if (route === "/api/party/host/chat" && req.method === "POST") {
+        } },
+        { method: "POST", path: "/api/party/host/chat", audience: "pc", handler: async ({ req, json, body }) => {
           const text = clean((await body(req)).text, 500);
           if (!text) { json(400, { error: "Empty message" }); return true; }
           if (!allow(hostChatTimes, 15, 10_000)) { json(429, { error: "Slow down a little." }); return true; }
           addChat({ from: cfg.hostName, text, host: true });
           json(200, { ok: true });
           return true;
-        }
-        if (route === "/api/party/host/events" && req.method === "GET") {
+        } },
+        { method: "GET", path: "/api/party/host/events", audience: "pc", handler: async ({ res }) => {
           sse(res);
           hosts.add(res);
           res.on("close", () => { hosts.delete(res); });
           send([res], { type: "hello", enabled: cfg.enabled, guests: guestList(), chat });
           return true;
-        }
-        return deny(res, 404, "Unknown endpoint");
-      }
+        } },
 
       // ── Guest side ───────────────────────────────────────────────────────────────────────────
-      if (!local && !TAILSCALE_IP.test(peer) && !PRIVATE_IP.test(peer)) return deny(res, 403, "Not allowed from this network");
-      if (!cfg.enabled) return deny(res, 403, "There's no watch party right now.");
-      res.setHeader("Cache-Control", "no-store");
-
-      if (req.method === "GET" && route === "/party") {
+      { method: "GET", path: "/party", audience: "guest", open: true, handler: async ({ res }) => {
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.setHeader("Content-Security-Policy", CSP);
         res.setHeader("X-Frame-Options", "DENY");
         res.end(PAGE);
         return true;
-      }
-      if (req.method === "GET" && route === "/party/app.js") {
+      } },
+      { method: "GET", path: "/party/app.js", audience: "guest", open: true, handler: async ({ res }) => {
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/javascript; charset=utf-8");
         res.end(await guestJs());
         return true;
-      }
-      if (req.method === "GET" && route === "/party/app.css") {
+      } },
+      { method: "GET", path: "/party/app.css", audience: "guest", open: true, handler: async ({ res }) => {
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/css; charset=utf-8");
         const pre = prebuilt("app.css");
         res.end(fs.readFileSync(pre && fs.existsSync(pre) ? pre : path.join(SRC, "party/guest.css")));
         return true;
-      }
+      } },
 
-      if (route === "/api/party/me" && req.method === "GET") {
+      { method: "GET", path: "/api/party/me", audience: "guest", open: true, handler: async ({ req, json }) => {
         const g = guestOf(req);
         json(200, { guest: g ? { id: g.id, name: g.name } : null, hostName: cfg.hostName });
         return true;
-      }
+      } },
 
-      if (route === "/api/party/join" && req.method === "POST") {
+      { method: "POST", path: "/api/party/join", audience: "guest", open: true, handler: async ({ req, res, json, body }) => {
         const b = await body(req);
         if (Date.now() < lockedUntil) { json(429, { error: "Too many wrong invites. Try again in a few minutes." }); return true; }
         const token = String(b.invite ?? "");
@@ -365,15 +374,11 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
         pushGuests();
         json(200, { guest: { id: g.id, name: g.name } });
         return true;
-      }
+      } },
 
-      // Everything below needs a joined guest.
-      const g = guestOf(req);
-      if (!g) return deny(res, 401, "Not joined");
-      if (Date.now() - g.lastSeen > 60_000) { g.lastSeen = Date.now(); save(); }
-      const l = liveOf(g.id);
-
-      if (route === "/api/party/leave" && req.method === "POST") {
+      // These need a joined guest (the gate checked: `guest`).
+      { method: "POST", path: "/api/party/leave", audience: "guest", handler: async ({ res, json, guest }) => {
+        const g = guest;
         cfg.guests = cfg.guests.filter((x) => x.id !== g.id);
         save();
         res.setHeader("Set-Cookie", `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`);
@@ -382,9 +387,11 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
         addChat({ from: "", text: `${g.name} left`, system: true });
         pushGuests();
         return true;
-      }
+      } },
 
-      if (route === "/api/party/events" && req.method === "GET") {
+      { method: "GET", path: "/api/party/events", audience: "guest", handler: async ({ res, guest }) => {
+        const g = guest;
+        const l = liveOf(g.id);
         if (l.conns.size >= MAX_SSE_PER_GUEST) return deny(res, 429, "Too many open tabs");
         const wasOnline = l.conns.size > 0 || !!l.leaveTimer;
         if (l.leaveTimer) { clearTimeout(l.leaveTimer); l.leaveTimer = null; }
@@ -402,27 +409,33 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
         if (!wasOnline) addChat({ from: "", text: `${g.name} joined`, system: true });
         pushGuests();
         return true;
-      }
+      } },
 
-      if (route === "/api/party/status" && req.method === "POST") {
+      { method: "POST", path: "/api/party/status", audience: "guest", handler: async ({ req, json, body, guest }) => {
+        const g = guest;
+        const l = liveOf(g.id);
         const b = await body(req);
         const prev = l.status;
         l.status = { buffering: !!b.buffering, position: Number(b.position) || 0, paused: !!b.paused, onKey: media ? b.key === media.key : false, at: Date.now() };
         if (!prev || prev.buffering !== l.status.buffering || Date.now() - (prev.pushed ?? 0) > 2000) { l.status.pushed = Date.now(); pushGuests(); } else l.status.pushed = prev.pushed;
         json(200, { now: Date.now() }); // the guest's clock-offset sample
         return true;
-      }
+      } },
 
-      if (route === "/api/party/chat" && req.method === "POST") {
+      { method: "POST", path: "/api/party/chat", audience: "guest", handler: async ({ req, json, body, guest }) => {
+        const g = guest;
+        const l = liveOf(g.id);
         const text = clean((await body(req)).text, 500);
         if (!text) { json(400, { error: "Empty message" }); return true; }
         if (!allow(l.chatTimes)) { json(429, { error: "Slow down a little." }); return true; }
         addChat({ from: g.name, text });
         json(200, { ok: true });
         return true;
-      }
+      } },
 
-      if (route === "/api/party/cmd" && req.method === "POST") {
+      { method: "POST", path: "/api/party/cmd", audience: "guest", handler: async ({ req, json, body, guest }) => {
+        const g = guest;
+        const l = liveOf(g.id);
         if (!cfg.guestControl) { json(403, { error: "The host has turned off guest controls." }); return true; }
         const b = await body(req);
         const cmd = String(b.cmd ?? "");
@@ -433,10 +446,15 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
         send(hosts, { type: "cmd", cmd, value: Number.isFinite(value) ? Math.max(0, value) : undefined, from: g.name });
         json(200, { ok: true });
         return true;
-      }
+      } },
 
       // Media: only the host's current file, addressed by its key. The path is filled in here.
-      if (["/api/party/probe", "/api/party/seekpoint", "/api/party/stream", "/api/party/subtitle.vtt"].includes(route) && req.method === "GET") {
+      ...["/api/party/probe", "/api/party/seekpoint", "/api/party/stream", "/api/party/subtitle.vtt"].map((path) => ({
+        method: "GET", path, audience: "guest",
+        handler: async (/** @type {import("./routes.js").Ctx} */ { req, res, u, json, guest }) => {
+          const route = u.pathname;
+          const g = guest;
+          const l = liveOf(g.id);
         if (!media || u.searchParams.get("k") !== media.key) return deny(res, 409, "The host changed the video.");
         const q = new URLSearchParams({ path: media.file });
         const t = Math.max(0, Math.min(Number(u.searchParams.get("t")) || 0, media.duration || 1e6));
@@ -466,14 +484,13 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
           // Same answer as /api/probe minus anything about the file's location.
           const orig = json;
           const filtered = (/** @type {number} */ code, /** @type {any} */ data) => orig(code, code === 200 && data ? { duration: data.duration, width: data.width, height: data.height, video: data.video, audio: data.audio, codecs: data.codecs, hasAudio: data.hasAudio, copyVideo: data.copyVideo, levelGainDb: data.levelGainDb, subtitles: (data.subtitles ?? []).map((/** @type {any} */ s) => ({ index: s.index, label: s.label, format: s.format, ...(s.embedded ? { embedded: true, stream: s.stream } : {}) })) } : { error: "Could not read the video" });
-          await stream.handle(req, res, filtered, body);
+          await stream.serve(req, res, filtered);
         } else {
-          await stream.handle(req, res, json, body);
+          await stream.serve(req, res, json);
         }
         return true;
-      }
-
-      return deny(res, 404, "Unknown endpoint");
-    },
+        },
+      })),
+    ]),
   };
 }

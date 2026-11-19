@@ -23,12 +23,13 @@ test("mpv progress is queued by the server only when no window is open and no ph
   process.env.CIROOM_FAKE_NETWORK = "wifi:HomeWifi|HomeWifi";
   fs.writeFileSync(path.join(dir, process.platform === "win32" ? "library-windows.json" : "library.json"), JSON.stringify(LIB));
   const { remoteRoutes } = await import("../server/lib/remote.js");
+  const { runRoute } = await import("../server/lib/routes.js");
   const m = { running: true, id: "tiny", position: 100, paused: false, ended: false };
   const remote = remoteRoutes({ itemId: () => m.id, running: () => m.running, snapshot: () => ({ paused: m.paused, position: m.position, duration: 1000, ended: m.ended, subtitles: [], volume: 100, muted: false }), command: () => {} });
   const srv = http.createServer((req, res) => {
     const json = (c, d) => { res.writeHead(c, { "Content-Type": "application/json" }); res.end(JSON.stringify(d)); };
     const body = (r) => new Promise((ok) => { let t = ""; r.on("data", (c) => (t += c)); r.on("end", () => ok(t ? JSON.parse(t) : {})); });
-    remote.handle(req, res, json, body, true).then((h) => { if (!h) json(404, {}); });
+    runRoute(remote.routes, { req, res, json, body, local: true }).then((h) => { if (!h) json(404, {}); });
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const port = srv.address().port;

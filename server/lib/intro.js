@@ -18,6 +18,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { openDb } from "./userdb.js";
 import { BACKGROUND, LIBRARY_FILE } from "./paths.js";
+import { defineRoutes } from "./routes.js";
 
 const LIB_FILE = LIBRARY_FILE;
 const VERSION = 1; // bump when the analysis changes: everything is analysed again
@@ -151,30 +152,24 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
   return {
     start,
     markersFor,
-    /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {(c: number, d: unknown) => void} */ json) {
-      const url = new URL(String(req.url), "http://x");
-      if (!url.pathname.startsWith("/api/markers")) return false;
-      await start();
-      if (url.pathname === "/api/markers/status") {
+    routes: defineRoutes("markers", [
+      { method: "GET", path: "/api/markers/status", audience: "pc", handler: async ({ json }) => {
+        await start();
         const all = seasons();
         const files = all.flatMap((s) => s.files);
         json(200, { done: files.filter((f) => current(f)).length, total: files.length, running });
-        return true;
-      }
-      if (url.pathname === "/api/markers") {
-        const file = resolveVideo(String(url.searchParams.get("path") ?? ""));
+      } },
+      { method: "GET", path: "/api/markers", audience: "pc", handler: async ({ json, u }) => {
+        await start();
+        const file = resolveVideo(String(u.searchParams.get("path") ?? ""));
         const m = markersFor(file);
-        if (m) { json(200, { status: "ready", ...m }); return true; }
+        if (m) return json(200, { status: "ready", ...m });
         const season = seasons().find((s) => s.files.includes(file));
-        if (!season || season.files.length < 2) { json(200, { status: "none" }); return true; }
+        if (!season || season.files.length < 2) return json(200, { status: "none" });
         wanted = [season.key, ...wanted.filter((k) => k !== season.key)].slice(0, 20);
         kick(0);
         json(200, { status: "pending" });
-        return true;
-      }
-      json(404, { error: "Unknown endpoint" });
-      return true;
-    },
+      } },
+    ]),
   };
 }

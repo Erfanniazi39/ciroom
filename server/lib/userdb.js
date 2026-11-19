@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
 import { LOCAL_DIR } from "./paths.js";
+import { defineRoutes } from "./routes.js";
 
 const DB_FILE = path.join(DATA_DIR, "ciroom.db");
 const BACKUP_DIR = path.join(DATA_DIR, "backups");
@@ -200,19 +201,16 @@ export const openDb = () => open();
 
 export function userdbRoutes() {
   return {
-    /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {(c: number, d: unknown) => void} */ json, /** @type {(r: any) => Promise<any>} */ body, /** @type {boolean} */ local) {
-      const url = String(req.url);
-      if (!url.startsWith("/api/userdata")) return false;
-      if (!local) { json(403, { error: "Not allowed from this device" }); return true; }
-      await open();
-      if (url === "/api/userdata" && req.method === "GET") {
+    routes: defineRoutes("userdata", [
+      { method: "GET", path: "/api/userdata", audience: "pc", handler: async ({ json }) => {
+        await open();
         const ok = imported();
         const settings = readScope("app");
         json(200, { imported: ok, user: ok ? readUser() : null, settings: ok && Object.keys(settings).length ? settings : null });
         return true;
-      }
-      if (url === "/api/userdata/user" && req.method === "PUT") {
+      } },
+      { method: "PUT", path: "/api/userdata/user", audience: "pc", handler: async ({ req, json, body }) => {
+        await open();
         if (!imported()) { json(409, { error: "Import first" }); return true; }
         const { state } = await body(req);
         // A broken or empty request must never wipe the data: the real store always sends these fields.
@@ -222,16 +220,18 @@ export function userdbRoutes() {
         writeUser(state);
         json(200, { ok: true });
         return true;
-      }
-      if (url === "/api/userdata/settings" && req.method === "PUT") {
+      } },
+      { method: "PUT", path: "/api/userdata/settings", audience: "pc", handler: async ({ req, json, body }) => {
+        await open();
         if (!imported()) { json(409, { error: "Import first" }); return true; }
         const { state } = await body(req);
         if (!state || typeof state !== "object" || Array.isArray(state)) { json(400, { error: "Incomplete settings" }); return true; }
         writeSettings(state);
         json(200, { ok: true });
         return true;
-      }
-      if (url === "/api/userdata/import" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/userdata/import", audience: "pc", handler: async ({ req, json, body }) => {
+        await open();
         if (imported()) { json(200, { imported: true, user: readUser(), settings: readScope("app"), removed: [] }); return true; }
         const b = await body(req);
         if (b.user != null && (typeof b.user !== "object" || Array.isArray(b.user))) { json(400, { error: "Bad import" }); return true; }
@@ -244,9 +244,7 @@ export function userdbRoutes() {
         console.log(`[ciroom] user data moved to ${DB_FILE} (${Object.keys(obj(user.progress)).length} progress entries; removed sample data: ${removed.join(", ") || "none"})`);
         json(200, { imported: true, user: readUser(), settings: readScope("app"), removed });
         return true;
-      }
-      json(404, { error: "Unknown endpoint" });
-      return true;
-    },
+      } },
+    ]),
   };
 }

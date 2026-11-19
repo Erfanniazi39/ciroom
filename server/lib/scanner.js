@@ -26,6 +26,7 @@ import { Worker } from "node:worker_threads";
 import { DATA_DIR } from "./artwork-store.js";
 import { LIBRARY_FILE } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
+import { defineRoutes } from "./routes.js";
 
 const LIB_FILE = LIBRARY_FILE; // per system (full paths differ between Linux and Windows)
 const IDS_FILE = path.join(DATA_DIR, "ids.json");
@@ -351,16 +352,14 @@ export function scannerRoutes(mediaRoot) {
   };
 
   return {
-    /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(c:number,d:unknown)=>void} */ json, local = true) {
-      const url = String(req.url);
-      if (url === "/api/library" && req.method === "GET") {
+    routes: defineRoutes("scanner", [
+      { method: "GET", path: "/api/library", audience: "phone", handler: async ({ json, local }) => {
         let lib = readJson(LIB_FILE, null);
         if (!lib) { try { lib = await scan(); } catch (e) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; } writeJson(LIB_FILE, lib); }
         json(200, local ? lib : forPhone(lib)); // other devices never get file locations
         return true;
-      }
-      if (url === "/api/library/scan" && req.method === "POST") {
+      } },
+      { method: "POST", path: "/api/library/scan", audience: "pc", handler: async ({ json }) => {
         const prev = readJson(LIB_FILE, null);
         const t0 = Date.now();
         let lib;
@@ -368,8 +367,7 @@ export function scannerRoutes(mediaRoot) {
         writeJson(LIB_FILE, lib);
         json(200, { ...lib, changes: { ...diff(prev, lib), ms: Date.now() - t0 } });
         return true;
-      }
-      return false;
-    },
+      } },
+    ]),
   };
 }

@@ -23,6 +23,7 @@ import { decodeSubtitle } from "./subtitle-search.js";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
 import { CACHE_DIR } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
+import { defineRoutes } from "./routes.js";
 
 const execFileP = promisify(execFile);
 /** ffprobe/ffmpeg helper: every call is killed after `timeout` ms (default 30 s) so a stalled drive can't hang a request forever. */
@@ -365,15 +366,10 @@ async function filesFacts(/** @type {string[]} */ expected, /** @type {(e: strin
 
 /** @param {(expected: string) => string} resolveVideo */
 export function streamRoutes(resolveVideo) {
-  return {
-    /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(c:number,d:unknown)=>void} */ json, /** @type {(r:any)=>Promise<any>} */ body) {
+  /** Serves the five media routes for the request's own URL. This PC reaches them through the table below; a phone or a party guest through their own filtered routes, which rewrite `req.url` first. */
+  const serve = async (/** @type {any} */ req, /** @type {any} */ res, /** @type {(c:number,d:unknown)=>void} */ json) => {
+    {
       const u = new URL(req.url, "http://localhost");
-      if (u.pathname === "/api/files/facts" && req.method === "POST") {
-        const { paths } = await body(req);
-        json(200, await filesFacts(Array.isArray(paths) ? paths.map(String) : [], resolveVideo));
-        return true;
-      }
       if (!["/api/probe", "/api/stream", "/api/seekpoint", "/api/subtitle.vtt", "/api/thumb"].includes(u.pathname)) return false;
       const file = resolveVideo(String(u.searchParams.get("path") ?? ""));
 
@@ -537,6 +533,17 @@ export function streamRoutes(resolveVideo) {
         return true;
       }
       return false;
-    },
+    }
+  };
+  return {
+    serve,
+    routes: defineRoutes("stream", [
+      { method: "POST", path: "/api/files/facts", audience: "pc", handler: async ({ req, json, body }) => {
+        const { paths } = await body(req);
+        json(200, await filesFacts(Array.isArray(paths) ? paths.map(String) : [], resolveVideo));
+      } },
+      ...["/api/probe", "/api/stream", "/api/seekpoint", "/api/subtitle.vtt", "/api/thumb"].map((path) =>
+        ({ method: "GET", path, audience: "pc", handler: (/** @type {import("./routes.js").Ctx} */ c) => serve(c.req, c.res, c.json) })),
+    ]),
   };
 }

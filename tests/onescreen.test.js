@@ -111,12 +111,13 @@ test("mpv path + stale phone state (fake mpv, fake clock)", async () => {
   process.env.CIROOM_DATA_DIR = dir;
   fs.writeFileSync(path.join(dir, process.platform === "win32" ? "library-windows.json" : "library.json"), JSON.stringify(LIB));
   const { remoteRoutes } = await import("../server/lib/remote.js");
+  const { runRoute } = await import("../server/lib/routes.js");
   const mpv = { isRunning: true, paused: false, cmds: [] };
   const remote = remoteRoutes({ running: () => mpv.isRunning, snapshot: () => ({ paused: mpv.paused, position: 100, duration: 1000, subtitles: [], volume: 100, muted: false }), command: (c) => mpv.cmds.push(c) });
   const srv = http.createServer((req, res) => {
     const json = (c, d) => { res.writeHead(c, { "Content-Type": "application/json" }); res.end(JSON.stringify(d)); };
     const body = (r) => new Promise((ok) => { let t = ""; r.on("data", (c) => (t += c)); r.on("end", () => ok(t ? JSON.parse(t) : {})); });
-    remote.handle(req, res, json, body, true).then((h) => { if (!h) json(404, {}); });
+    runRoute(remote.routes, { req, res, json, body, local: true }).then((h) => { if (!h) json(404, {}); });
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const port = srv.address().port;
