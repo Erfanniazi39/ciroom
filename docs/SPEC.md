@@ -618,6 +618,8 @@ Each milestone ends with the app runnable and a short demo or checkpoint for you
 - **Exit check:** you review the look and the flows in the browser (`npm run dev`).
 
 ### Stage 2 — Local library (Rust)
+> **Status: the Rust server port is dropped (audit 2026-11-15).** The Node server already ships in the installed app; a port is a large cost for little user gain. Tauri stays as the window shell only.
+
 - **M2.1** Tauri v2 shell around the existing UI, plus the `api/` switch from mock to `invoke()`.
 - **M2.2** SQLite and migrations, plus a read-only file-access guard test.
 - **M2.3** Name parser and classifier, unit-tested against a fixture tree that mirrors *every* real folder in your library.
