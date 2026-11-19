@@ -15,6 +15,11 @@ import { streamApi, type ProbeInfo } from "@/api/stream";
 
 const AHEAD_MAX = 120; // seconds to keep loaded ahead of the playhead
 const KEEP_BEHIND = 45; // seconds to keep behind it (instant back-jumps)
+const SEEKPOINT_TIMEOUT = 12_000; // ms: after this, the requested time is used as the stream's origin
+const FIRST_BYTE_TIMEOUT = 15_000; // ms to wait for the first chunk of a stream
+const CHUNK_GAP_TIMEOUT = 20_000; // ms without a new chunk (while not held back by back-pressure)
+const STALL_MS = 8_000; // ms of frozen playhead (not paused, not enough data) before the watchdog reloads
+const MAX_STALL_RELOADS = 2; // watchdog reloads without progress before an error is shown
 
 /** MIME for the stream: H.264 video (copied: from the file; transcoded: High@4.0) + AAC-LC audio. */
 export function streamMime(info: ProbeInfo): string {
@@ -33,6 +38,8 @@ export interface StreamSource {
   streamUrl: (path: string, t: number, level?: boolean, audio?: number) => string;
 }
 
+const WATCH_EVENTS = ["waiting", "playing", "timeupdate", "seeking", "pause"] as const;
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class MseStream {
@@ -47,9 +54,19 @@ export class MseStream {
   private ctrl: AbortController | null = null;
   private head = 0; // absolute time where the active fetch is appending
   private loading = false;
+  private starting = false; // a load is waiting for /api/seekpoint or its first chunk: those have their own timeouts
+  private noRange = 0; // appends in a row without a buffered range at the origin
   private opened: Promise<void>;
   private dead = false;
   private earlyEnd = -1; // where a stream last ended before the duration (a second end there = a real error)
+  private recovered = false; // an append failure already triggered a recovery reload since the playhead last moved on
+  private netRetries = 0; // timeouts retried since the playhead last moved on
+  private stallReloads = 0; // watchdog reloads since the playhead last moved on
+  private lastT = 0; // watchdog: playhead at the last check
+  private lastMove = 0; // watchdog: when the playhead last moved (or the user acted)
+  private progressBase = 0; // watchdog: playhead where the retry counters were last reset
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  private readonly onVideoEvent = (e: Event) => this.videoEvent(e.type);
 
   constructor(
     private video: HTMLVideoElement,
@@ -63,6 +80,10 @@ export class MseStream {
   ) {
     this.url = URL.createObjectURL(this.ms);
     video.src = this.url;
+    this.lastT = this.progressBase = video.currentTime;
+    this.lastMove = Date.now();
+    for (const ev of WATCH_EVENTS) video.addEventListener(ev, this.onVideoEvent);
+    this.watchdog = setInterval(() => this.checkStall(), 1000);
     this.opened = new Promise((resolve) => {
       this.ms.addEventListener("sourceopen", () => {
         try {
@@ -104,10 +125,62 @@ export class MseStream {
     void this.reloadFrom(this.video.currentTime);
   }
 
-  /** The video stalled: make sure something is loading at the playhead. */
+  /** The video stalled: make sure something is loading at the playhead. (The watchdog calls the same logic.) */
   onWaiting() {
+    this.ensureLoading();
+  }
+
+  private ensureLoading() {
     const t = this.video.currentTime;
     if (!this.isBuffered(t) && !(this.loading && Math.abs(this.head - t) < 8)) void this.load(t);
+  }
+
+  /** Events from the <video>: track whether the playhead is moving, so a frozen one gets reloaded. */
+  private videoEvent(type: string) {
+    const t = this.video.currentTime;
+    if (type === "seeking" || type === "pause") {
+      this.lastT = t;
+      this.lastMove = Date.now();
+      return;
+    }
+    if (type === "waiting") { this.ensureLoading(); return; }
+    // playing / timeupdate
+    if (Math.abs(t - this.lastT) > 0.01) {
+      this.lastT = t;
+      this.lastMove = Date.now();
+    }
+    if (Math.abs(t - this.progressBase) >= 2) {
+      this.progressBase = t;
+      this.stallReloads = 0;
+      this.netRetries = 0;
+      this.recovered = false;
+    }
+  }
+
+  /** Once a second: playing, short of data, and the playhead hasn't moved for STALL_MS → reload from it. */
+  private checkStall() {
+    if (this.dead) return;
+    const v = this.video;
+    const t = v.currentTime;
+    if (this.starting || v.paused || v.ended || v.seeking || v.readyState >= 3) {
+      if (v.paused || v.seeking) this.lastMove = Date.now();
+      return;
+    }
+    if (Math.abs(t - this.lastT) > 0.01) { this.lastT = t; this.lastMove = Date.now(); return; }
+    if (Date.now() - this.lastMove < STALL_MS) return;
+    this.lastMove = Date.now();
+    this.progressBase = t;
+    if (this.stallReloads >= MAX_STALL_RELOADS) {
+      this.stallReloads = 0;
+      this.fail("The video keeps stalling here. Try the full player.");
+      return;
+    }
+    this.stallReloads++;
+    void this.reloadFrom(t);
+  }
+
+  private fail(message: string) {
+    if (!this.dead) this.onError(message);
   }
 
   /** The loaded range around `t` (for the seek bar), or null. */
@@ -120,6 +193,8 @@ export class MseStream {
   destroy() {
     this.dead = true;
     this.gen++;
+    if (this.watchdog) clearInterval(this.watchdog);
+    for (const ev of WATCH_EVENTS) this.video.removeEventListener(ev, this.onVideoEvent);
     this.ctrl?.abort();
     try { if (this.ms.readyState === "open") this.ms.endOfStream(); } catch { /* closing */ }
     this.video.removeAttribute("src");
@@ -147,9 +222,21 @@ export class MseStream {
    */
   private updateHead(origin: number) {
     const b = this.video.buffered;
-    let head = this.head;
-    for (let i = 0; i < b.length; i++) if (b.start(i) <= head + 1.5 && b.end(i) >= origin - 3) head = Math.max(head, b.end(i));
-    this.head = head;
+    let found = false;
+    for (let i = 0; i < b.length; i++) {
+      // the range this stream is filling: it contains (or starts just after) the origin, ±3 s
+      if (b.start(i) <= Math.max(this.head, origin) + 3 && b.end(i) >= origin - 3) {
+        this.head = Math.max(this.head, b.end(i));
+        found = true;
+      }
+    }
+    if (found) { this.noRange = 0; return; }
+    // No range matches (shifted start, odd merge): after 3 appends take the last range's end, so `head`
+    // keeps up with the data and back-pressure still works.
+    if (++this.noRange >= 3 && b.length) {
+      if (this.noRange === 3) console.warn("[mse] no buffered range at the stream origin; using the last range");
+      this.head = Math.max(this.head, b.end(b.length - 1));
+    }
   }
 
   private async idle() {
@@ -165,15 +252,28 @@ export class MseStream {
     const sb = this.sb;
     if (!sb || this.dead || gen !== this.gen) return;
     t = Math.round(t * 1000) / 1000; // the same value for /api/seekpoint and /api/stream
-    const origin = await this.api.seekPoint(this.path, t, this.audio);
+    let origin: number;
+    this.starting = true;
+    try {
+      origin = await Promise.race([this.api.seekPoint(this.path, t, this.audio), sleep(SEEKPOINT_TIMEOUT).then(() => t)]);
+    } catch {
+      if (gen === this.gen) { this.starting = false; this.fail("The video couldn't be loaded here. Try the full player."); }
+      return;
+    }
     if (gen !== this.gen) return;
     await this.idle();
     if (gen !== this.gen) return;
     try { sb.abort(); } catch { /* not appending */ } // fresh parser state: the new stream starts with its own init segment
     sb.timestampOffset = origin;
     this.head = origin;
+    this.noRange = 0;
     this.loading = true;
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Abort the fetch if nothing arrives in `ms` (a stuck server must not mean an endless spinner).
+    const arm = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, ms); };
     try {
+      arm(FIRST_BYTE_TIMEOUT);
       const r = await fetch(this.api.streamUrl(this.path, t, this.level, this.audio), { signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
       const reader = r.body.getReader();
@@ -182,7 +282,10 @@ export class MseStream {
         // Back-pressure: don't read further ahead than AHEAD_MAX (ffmpeg pauses with us).
         while (gen === this.gen && this.head - this.video.currentTime > AHEAD_MAX) await sleep(400);
         if (gen !== this.gen) { void reader.cancel(); return; }
+        arm(appended === 0 ? FIRST_BYTE_TIMEOUT : CHUNK_GAP_TIMEOUT);
         const { done, value } = await reader.read();
+        clearTimeout(timer);
+        if (gen === this.gen) this.starting = false;
         if (gen !== this.gen) { void reader.cancel(); return; }
         if (done) {
           if (this.head >= this.duration - 2) {
@@ -192,36 +295,61 @@ export class MseStream {
           } else if (this.earlyEnd >= 0 && Math.abs(this.head - this.earlyEnd) < 2) {
             // Ended early twice at the same place: retrying would spin forever.
             this.earlyEnd = -1;
-            this.onError("The video stops here and can't be streamed further. Try the full player.");
+            this.fail("The video stops here and can't be streamed further. Try the full player.");
           } else {
             this.earlyEnd = this.head; // first time: the stall handler retries once
           }
           break;
         }
-        await this.append(value, gen);
+        if (!(await this.append(value, gen))) {
+          if (gen !== this.gen) return;
+          void reader.cancel();
+          this.recover();
+          return;
+        }
         this.updateHead(origin);
         if (++appended % 20 === 0) await this.evict();
       }
     } catch (e) {
-      if (gen === this.gen && !(e instanceof DOMException && e.name === "AbortError")) this.onError("The video stream was interrupted. Press play to retry, or use the full player.");
+      if (gen !== this.gen) return;
+      if (timedOut) {
+        // Like an interrupted stream: one automatic retry from the playhead, then an error.
+        if (this.netRetries < 1) { this.netRetries++; void this.reloadFrom(this.video.currentTime); }
+        else this.fail("The video stream stopped responding. Press play to retry, or use the full player.");
+      } else if (!(e instanceof DOMException && e.name === "AbortError")) {
+        this.fail("The video stream was interrupted. Press play to retry, or use the full player.");
+      }
     } finally {
-      if (gen === this.gen) this.loading = false;
+      clearTimeout(timer);
+      if (gen === this.gen) this.loading = this.starting = false;
     }
   }
 
-  private async append(chunk: Uint8Array, gen: number) {
+  /** An append kept failing (buffer full): reload from the playhead once; failing again without progress is an error. */
+  private recover() {
+    if (this.recovered) {
+      this.fail("The video couldn't be loaded here. Try the full player.");
+      return;
+    }
+    this.recovered = true;
+    void this.reloadFrom(this.video.currentTime);
+  }
+
+  /** Append one chunk. false = it could not be appended (buffer stayed full); the caller must recover. */
+  private async append(chunk: Uint8Array, gen: number): Promise<boolean> {
     const sb = this.sb!;
     for (let attempt = 0; attempt < 30 && gen === this.gen; attempt++) {
       await this.idle();
       try {
         sb.appendBuffer(chunk);
         await this.idle();
-        return;
+        return true;
       } catch (e) {
         if (e instanceof DOMException && e.name === "QuotaExceededError") { await this.evict(true); await sleep(500); continue; }
         throw e;
       }
     }
+    return false;
   }
 
   /** Drop what's far behind (and, when full, far ahead) so the browser's buffer quota is never hit. */
