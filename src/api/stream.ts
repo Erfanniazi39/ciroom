@@ -22,6 +22,16 @@ export interface ProbeInfo {
   audioTracks?: { index: number; language: string | null; title: string | null; codec: string; channels: number }[];
 }
 
+/** `copy`: the stream is cut at a keyframe (start can be before the asked time). `transcode`: re-encoded, starts exactly at the asked time. */
+export type StreamMode = "copy" | "transcode";
+export interface SeekPoint { start: number; mode: StreamMode }
+/** A /api/seekpoint answer → a safe SeekPoint: anything odd means "exact mode from the asked time". */
+export function parseSeekPoint(d: unknown, t: number): SeekPoint {
+  const o = (d ?? {}) as { start?: unknown; mode?: unknown };
+  if (typeof o.start !== "number" || !(o.start <= t + 0.01) || !(o.start >= 0)) return { start: t, mode: "transcode" };
+  return { start: o.start, mode: o.mode === "transcode" ? "transcode" : "copy" };
+}
+
 export interface Cue {
   start: number;
   end: number;
@@ -52,16 +62,18 @@ export const streamApi = {
     if (!r.ok) throw new Error(data.error || "Could not read this video file.");
     return data;
   },
-  streamUrl: (path: string, t: number, level = true, audio = 0) =>
-    `/api/stream?path=${q(path)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}${audio ? `&a=${audio}` : ""}`,
-  /** Where a stream requested at `t` really starts (the keyframe before t for stream-copied files). */
-  seekPoint: async (path: string, t: number, audio = 0): Promise<number> => {
+  streamUrl: (path: string, t: number, level = true, audio = 0, mode?: StreamMode) =>
+    `/api/stream?path=${q(path)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}${audio ? `&a=${audio}` : ""}${mode === "transcode" ? "&mode=transcode" : ""}`,
+  /**
+   * Where a stream requested at `t` really starts (the keyframe before t for stream-copied files), and which mode
+   * gives that start: `copy` (cut at that keyframe) or `transcode` (exact: the keyframe lookup failed or timed out).
+   */
+  seekPoint: async (path: string, t: number, audio = 0): Promise<SeekPoint> => {
     try {
       const r = await fetch(`/api/seekpoint?path=${q(path)}&t=${t.toFixed(3)}${audio ? `&a=${audio}` : ""}`);
-      const d = await r.json();
-      return typeof d.start === "number" && d.start <= t + 0.01 ? d.start : t;
+      return parseSeekPoint(await r.json(), t);
     } catch {
-      return t;
+      return { start: t, mode: "transcode" };
     }
   },
   /** A representative frame for an episode/movie card (≈30% in, past intros). */

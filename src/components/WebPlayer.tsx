@@ -5,7 +5,7 @@ import {
 import { registerWebController } from "@/store/webControl";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from "react";
 import { MseStream, streamMime } from "@/lib/mse";
-import { type Markers, streamApi, type Cue, type ProbeInfo } from "@/api/stream";
+import { type Markers, streamApi, type Cue, type ProbeInfo, type StreamMode } from "@/api/stream";
 import { timecode } from "@/lib/format";
 import { SubtitleFinder } from "./SubtitleFinder";
 import type { SearchContext } from "@/api/subsearch";
@@ -96,7 +96,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const setLevelling = useUser((s) => s.setLevelling);
   const [levelKey, setLevelKey] = useState(levelling); // the levelling setting the current stream uses
   const [audioIdx, setAudioIdx] = useState(0); // which audio stream of the file is playing (`&a=`)
-  const src = useMemo(() => (ready ? streamApi.streamUrl(path, streamT, levelKey, audioIdx) : undefined), [ready, path, streamT, levelKey, audioIdx]);
+  const [streamMode, setStreamMode] = useState<StreamMode>("copy"); // `transcode` when the keyframe lookup failed: exact start
+  const src = useMemo(() => (ready ? streamApi.streamUrl(path, streamT, levelKey, audioIdx, streamMode) : undefined), [ready, path, streamT, levelKey, audioIdx, streamMode]);
 
   /** (Re)start the stream so that playback lands exactly on `target`. */
   const restartAt = useCallback((target: number, alsoApply?: () => void) => {
@@ -105,11 +106,12 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     pending.current = target;
     videoRef.current?.pause();
     setWaiting(true);
-    streamApi.seekPoint(path, target, audioIdx).then((start) => {
+    streamApi.seekPoint(path, target, audioIdx).then(({ start, mode }) => {
       if (seq !== seekSeq.current) return; // a newer click won
       alsoApply?.(); // e.g. a new levelling setting, so the stream reloads once, at the right place
       setBufferedEnd(start);
       setOffset(start);
+      setStreamMode(mode);
       setStreamT(target);
       setReady(true);
     });

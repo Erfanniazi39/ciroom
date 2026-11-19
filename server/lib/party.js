@@ -446,6 +446,7 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
         }
         if (route === "/api/party/stream" && u.searchParams.get("level") === "0") q.set("level", "0");
         if ((route === "/api/party/stream" || route === "/api/party/seekpoint") && u.searchParams.get("q") === "low") q.set("q", "low"); // guest's low-data choice (480p)
+        if (route === "/api/party/stream" && u.searchParams.get("mode") === "transcode") q.set("mode", "transcode"); // exact start when the keyframe lookup failed
         if (route === "/api/party/stream") {
           if (l.streams >= MAX_STREAMS_PER_GUEST) return deny(res, 429, "Too many streams");
           l.streams++;

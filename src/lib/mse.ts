@@ -11,7 +11,7 @@
  *  - we keep ~2 min loaded ahead and drop what's far behind, so memory stays bounded.
  * Verified in WebKitGTK 2.52 (the desktop window): +10 s seek in ~90 ms while playing.
  */
-import { streamApi, type ProbeInfo } from "@/api/stream";
+import { streamApi, type ProbeInfo, type SeekPoint, type StreamMode } from "@/api/stream";
 
 const AHEAD_MAX = 120; // seconds to keep loaded ahead of the playhead
 const KEEP_BEHIND = 45; // seconds to keep behind it (instant back-jumps)
@@ -34,8 +34,9 @@ export function lowStreamMime(info: ProbeInfo): string {
 
 /** Where the chunks come from: the PC's own API, or the watch-party guest API (src/party/guest.ts). */
 export interface StreamSource {
-  seekPoint: (path: string, t: number, audio?: number) => Promise<number>;
-  streamUrl: (path: string, t: number, level?: boolean, audio?: number) => string;
+  /** A plain number = the start (copy mode); an object also says which mode gives that start. */
+  seekPoint: (path: string, t: number, audio?: number) => Promise<number | SeekPoint>;
+  streamUrl: (path: string, t: number, level?: boolean, audio?: number, mode?: StreamMode) => string;
 }
 
 const WATCH_EVENTS = ["waiting", "playing", "timeupdate", "seeking", "pause"] as const;
@@ -288,9 +289,13 @@ export class MseStream {
     if (!sb || this.dead || gen !== this.gen) return;
     t = Math.round(t * 1000) / 1000; // the same value for /api/seekpoint and /api/stream
     let origin: number;
+    let mode: StreamMode | undefined;
     this.starting = true;
     try {
-      origin = await Promise.race([this.api.seekPoint(this.path, t, this.audio), sleep(SEEKPOINT_TIMEOUT).then(() => t)]);
+      // No answer in time: ask for an exact (re-encoded) stream from t, so the origin we assume is right.
+      const sp = await Promise.race([this.api.seekPoint(this.path, t, this.audio), sleep(SEEKPOINT_TIMEOUT).then((): SeekPoint => ({ start: t, mode: "transcode" }))]);
+      origin = typeof sp === "number" ? sp : sp.start;
+      mode = typeof sp === "number" ? undefined : sp.mode;
     } catch {
       if (gen === this.gen) { this.starting = false; this.fail("The video couldn't be loaded here. Try the full player."); }
       return;
@@ -309,7 +314,7 @@ export class MseStream {
     const arm = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, ms); };
     try {
       arm(FIRST_BYTE_TIMEOUT);
-      const r = await fetch(this.api.streamUrl(this.path, t, this.level, this.audio), { signal: ctrl.signal });
+      const r = await fetch(this.api.streamUrl(this.path, t, this.level, this.audio, mode), { signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
       const reader = r.body.getReader();
       let appended = 0;

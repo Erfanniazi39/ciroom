@@ -6,7 +6,7 @@
  */
 import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RectangleHorizontal, RectangleVertical, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
+import { parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
 import { audioLabel, startAudio } from "@/components/WebPlayer";
 import { cx } from "@/components/ui";
 import { findEpisode } from "@/lib/library";
@@ -45,11 +45,10 @@ const source = (id: string, low: boolean): StreamSource => ({
   seekPoint: async (_p, t, a = 0) => {
     try {
       const r = await fetch(`/api/remote/watch/seekpoint?id=${q(id)}&t=${t.toFixed(3)}${low ? "&q=low" : ""}${a ? `&a=${a}` : ""}`);
-      const d = await r.json();
-      return typeof d.start === "number" && d.start <= t + 0.01 ? d.start : t;
-    } catch { return t; }
+      return parseSeekPoint(await r.json(), t);
+    } catch { return { start: t, mode: "transcode" }; }
   },
-  streamUrl: (_p, t, level = true, a = 0) => `/api/remote/watch/stream?id=${q(id)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}${low ? "&q=low" : ""}${a ? `&a=${a}` : ""}`,
+  streamUrl: (_p, t, level = true, a = 0, mode) => `/api/remote/watch/stream?id=${q(id)}&t=${t.toFixed(3)}${level ? "" : "&level=0"}${low ? "&q=low" : ""}${a ? `&a=${a}` : ""}${mode === "transcode" ? "&mode=transcode" : ""}`,
 });
 
 const LOCK_KEY = "ciroom.phone.portraitlock";

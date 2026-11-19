@@ -9,7 +9,7 @@
  * small drift → nudge playback speed; big drift → jump. While we load, we report "buffering" and the host waits.
  */
 import { MseStream, lowStreamMime, streamMime, type StreamSource } from "@/lib/mse";
-import { parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
+import { parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
 
 // ── tiny DOM helper ───────────────────────────────────────────────────────────────────────────
 type Kids = (Node | string | null | false | undefined)[];
@@ -171,11 +171,10 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
     seekPoint: async (_p, t) => {
       try {
         const r = await fetch(`/api/party/seekpoint?k=${key}&t=${t.toFixed(3)}${qs()}`);
-        const d = await r.json();
-        return typeof d.start === "number" && d.start <= t + 0.01 ? d.start : t;
-      } catch { return t; }
+        return parseSeekPoint(await r.json(), t);
+      } catch { return { start: t, mode: "transcode" }; }
     },
-    streamUrl: (_p, t) => `/api/party/stream?k=${key}&t=${t.toFixed(3)}${qs()}`,
+    streamUrl: (_p, t, _level, _a, mode) => `/api/party/stream?k=${key}&t=${t.toFixed(3)}${qs()}${mode === "transcode" ? "&mode=transcode" : ""}`,
   });
 
   async function loadMedia(key: string) {

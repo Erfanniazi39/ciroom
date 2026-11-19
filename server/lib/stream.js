@@ -160,6 +160,8 @@ async function probe(/** @type {string} */ file) {
  * run the SAME seek and read the first timestamps. -avoid_negative_ts make_zero shifts the output so
  * the earliest dts becomes 0, so that earliest dts is the offset the player must add.
  */
+const SEEKPOINT_TIMEOUT_MS = Number(process.env.CIROOM_TEST_SEEKPOINT_TIMEOUT_MS) || 8000; // tests may shorten it
+/** @returns {Promise<{ start: number, exact: boolean }>} exact=false: the lookup timed out or found nothing, `start` is just the asked time. */
 function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** @type {number} */ aud = 0) {
   return new Promise((resolve) => {
     const ff = spawn("ffmpeg", ["-hide_banner", "-loglevel", "quiet", "-nostdin", "-ss", ss, "-i", file,
@@ -170,11 +172,11 @@ function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** 
     let out = "";
     pr.stdout.on("data", (d) => { out += d; });
     const fallback = Number(ss);
-    const timer = setTimeout(() => { ff.kill("SIGKILL"); pr.kill("SIGKILL"); resolve(fallback); }, 8000);
+    const timer = setTimeout(() => { ff.kill("SIGKILL"); pr.kill("SIGKILL"); resolve({ start: fallback, exact: false }); }, SEEKPOINT_TIMEOUT_MS);
     pr.on("close", () => {
       clearTimeout(timer);
       const ts = out.split("\n").filter((l) => l.trim() && l.trim() !== "N/A").map(Number).filter(Number.isFinite);
-      resolve(ts.length ? Math.min(...ts) : fallback);
+      resolve(ts.length ? { start: Math.min(...ts), exact: true } : { start: fallback, exact: false });
     });
   });
 }
@@ -311,7 +313,12 @@ export function streamRoutes(resolveVideo) {
       if (u.pathname === "/api/seekpoint") {
         const info = await probe(file);
         const t = Math.max(0, Number(u.searchParams.get("t")) || 0);
-        json(200, { start: info.copyVideo && !wantsLow(u) && t > 0 ? await streamOrigin(file, t.toFixed(3), audioIndex(info, u)) : t });
+        if (!info.copyVideo || wantsLow(u)) { json(200, { start: t, mode: "transcode" }); return true; } // re-encoded: starts exactly at t
+        if (t <= 0) { json(200, { start: 0, mode: "copy" }); return true; }
+        // A copy can only cut at a keyframe. If the lookup fails or times out we don't know where it would cut,
+        // so this seek is streamed in exact (re-encoded) mode instead of guessing: /api/stream?mode=transcode.
+        const o = await streamOrigin(file, t.toFixed(3), audioIndex(info, u));
+        json(200, o.exact ? { start: o.start, mode: "copy" } : { start: t, mode: "transcode" });
         return true;
       }
 
@@ -322,8 +329,9 @@ export function streamRoutes(resolveVideo) {
         if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
         args.push("-i", file, "-map", "0:v:0", "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
         const low = wantsLow(u);
+        const exact = u.searchParams.get("mode") === "transcode"; // the player's keyframe lookup failed: re-encode this stream so it starts exactly at t
         if (low) args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1", "-vf", "scale=-2:'min(480,ih)'", "-g", "48");
-        else if (info.copyVideo) args.push("-c:v", "copy");
+        else if (info.copyVideo && !exact) args.push("-c:v", "copy");
         else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
         const wantLevel = u.searchParams.get("level") !== "0";
         const known = wantLevel ? cachedGain(file) : undefined;
@@ -341,7 +349,7 @@ export function streamRoutes(resolveVideo) {
         res.statusCode = 200;
         res.setHeader("Content-Type", "video/mp4");
         res.setHeader("Cache-Control", "no-store");
-        res.setHeader("X-Stream-Mode", `${info.copyVideo && !low ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : wantLevel && known === undefined ? " unlevelled-pending" : ""}`);
+        res.setHeader("X-Stream-Mode", `${info.copyVideo && !low && !exact ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : wantLevel && known === undefined ? " unlevelled-pending" : ""}`);
         ff.stdout.pipe(res);
         const stop = () => { if (ff.exitCode === null) ff.kill("SIGKILL"); };
         req.on("close", stop);

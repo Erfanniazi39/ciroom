@@ -103,6 +103,7 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
         if (Number.isFinite(a) && a >= 0 && a <= 99) q.set("a", String(a));
       }
       if (what === "stream" && u.searchParams.get("level") === "0") q.set("level", "0");
+      if (what === "stream" && u.searchParams.get("mode") === "transcode") q.set("mode", "transcode"); // exact start when the keyframe lookup failed
       if (what === "subtitle.vtt") {
         if (u.searchParams.has("e")) q.set("e", String(Math.max(0, Math.min(99, Math.floor(num("e")) || 0))));
         else q.set("i", String(Math.max(0, Math.min(99, Math.floor(num("i")) || 0))));
