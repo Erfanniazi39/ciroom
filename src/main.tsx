@@ -8,6 +8,7 @@ import "./index.css";
 import { useUser } from "./store/user";
 import { useSettings } from "./store/settings";
 import { whenHydrated } from "./lib/serverStorage";
+import { runSmoke } from "./lib/smoke";
 
 // Opened from another device (a phone on the Wi-Fi): show the phone remote, not the PC interface.
 // HashRouter: works under Tauri's custom protocol without server-side rewrites.
@@ -23,4 +24,4 @@ ready.then(() => createRoot(document.getElementById("root")!).render(
       </HashRouter>
     )}
   </StrictMode>,
-));
+)).then(() => { if (!isRemoteClient()) void runSmoke(); });

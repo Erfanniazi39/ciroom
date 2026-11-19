@@ -2,7 +2,7 @@
 /**
  * Publishes a new CiRoom version:  npm run release            (asks what's new)
  *                                  npm run release -- "Fixed the subtitle menu"
- * Bumps the version (1.2.3 → 1.2.4; add --minor for 1.3.0), commits, tags and pushes. GitHub then builds the
+ * Runs the tests first (stops if they fail). Bumps the version (1.2.3 → 1.2.4; add --minor for 1.3.0), commits, tags and pushes. GitHub then builds the
  * apps (.github/workflows/release.yml) and the installed CiRoom offers the update a few minutes later.
  */
 import { execFileSync } from "node:child_process";
@@ -16,6 +16,11 @@ const git = (/** @type {string[]} */ ...a) => execFileSync("git", a, { cwd: root
 
 if (git("status", "--porcelain")) { console.error("There are unsaved changes. Commit them first (or ask Claude to)."); process.exit(1); }
 if (git("branch", "--show-current") !== "main") { console.error("Release from the main branch."); process.exit(1); }
+
+// Nothing is published without passing tests (0.1.5 went out unable to play video). Nothing has changed yet if this stops.
+console.log("Running the tests first…");
+try { execFileSync("npm", ["test"], { cwd: root, stdio: "inherit", shell: process.platform === "win32" }); }
+catch { console.error("\nThe tests failed, so nothing was released or changed. Fix them first."); process.exit(1); }
 
 const pkgFile = path.join(root, "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
@@ -51,3 +56,4 @@ git("tag", "-a", `v${next}`, "-m", notes);
 console.log(`Publishing CiRoom ${next}…`);
 execFileSync("git", ["push", "origin", "main", `v${next}`], { cwd: root, stdio: "inherit" });
 console.log(`Done. GitHub is building it now (about 10 minutes): https://github.com/Erfanniazi39/ciroom/actions`);
+console.log("The build checks the AppImage's media plugins by itself. Before announcing it, also run scripts/smoke-appimage.sh on the built AppImage (a real video must play).");

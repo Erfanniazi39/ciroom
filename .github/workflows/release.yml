@@ -1,4 +1,6 @@
 # Builds CiRoom and publishes a signed release when a version tag (v1.2.3) is pushed (npm run release does that).
+# Order: tests → draft release → builds (the Linux one is checked for its media plugins) → publish. A failure anywhere leaves
+# the release a DRAFT, which the installed apps never see.
 # The installed apps check this repository's latest release for updates (latest.json lists every platform).
 # Needs two repository secrets: TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
 name: Release
@@ -11,8 +13,24 @@ permissions:
   contents: write
 
 jobs:
-  # One release first (with the notes from the tag message), so the builds below all add to the same one.
+  # Nothing is built or published if the tests fail.
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: ffmpeg (some tests make small test videos)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
+      - run: npm test
+
+  # One DRAFT release first (with the notes from the tag message), so the builds below all add to the same one.
+  # The last job publishes it once every build passed its checks.
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -22,7 +40,10 @@ jobs:
         run: |
           git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > notes.txt
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --title "CiRoom ${GITHUB_REF_NAME}" --notes-file notes.txt
+          # drafts don't show up in `gh release view <tag>`, so look through the list (a re-run must not make a second one)
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[].tag_name' | grep -qx "${GITHUB_REF_NAME}"; then
+            gh release create "${GITHUB_REF_NAME}" --draft --title "CiRoom ${GITHUB_REF_NAME}" --notes-file notes.txt
+          fi
 
   linux:
     needs: release
@@ -55,8 +76,11 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: CiRoom ${{ github.ref_name }}
-          releaseDraft: false
+          releaseDraft: true
           includeUpdaterJson: true
+      # The AppImage is only in the draft so far. Without the GStreamer plugins video freezes (0.1.5): fail here, so it is never published.
+      - name: Check the AppImage carries the media plugins
+        run: scripts/check-appimage.sh src-tauri/target/release/bundle/appimage/*.AppImage
 
   windows:
     needs: [release, linux] # after Linux, so the two never update latest.json at the same moment
@@ -72,6 +96,10 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      # Informational for now (never run on Windows before): flip continue-on-error off once it is green there.
+      - name: Tests (Windows)
+        continue-on-error: true
+        run: npm test
       - name: Bundle Node (runs CiRoom's server)
         shell: pwsh
         run: |
@@ -112,5 +140,18 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: CiRoom ${{ github.ref_name }}
-          releaseDraft: false
+          releaseDraft: true
           includeUpdaterJson: true
+
+  # Only reached when the tests, the Linux package check and both builds passed.
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          id=$(gh api "repos/${GH_REPO}/releases" --paginate --jq ".[] | select(.tag_name==\"${GITHUB_REF_NAME}\") | .id" | head -1)
+          gh api -X PATCH "repos/${GH_REPO}/releases/${id}" -F draft=false >/dev/null

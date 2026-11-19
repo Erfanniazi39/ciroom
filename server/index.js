@@ -10,6 +10,7 @@
  *   CIROOM_DIST        built page folder (default: ../dist)
  *   CIROOM_DATA_DIR, CIROOM_CACHE_DIR, CIROOM_DEV: see server/lib/paths.js
  *   CIROOM_LISTEN_ALL=1  tests only: listen on all addresses even with the remote off
+ *   CIROOM_SMOKE=1     scripts/smoke-appimage.sh only: /api/smoke (server/lib/smoke.js)
  *   CIROOM_FAKE_NETWORK=<id>|<label>  tests only: pretend this is the current network (server/lib/netid.js)
  *  CIROOM_FAKE_NETWORK_FILE=<file>  tests only: same, read from a file each time so a test can switch networks
  */
@@ -18,6 +19,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCiRoom } from "./lib/mpv-bridge.js";
+import { handleSmoke } from "./lib/smoke.js";
 import { DATA_DIR, isMediaRoot, savedMediaRoot } from "./lib/paths.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -67,7 +69,8 @@ function serveStatic(/** @type {http.IncomingMessage} */ req, /** @type {http.Se
 }
 
 const app = createCiRoom(MEDIA_ROOT);
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  if (await handleSmoke(req, res).catch(() => false)) return;
   app.handle(req, res, () => serveStatic(req, res)).catch(() => { if (!res.headersSent) { res.statusCode = 500; res.end(); } });
 });
 /** @type {Set<import("node:net").Socket>} */
