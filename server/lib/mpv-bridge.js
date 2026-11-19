@@ -18,7 +18,7 @@ import net from "node:net";
 import path from "node:path";
 import { artworkRoutes } from "./artwork-store.js";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
-import { cachedGain, encoderStatus, levelFilter, measureGainInBackground, streamRoutes } from "./stream.js";
+import { audioTrackFor, cachedGain, encoderStatus, levelFilter, measureGainInBackground, streamRoutes } from "./stream.js";
 import { metadataRoutes } from "./metadata.js";
 import { scannerRoutes } from "./scanner.js";
 import { subtitleSearchRoutes } from "./subtitle-search.js";
@@ -419,8 +419,9 @@ export function createCiRoom(mediaRoot) {
               else if (subPref.language && LANG_CODES[subPref.language]) slang = [...LANG_CODES[subPref.language], ...slang]; // maybe a built-in track
             }
             const alang = [...(typeof audioLang === "string" && /^[a-z]{2,3}$/i.test(audioLang) ? [audioLang] : []), "en", "eng"];
-            const knownGain = level ? cachedGain(file) : undefined;
-            if (level && knownGain === undefined) measureGainInBackground(file); // don't block the play button; next play has it
+            const track = level ? await audioTrackFor(file, alang) : 0; // the gain of the track mpv will play
+            const knownGain = level ? cachedGain(file, track) : undefined;
+            if (level && knownGain === undefined) measureGainInBackground(file, track); // don't block the play button; next play has it
             const levelAf = knownGain !== undefined ? levelFilter(knownGain) : null; // same levelling as the page player
             if (dryRun) return json(200, { ok: true, file });
             stop();

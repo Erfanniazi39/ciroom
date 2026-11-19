@@ -106,9 +106,9 @@ const subtitleList = (/** @type {string} */ file, /** @type {any[]} */ embedded 
 /** `&q=low`: a small 480p ~1 Mbps re-encode (the watch party's "low data" choice for guests on a slow connection). */
 const wantsLow = (/** @type {URL} */ u) => u.searchParams.get("q") === "low";
 
-/** The audio stream asked for with `&a=N`: only a number that exists, otherwise the first one. */
-function audioIndex(/** @type {any} */ info, /** @type {URL} */ u) {
-  const n = Math.floor(Number(u.searchParams.get("a")));
+/** The audio stream asked for with `&a=N` (or another parameter name): only a number that exists, otherwise the first one. */
+function audioIndex(/** @type {any} */ info, /** @type {URL} */ u, param = "a") {
+  const n = Math.floor(Number(u.searchParams.get(param)));
   return Number.isFinite(n) && n > 0 && n < (info.audioTracks?.length ?? 0) ? n : 0;
 }
 
@@ -227,36 +227,37 @@ function prettySubName(/** @type {string} */ name, /** @type {string | null} */ 
  */
 const loudCache = new Map(Object.entries((() => { try { return JSON.parse(fs.readFileSync(LOUD_FILE, "utf8")); } catch { return {}; } })()));
 /** @type {Set<string>} */ const memOnly = new Set(); // gains that are not worth saving (no audio / measurement failed)
-const gainKey = (/** @type {string} */ file) => `${file}|${fs.statSync(file).size}`;
-/** The known gain for a file, or undefined if it hasn't been measured yet. Instant: never measures. */
-export function cachedGain(/** @type {string} */ file) {
-  try { return loudCache.get(gainKey(file)); } catch { return undefined; }
+/** Cache key per audio track. Track 0 keeps the old key (no suffix), so gains measured before tracks were told apart still count. */
+const gainKey = (/** @type {string} */ file, /** @type {number} */ audio = 0) => `${file}|${fs.statSync(file).size}${audio > 0 ? `|a${audio}` : ""}`;
+/** The known gain for a file's audio track, or undefined if it hasn't been measured yet. Instant: never measures. */
+export function cachedGain(/** @type {string} */ file, /** @type {number} */ audio = 0) {
+  try { return loudCache.get(gainKey(file, audio)); } catch { return undefined; }
 }
 /** @type {Map<string, Promise<number>>} */ const gainInFlight = new Map();
 /** Measure (once at a time per file: concurrent callers share one run), cache and return the gain. Low priority. */
-export function measureGain(/** @type {string} */ file) {
-  const key = gainKey(file);
+export function measureGain(/** @type {string} */ file, /** @type {number} */ audio = 0) {
+  const key = gainKey(file, audio);
   const known = loudCache.get(key);
   if (known !== undefined) return Promise.resolve(known);
   let p = gainInFlight.get(key);
   if (!p) {
-    p = doMeasure(file, key).finally(() => gainInFlight.delete(key));
+    p = doMeasure(file, key, audio).finally(() => gainInFlight.delete(key));
     gainInFlight.set(key, p);
   }
   return p;
 }
 /** Start a measurement without waiting for it (errors are swallowed; the next request just asks again). */
-export function measureGainInBackground(/** @type {string} */ file) {
-  try { measureGain(file).catch(() => {}); } catch { /* file vanished */ }
+export function measureGainInBackground(/** @type {string} */ file, /** @type {number} */ audio = 0) {
+  try { measureGain(file, audio).catch(() => {}); } catch { /* file vanished */ }
 }
-async function doMeasure(/** @type {string} */ file, /** @type {string} */ key) {
+async function doMeasure(/** @type {string} */ file, /** @type {string} */ key, /** @type {number} */ audio = 0) {
   const info = await probe(file);
   if (!info.hasAudio || !info.duration) { memOnly.add(key); loudCache.set(key, 0); return 0; } // nothing to level (kept in memory only)
   const points = [0.15, 0.35, 0.55, 0.75].map((f) => Math.max(0, info.duration * f));
   /** @type {number[]} */ const lufs = [];
   for (const t of points) {
     try {
-      const ffArgs = ["-nostdin", "-hide_banner", "-ss", t.toFixed(1), "-t", "30", "-i", file, "-map", "0:a:0", "-vn", "-sn", "-af", "ebur128", "-f", "null", "-"];
+      const ffArgs = ["-nostdin", "-hide_banner", "-ss", t.toFixed(1), "-t", "30", "-i", file, "-map", `0:a:${audio}`, "-vn", "-sn", "-af", "ebur128", "-f", "null", "-"];
       const opts = { maxBuffer: 64 << 20, timeout: 60_000 };
       const { stderr } = process.platform === "win32" ? await run("ffmpeg", ffArgs, opts) : await run("nice", ["-n", "10", "ffmpeg", ...ffArgs], opts);
       const m = String(stderr).split("Summary:").pop()?.match(/I:\s+(-?[\d.]+)\s+LUFS/);
@@ -269,6 +270,17 @@ async function doMeasure(/** @type {string} */ file, /** @type {string} */ key) 
   loudCache.set(key, gain);
   try { writeJsonAtomic(LOUD_FILE, Object.fromEntries([...loudCache].filter(([k]) => !memOnly.has(k)))); } catch { /* cache only */ }
   return gain;
+}
+/** Which audio track mpv will pick for these language codes (first match in order, like --alang): index among the file's audio streams, 0 if none matches. */
+export async function audioTrackFor(/** @type {string} */ file, /** @type {string[]} */ langs) {
+  try {
+    const tracks = /** @type {{ index: number, language: string | null }[]} */ ((await probe(file)).audioTracks ?? []);
+    for (const l of langs.map((x) => x.toLowerCase())) {
+      const hit = tracks.find((t) => t.language && (t.language === l || t.language.startsWith(l) || l.startsWith(t.language)));
+      if (hit) return hit.index;
+    }
+  } catch { /* unreadable: the first track */ }
+  return 0;
 }
 /** The ffmpeg/mpv audio filter for a gain, or null when no change is needed. Limiter: no clipping. */
 export const levelFilter = (/** @type {number} */ gain) => (Math.abs(gain) < 1 ? null : `volume=${gain}dB,alimiter=limit=0.9:attack=5:release=80:level=0`);
@@ -325,8 +337,9 @@ export function streamRoutes(resolveVideo) {
 
       if (u.pathname === "/api/probe") {
         const info = await probe(file);
-        const levelGainDb = cachedGain(file);
-        if (levelGainDb === undefined) measureGainInBackground(file); // answer now; the number shows up on the next probe
+        const track = audioIndex(info, u, "audio"); // `?audio=N`: the gain of that track (default: the first)
+        const levelGainDb = cachedGain(file, track);
+        if (levelGainDb === undefined) measureGainInBackground(file, track); // answer now; the number shows up on the next probe
         json(200, { ...info, levelGainDb });
         return true;
       }
@@ -371,8 +384,9 @@ export function streamRoutes(resolveVideo) {
           return args;
         };
         const wantLevel = u.searchParams.get("level") !== "0";
-        const known = wantLevel ? cachedGain(file) : undefined;
-        if (wantLevel && known === undefined) measureGainInBackground(file); // this stream starts unlevelled; the next load has the gain
+        const track = audioIndex(info, u); // the gain belongs to the track that is playing
+        const known = wantLevel ? cachedGain(file, track) : undefined;
+        if (wantLevel && known === undefined) measureGainInBackground(file, track); // this stream starts unlevelled; the next load has the gain
         const level = known !== undefined ? levelFilter(known) : null;
         // Audio is ALWAYS re-encoded (levelling only adds the gain filter). Copying the source audio untouched makes
         // WebKitGTK's MediaSource freeze the whole page (99% CPU, 2+ GB, never recovers) on large files, e.g. movies;
@@ -382,6 +396,7 @@ export function streamRoutes(resolveVideo) {
         res.statusCode = 200;
         res.setHeader("Content-Type", "video/mp4");
         res.setHeader("Cache-Control", "no-store");
+        if (known !== undefined) res.setHeader("X-Level-Gain", String(known)); // dB applied to the playing track (tests, debugging)
         res.setHeader("X-Stream-Mode", `${info.copyVideo && !low && !exact ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : wantLevel && known === undefined ? " unlevelled-pending" : ""}`);
         /** @param {boolean} useVa */
         const launch = (useVa) => {
