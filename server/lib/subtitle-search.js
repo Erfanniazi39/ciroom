@@ -88,7 +88,7 @@ export function decodeSubtitle(/** @type {Buffer} */ buf, /** @type {string} */ 
   return new TextDecoder(/** @type {Record<string,string>} */ (ENCODING)[lang] || "windows-1252").decode(buf);
 }
 
-const slug = (/** @type {string} */ s) => s.replace(EXT, "").replace(/[^\w.\-]+/g, " ").trim().replace(/\s+/g, ".").slice(0, 80) || "subtitle";
+const slug = (/** @type {string} */ s) => s.replace(EXT, "").replace(/[^\w.-]+/g, " ").trim().replace(/\s+/g, ".").slice(0, 80) || "subtitle";
 
 /** @param {(expected: string) => string} resolveVideo */
 export function subtitleSearchRoutes(resolveVideo) {
@@ -164,7 +164,7 @@ export function subtitleSearchRoutes(resolveVideo) {
               hearingImpaired: !!(s.hi ?? s.hearing_impaired), fullSeason: !!s.full_season,
               season: s.season ?? null, episode: s.episode ?? null, score: Math.round(score * 100) / 100,
             };
-          }).filter((/** @type {any} */ s) => /^\/subtitle\/[\w.\-]+\.zip$/.test(s.url) && langs.includes(s.language));
+          }).filter((/** @type {any} */ s) => /^\/subtitle\/[\w.-]+\.zip$/.test(s.url) && langs.includes(s.language));
           // Chosen language order first, then the release that looks most like the file, season packs last.
           list.sort((/** @type {any} */ a, /** @type {any} */ c) =>
             langs.indexOf(a.language) - langs.indexOf(c.language) || Number(a.fullSeason) - Number(c.fullSeason) || c.score - a.score);
@@ -176,7 +176,7 @@ export function subtitleSearchRoutes(resolveVideo) {
           const b = await body(req);
           const file = resolveVideo(String(b.path ?? ""));
           const url = String(b.url ?? "").split("?")[0];
-          if (!/^\/subtitle\/[\w.\-]+\.zip$/.test(url)) { json(400, { error: "Unexpected subtitle address." }); return true; }
+          if (!/^\/subtitle\/[\w.-]+\.zip$/.test(url)) { json(400, { error: "Unexpected subtitle address." }); return true; }
           const lang = String(b.language ?? "").toUpperCase();
           let r;
           try { r = await fetch(DL + url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(30_000) }); }
@@ -196,7 +196,7 @@ export function subtitleSearchRoutes(resolveVideo) {
               pick = names.find((n) => code.test(n)) ?? names[0];
             }
             const raw = readZipEntry(zip, /** @type {any} */ (entries.find((e) => e.name === pick)));
-            const text = decodeSubtitle(raw, lang).replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+            const text = decodeSubtitle(raw, lang).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
             const ext = (path.extname(pick) || ".srt").toLowerCase();
             const dir = foundDirFor(file);
             fs.mkdirSync(dir, { recursive: true });

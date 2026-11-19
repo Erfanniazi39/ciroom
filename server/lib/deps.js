@@ -2,7 +2,6 @@
 // so a bundled copy added to PATH by the desktop app counts too.) Shown in Settings.
 import { execFile } from "node:child_process";
 
-const WIN = process.platform === "win32";
 
 export const TOOLS = [
   { name: "ffmpeg", args: ["-version"], needed: "the page player, thumbnails, subtitles, skip intro" },

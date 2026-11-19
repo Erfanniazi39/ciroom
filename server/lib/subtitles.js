@@ -64,7 +64,7 @@ function repairSrt(/** @type {string} */ file) {
   } catch {
     return file;
   }
-  const clean = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const clean = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const lines = clean.split("\n");
   const first = lines.findIndex((l) => l.trim() !== "");
   const wellFormed = first >= 0 && /^\d+\s*$/.test(lines[first]) && TIME.test(lines[first + 1] ?? "");

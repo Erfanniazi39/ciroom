@@ -26,6 +26,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm ci
       - run: npm test
+      - name: Lint (errors fail, warnings do not)
+        run: npm run lint
 
   # One DRAFT release first (with the notes from the tag message), so the builds below all add to the same one.
   # The last job publishes it once every build passed its checks.

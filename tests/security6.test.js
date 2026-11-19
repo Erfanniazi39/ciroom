@@ -65,7 +65,7 @@ test("c: a guest's 4th seekpoint within 2 s (or two at once) gets 429", async ()
     const joined = await new Promise((ok, no) => { const q = http.request({ host: "127.0.0.1", port: s.port, path: "/api/party/join", method: "POST", headers: { "Content-Type": "application/json" } }, (r) => { r.resume(); ok(String(r.headers["set-cookie"] ?? "").split(";")[0]); }); q.on("error", no); q.end(JSON.stringify({ invite, name: "g" })); });
     assert.ok(joined, "joined");
     let key = "";
-    await new Promise((ok, no) => { const q = http.get({ host: "127.0.0.1", port: s.port, path: "/api/party/events", headers: { Cookie: joined }, agent: false }, (res) => { let b = ""; res.on("data", (c) => { b += c; const m = /"media":\{"key":"([0-9a-f]+)"/.exec(b); if (m) { key = m[1]; q.destroy(); ok(); } }); }); q.on("error", () => {}); setTimeout(ok, 3000); });
+    await new Promise((ok) => { const q = http.get({ host: "127.0.0.1", port: s.port, path: "/api/party/events", headers: { Cookie: joined }, agent: false }, (res) => { let b = ""; res.on("data", (c) => { b += c; const m = /"media":\{"key":"([0-9a-f]+)"/.exec(b); if (m) { key = m[1]; q.destroy(); ok(); } }); }); q.on("error", () => {}); setTimeout(ok, 3000); });
     assert.ok(key, "got the media key");
     const sp = (t) => request({ port: s.port, path: `/api/party/seekpoint?k=${key}&t=${t}`, headers: { Cookie: joined } });
     const codes = [];

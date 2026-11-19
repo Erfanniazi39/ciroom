@@ -13,6 +13,7 @@ import { activeCueText, parseSeekPoint, parseVtt, type Cue, type ProbeInfo } fro
 
 // ── tiny DOM helper ───────────────────────────────────────────────────────────────────────────
 type Kids = (Node | string | null | false | undefined)[];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- free-form element props
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, any> = {}, ...kids: Kids): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -20,6 +21,7 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, 
     if (k === "class") el.className = v;
     else if (k === "text") el.textContent = v;
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- generic DOM property assignment
     else if (k in el) (el as any)[k] = v;
     else el.setAttribute(k, String(v));
   }
@@ -325,6 +327,7 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
   const es = new EventSource("/api/party/events");
   es.onopen = () => { dot.className = "dot on"; };
   es.onmessage = (ev) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- parsed JSON from the host, checked field by field below
     let m: any;
     try { m = JSON.parse(ev.data); } catch { return; }
     if (m.type === "hello") { chatList.replaceChildren(); (m.chat ?? []).forEach(addMsg); }

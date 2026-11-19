@@ -46,6 +46,7 @@ const prebuilt = (/** @type {string} */ name) => (process.env.CIROOM_DIST ? path
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 const safeEq = (/** @type {string} */ a, /** @type {string} */ b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 /** Printable text only (no control characters except newlines), trimmed and length-limited. */
+// eslint-disable-next-line no-control-regex, no-irregular-whitespace -- the sanitiser strips exactly these control / invisible characters
 const clean = (/** @type {unknown} */ s, /** @type {number} */ max) => String(s ?? "").replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, "").trim().slice(0, max);
 
 const PAGE = `<!doctype html>

@@ -72,6 +72,7 @@ export function usePartyLink() {
     const connect = () => {
       es = new EventSource("/api/party/host/events");
       es.onmessage = (ev) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- parsed JSON from the host, checked field by field below
         let m: any;
         try { m = JSON.parse(ev.data); } catch { return; }
         const st = useParty.getState();

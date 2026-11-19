@@ -141,7 +141,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       setStreamT(target);
       setReady(true);
     });
-  }, [path, ready, audioIdx]);
+  }, [path, ready, audioIdx, clock]); // eslint-disable-line react-hooks/exhaustive-deps -- `ready` makes the callback change once the first load is done (kept as it was); clock is a stable ref value
 
   // Playback engine: chunked (MediaSource, src/lib/mse.ts) when supported: instant jumps inside what's
   // loaded, exact landing elsewhere. Otherwise the plain fMP4 pipe above (every jump restarts the stream).
@@ -383,7 +383,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (v.paused) resumeRef.current();
     if (v.paused) v.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true));
     else { wantPlay.current = false; v.pause(); save(); }
-  }, [ended, save]);
+  }, [ended, save]); // eslint-disable-line react-hooks/exhaustive-deps -- replay() is re-created every render; it only reads refs and state set below
 
   const seek = useCallback((abs: number) => {
     const target = Math.max(0, Math.min(abs, Math.max(0, duration - 1)));

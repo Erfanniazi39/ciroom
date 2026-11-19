@@ -74,6 +74,8 @@ function useMediaQuery(query: string): boolean {
 function useHeight(): [React.RefObject<HTMLDivElement>, number] {
   const ref = useRef<HTMLDivElement>(null);
   const [h, setH] = useState(0);
+  // Runs after every render on purpose: the height must follow any layout change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
