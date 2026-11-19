@@ -18,7 +18,7 @@ import net from "node:net";
 import path from "node:path";
 import { artworkRoutes } from "./artwork-store.js";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
-import { levelFilter, levelGain, streamRoutes } from "./stream.js";
+import { cachedGain, levelFilter, measureGainInBackground, streamRoutes } from "./stream.js";
 import { metadataRoutes } from "./metadata.js";
 import { scannerRoutes } from "./scanner.js";
 import { subtitleSearchRoutes } from "./subtitle-search.js";
@@ -403,7 +403,9 @@ export function createCiRoom(mediaRoot) {
               else if (subPref.language && LANG_CODES[subPref.language]) slang = [...LANG_CODES[subPref.language], ...slang]; // maybe a built-in track
             }
             const alang = [...(typeof audioLang === "string" && /^[a-z]{2,3}$/i.test(audioLang) ? [audioLang] : []), "en", "eng"];
-            const levelAf = level ? levelFilter(await levelGain(file).catch(() => 0)) : null; // same levelling as the page player
+            const knownGain = level ? cachedGain(file) : undefined;
+            if (level && knownGain === undefined) measureGainInBackground(file); // don't block the play button; next play has it
+            const levelAf = knownGain !== undefined ? levelFilter(knownGain) : null; // same levelling as the page player
             if (dryRun) return json(200, { ok: true, file });
             stop();
             try { fs.unlinkSync(socketPath); } catch { /* not there */ }

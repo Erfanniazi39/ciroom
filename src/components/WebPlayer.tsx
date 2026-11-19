@@ -52,6 +52,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const { autoplayNext, upNextSeconds } = useSettings();
 
   const [info, setInfo] = useState<ProbeInfo | null>(null);
+  const [lateGain, setLateGain] = useState<number | undefined>(undefined); // measured after the first probe
   const [subError, setSubError] = useState(false); // the chosen subtitle file couldn't be read
   const [subList, setSubList] = useState<ProbeInfo["subtitles"]>([]);
   const [finder, setFinder] = useState(false);
@@ -145,6 +146,14 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     );
     return () => { alive = false; };
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The loudness is measured in the background after the first play: ask once more after ~10 s to show the number.
+  useEffect(() => {
+    setLateGain(undefined);
+    if (!info || info.levelGainDb !== undefined) return;
+    const t = setTimeout(() => { streamApi.probe(path).then((p) => setLateGain(p.levelGainDb), () => {}); }, 10_000);
+    return () => clearTimeout(t);
+  }, [info, path]);
 
   // A subtitle picked by the user (menu, C key, button, phone, "Use" in the finder) is remembered for the
   // whole series, so the next episodes open with the same language. Automatic picks are not remembered.
@@ -656,7 +665,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
           speed={speed}
           setSpeed={setSpeed}
           levelling={levelling}
-          levelGainDb={info?.levelGainDb}
+          levelGainDb={info?.levelGainDb ?? lateGain}
           setLevelling={(on) => {
             // Audio changes server-side, so restart the stream where we are with the new setting.
             setLevelling(on);
@@ -830,7 +839,7 @@ function SettingsPanel(p: {
             <span className="text-white/70"><AudioLines size={18} /></span>
             <span className="flex-1 font-semibold">Volume levelling</span>
             <span className="text-[13px] text-white/55">
-              {p.levelling ? (p.levelGainDb !== undefined && Math.abs(p.levelGainDb) >= 1 ? `On · ${p.levelGainDb > 0 ? "+" : ""}${p.levelGainDb.toFixed(0)} dB` : "On") : "Off"}
+              {p.levelling ? (p.levelGainDb !== undefined && Math.abs(p.levelGainDb) >= 1 ? `On · ${p.levelGainDb > 0 ? "+" : ""}${p.levelGainDb.toFixed(0)} dB` : p.levelGainDb === undefined ? "On · measuring…" : "On") : "Off"}
             </span>
             <span className={cx("relative h-5 w-9 rounded-full transition", p.levelling ? "bg-violet-500" : "bg-white/20")}>
               <span className={cx("absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all", p.levelling ? "left-[18px]" : "left-0.5")} />

@@ -200,26 +200,48 @@ function prettySubName(/** @type {string} */ name, /** @type {string | null} */ 
  * @type {Map<string, number>}
  */
 const loudCache = new Map(Object.entries((() => { try { return JSON.parse(fs.readFileSync(LOUD_FILE, "utf8")); } catch { return {}; } })()));
-export async function levelGain(/** @type {string} */ file) {
-  const st = fs.statSync(file);
-  const key = `${file}|${st.size}`;
-  if (loudCache.has(key)) return /** @type {number} */ (loudCache.get(key));
+/** @type {Set<string>} */ const memOnly = new Set(); // gains that are not worth saving (no audio / measurement failed)
+const gainKey = (/** @type {string} */ file) => `${file}|${fs.statSync(file).size}`;
+/** The known gain for a file, or undefined if it hasn't been measured yet. Instant: never measures. */
+export function cachedGain(/** @type {string} */ file) {
+  try { return loudCache.get(gainKey(file)); } catch { return undefined; }
+}
+/** @type {Map<string, Promise<number>>} */ const gainInFlight = new Map();
+/** Measure (once at a time per file: concurrent callers share one run), cache and return the gain. Low priority. */
+export function measureGain(/** @type {string} */ file) {
+  const key = gainKey(file);
+  const known = loudCache.get(key);
+  if (known !== undefined) return Promise.resolve(known);
+  let p = gainInFlight.get(key);
+  if (!p) {
+    p = doMeasure(file, key).finally(() => gainInFlight.delete(key));
+    gainInFlight.set(key, p);
+  }
+  return p;
+}
+/** Start a measurement without waiting for it (errors are swallowed; the next request just asks again). */
+export function measureGainInBackground(/** @type {string} */ file) {
+  try { measureGain(file).catch(() => {}); } catch { /* file vanished */ }
+}
+async function doMeasure(/** @type {string} */ file, /** @type {string} */ key) {
   const info = await probe(file);
-  if (!info.hasAudio || !info.duration) return 0;
+  if (!info.hasAudio || !info.duration) { memOnly.add(key); loudCache.set(key, 0); return 0; } // nothing to level (kept in memory only)
   const points = [0.15, 0.35, 0.55, 0.75].map((f) => Math.max(0, info.duration * f));
   /** @type {number[]} */ const lufs = [];
   for (const t of points) {
     try {
-      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-ss", t.toFixed(1), "-t", "30", "-i", file, "-map", "0:a:0", "-vn", "-sn", "-af", "ebur128", "-f", "null", "-"], { maxBuffer: 64 << 20, timeout: 60_000 });
+      const ffArgs = ["-nostdin", "-hide_banner", "-ss", t.toFixed(1), "-t", "30", "-i", file, "-map", "0:a:0", "-vn", "-sn", "-af", "ebur128", "-f", "null", "-"];
+      const opts = { maxBuffer: 64 << 20, timeout: 60_000 };
+      const { stderr } = process.platform === "win32" ? await run("ffmpeg", ffArgs, opts) : await run("nice", ["-n", "10", "ffmpeg", ...ffArgs], opts);
       const m = String(stderr).split("Summary:").pop()?.match(/I:\s+(-?[\d.]+)\s+LUFS/);
       if (m && Number(m[1]) > -70) lufs.push(Number(m[1]));
     } catch { /* sample failed: use the others */ }
   }
-  if (!lufs.length) return 0;
+  if (!lufs.length) { memOnly.add(key); loudCache.set(key, 0); return 0; } // memory only: a later restart tries again
   const loudness = 10 * Math.log10(lufs.reduce((a, l) => a + 10 ** (l / 10), 0) / lufs.length); // energy average
   const gain = Math.round(Math.max(-8, Math.min(26, LEVEL_TARGET - loudness)) * 10) / 10;
   loudCache.set(key, gain);
-  try { writeJsonAtomic(LOUD_FILE, Object.fromEntries(loudCache)); } catch { /* cache only */ }
+  try { writeJsonAtomic(LOUD_FILE, Object.fromEntries([...loudCache].filter(([k]) => !memOnly.has(k)))); } catch { /* cache only */ }
   return gain;
 }
 /** The ffmpeg/mpv audio filter for a gain, or null when no change is needed. Limiter: no clipping. */
@@ -276,7 +298,10 @@ export function streamRoutes(resolveVideo) {
       const file = resolveVideo(String(u.searchParams.get("path") ?? ""));
 
       if (u.pathname === "/api/probe") {
-        json(200, { ...(await probe(file)), levelGainDb: await levelGain(file) });
+        const info = await probe(file);
+        const levelGainDb = cachedGain(file);
+        if (levelGainDb === undefined) measureGainInBackground(file); // answer now; the number shows up on the next probe
+        json(200, { ...info, levelGainDb });
         return true;
       }
 
@@ -300,7 +325,10 @@ export function streamRoutes(resolveVideo) {
         if (low) args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1", "-vf", "scale=-2:'min(480,ih)'", "-g", "48");
         else if (info.copyVideo) args.push("-c:v", "copy");
         else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
-        const level = u.searchParams.get("level") !== "0" ? levelFilter(await levelGain(file)) : null;
+        const wantLevel = u.searchParams.get("level") !== "0";
+        const known = wantLevel ? cachedGain(file) : undefined;
+        if (wantLevel && known === undefined) measureGainInBackground(file); // this stream starts unlevelled; the next load has the gain
+        const level = known !== undefined ? levelFilter(known) : null;
         // Audio is ALWAYS re-encoded (levelling only adds the gain filter). Copying the source audio untouched makes
         // WebKitGTK's MediaSource freeze the whole page (99% CPU, 2+ GB, never recovers) on large files, e.g. movies;
         // re-encoded audio is solid. 192k AAC stereo is transparent for this library (all stereo AAC/Opus).
@@ -313,7 +341,7 @@ export function streamRoutes(resolveVideo) {
         res.statusCode = 200;
         res.setHeader("Content-Type", "video/mp4");
         res.setHeader("Cache-Control", "no-store");
-        res.setHeader("X-Stream-Mode", `${info.copyVideo && !low ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : ""}`);
+        res.setHeader("X-Stream-Mode", `${info.copyVideo && !low ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : wantLevel && known === undefined ? " unlevelled-pending" : ""}`);
         ff.stdout.pipe(res);
         const stop = () => { if (ff.exitCode === null) ff.kill("SIGKILL"); };
         req.on("close", stop);
