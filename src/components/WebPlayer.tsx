@@ -1,25 +1,28 @@
 import {
-  ArrowLeft, AudioLines, Captions, Check, ChevronRight, ChevronsRight, Gauge, Loader2, Maximize, Minimize, MonitorPlay, Pause, Play, RotateCcw,
-  RotateCw, Search, Settings, SkipForward, Timer, Volume1, Volume2, VolumeX, X, Maximize2,
+  ArrowLeft, Captions, ChevronsRight, Loader2, Maximize, Minimize, MonitorPlay, Pause, Play, RotateCcw,
+  RotateCw, Settings, SkipForward, X, Maximize2,
 } from "lucide-react";
 import { registerWebController } from "@/store/webControl";
-import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type Markers, streamApi, type ProbeInfo } from "@/api/stream";
 import { timecode } from "@/lib/format";
 import { SubtitleFinder } from "./SubtitleFinder";
+import { audioLabel, startAudio } from "@/player/audio";
+import { CtrlButton, EndScreen, Volume } from "@/player/PlayerControls";
+import { SettingsPanel, type MenuPage } from "@/player/PlayerMenus";
+import { PlayerClock, SeekBar } from "@/player/SeekBar";
+export { audioLabel, startAudio };
 import type { SearchContext } from "@/api/subsearch";
 import { usePlayback } from "@/store/playback";
 import { isElsewhere, takeBack } from "@/lib/oneScreen";
-import { pickSubtitle, startSubtitle, subPrefFor, useSettings, type SubtitleStyle } from "@/store/settings";
+import { pickSubtitle, startSubtitle, subPrefFor, useSettings } from "@/store/settings";
 import { useUser } from "@/store/user";
-import { type Clock, useClock } from "@/player/clock";
 import { usePlaybackEngine } from "@/player/usePlaybackEngine";
 import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
 
 const SUB_SCALE = { S: 0.8, M: 1, L: 1.3, XL: 1.7 } as const;
-const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const HIDE_MS = 2500;
 
 export interface WebPlayerProps {
@@ -70,7 +73,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const setSpeed = (v: number) => useSettings.getState().set({ playbackSpeed: v });
   const [realFs, setFullscreen] = useState(false); // the browser's real fullscreen
   const [controls, setControls] = useState(true);
-  const [menu, setMenu] = useState<null | "main" | "subs" | "audio" | "delay" | "speed">(null);
+  const [menu, setMenu] = useState<null | MenuPage>(null);
   const [subIndex, setSubIndex] = useState(-1);
   const [ended, setEnded] = useState(false);
   const [upNextDismissed, setUpNextDismissed] = useState(false);
@@ -537,7 +540,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
             <CtrlButton label="Forward 10 s (→)" onClick={() => seek(timeRef.current + 10)}><RotateCw size={20} /></CtrlButton>
             {next && <CtrlButton label={`Next: ${next.label}`} onClick={next.onPlay}><SkipForward size={20} /></CtrlButton>}
             <Volume volume={pageVolume} muted={muted} onVolume={setVolume} onMute={() => setMuted((m) => !m)} />
-            <Timecode clock={clock} duration={duration} />
+            <PlayerClock clock={clock} duration={duration} />
 
             <div className="ml-auto flex items-center gap-1">
               {speed !== 1 && <span className="mr-1 rounded-full bg-violet-500/25 px-2 py-0.5 text-[12px] font-bold text-violet-200">{speed}×</span>}
@@ -598,254 +601,3 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   );
 }
 
-/** Seek bar: played (violet), buffered, hover fill + thumbnail preview, round handle, click/drag. */
-function Timecode({ clock, duration }: { clock: Clock; duration: number }) {
-  const { time } = useClock(clock);
-  return <span className="ml-2 text-[13px] font-semibold tabular-nums text-white/90">{timecode(time)} <span className="text-white/50">/ {timecode(duration)}</span></span>;
-}
-
-function SeekBar({ clock, path, duration, onSeek, compact }: { clock: Clock; path: string; duration: number; onSeek: (t: number) => void; compact?: boolean }) {
-  const { time, bufStart: offset, bufferedEnd } = useClock(clock);
-  const ref = useRef<HTMLDivElement>(null);
-  const [hover, setHover] = useState<number | null>(null);
-  const [drag, setDrag] = useState<number | null>(null);
-  const frac = drag ?? (duration ? Math.min(1, time / duration) : 0);
-  const at = (e: RPointerEvent) => {
-    const r = ref.current!.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-  };
-  const hoverT = hover !== null ? hover * duration : 0;
-  const thumbT = Math.floor(hoverT / 5) * 5;
-  const pct = (v: number) => `${Math.max(0, Math.min(1, v)) * 100}%`;
-
-  return (
-    <div
-      ref={ref}
-      role="slider"
-      aria-label="Seek"
-      aria-valuemin={0}
-      aria-valuemax={Math.round(duration)}
-      aria-valuenow={Math.round(time)}
-      tabIndex={-1}
-      onPointerMove={(e) => { setHover(at(e)); if (drag !== null) setDrag(at(e)); }}
-      onPointerLeave={() => setHover(null)}
-      onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setDrag(at(e)); }}
-      onPointerUp={(e) => { if (drag !== null) onSeek(at(e) * duration); setDrag(null); }}
-      className="group/seek relative flex h-6 cursor-pointer touch-none items-center"
-    >
-      <div className="relative h-[3px] w-full rounded-full bg-white/25 transition-[height] duration-150 group-hover/seek:h-[6px]">
-        {duration > 0 && bufferedEnd > offset && (
-          <div className="absolute inset-y-0 rounded-full bg-violet-200/45" style={{ left: pct(offset / duration), width: pct((bufferedEnd - offset) / duration) }} />
-        )}
-        {hover !== null && hover > frac && <div className="absolute inset-y-0 left-0 rounded-full bg-white/35" style={{ width: pct(hover) }} />}
-        <div className="absolute inset-y-0 left-0 rounded-full bg-violet-500" style={{ width: pct(frac) }} />
-      </div>
-      <div
-        className={cx("absolute h-3.5 w-3.5 -translate-x-1/2 rounded-full bg-white shadow-[0_0_0_4px_rgb(139_92_246/.45)] transition-transform duration-150", drag !== null ? "scale-125" : "group-hover/seek:scale-110")}
-        style={{ left: pct(frac) }}
-      />
-      {hover !== null && duration > 0 && !compact && (
-        <div className="pointer-events-none absolute bottom-full mb-3 flex -translate-x-1/2 flex-col items-center gap-1.5" style={{ left: `clamp(84px, ${hover * 100}%, calc(100% - 84px))` }}>
-          <div className="overflow-hidden rounded-lg bg-black ring-2 ring-violet-500/90 shadow-lift">
-            <img src={streamApi.thumbUrl(path, thumbT)} alt="" className="block h-[90px] w-[160px] object-cover" />
-          </div>
-          <span className="rounded-md bg-black/80 px-2 py-0.5 text-[12px] font-semibold tabular-nums text-white">{timecode(hoverT)}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CtrlButton({ label, onClick, children, active, disabled }: { label: string; onClick: () => void; children: ReactNode; active?: boolean; disabled?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      className={cx(
-        "relative flex h-10 w-10 items-center justify-center rounded-full text-white transition hover:bg-white/15 active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent",
-        active && "text-violet-300 after:absolute after:bottom-1 after:h-[2px] after:w-4 after:rounded-full after:bg-violet-400",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Volume({ volume, muted, onVolume, onMute }: { volume: number; muted: boolean; onVolume: (v: number) => void; onMute: () => void }) {
-  const Icon = muted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
-  const pct = muted ? 0 : Math.min(volume, 100);
-  return (
-    <div className="group/vol flex items-center">
-      <CtrlButton label={muted ? "Unmute (M)" : "Mute (M)"} onClick={onMute}><Icon size={20} /></CtrlButton>
-      <input
-        type="range" min={0} max={100} value={pct} aria-label="Volume"
-        onChange={(e) => onVolume(Number(e.target.value))}
-        className="h-1 w-0 cursor-pointer appearance-none rounded-full opacity-0 transition-all duration-200 group-hover/vol:ml-1 group-hover/vol:w-24 group-hover/vol:opacity-100 focus-visible:w-24 focus-visible:opacity-100 accent-violet-500"
-        style={{ background: `linear-gradient(to right, rgb(139 92 246) ${pct}%, rgb(255 255 255 / .25) ${pct}%)` }}
-      />
-    </div>
-  );
-}
-
-type AudioTrack = NonNullable<ProbeInfo["audioTracks"]>[number];
-
-/** Which audio stream to start with: the saved language for this title, else English (like mpv), else the first. */
-export function startAudio(tracks: AudioTrack[], pref: string | undefined): number {
-  const by = (codes: string[]) => tracks.find((t) => t.language && codes.includes(t.language))?.index;
-  return (pref ? by([pref.toLowerCase()]) : undefined) ?? by(["en", "eng"]) ?? 0;
-}
-
-export function audioLabel(t: AudioTrack | undefined): string {
-  if (!t) return "Default";
-  let lang: string | null = null;
-  if (t.language) { try { lang = new Intl.DisplayNames(undefined, { type: "language" }).of(t.language) ?? t.language; } catch { lang = t.language; } }
-  const ch = t.channels === 6 ? "5.1" : t.channels === 8 ? "7.1" : t.channels === 1 ? "mono" : t.channels === 2 ? "stereo" : "";
-  const name = t.title || lang || `Track ${t.index + 1}`;
-  const extra = [t.codec.toUpperCase(), ch].filter(Boolean).join(" ");
-  return t.title && lang && !t.title.toLowerCase().includes(lang.toLowerCase()) ? `${lang} · ${t.title}` : extra ? `${name} · ${extra}` : name;
-}
-
-/** Size, colour and background of the subtitle line (saved in Settings, used by the page player and the mini player). */
-function SubtitleLook() {
-  const st = useSettings((s) => s.subtitleStyle);
-  const set = (patch: Partial<SubtitleStyle>) => useSettings.getState().set({ subtitleStyle: { ...st, ...patch } });
-  const Chip = ({ on, label, onClick }: { on: boolean; label: string; onClick: () => void }) => (
-    <button onClick={onClick} aria-pressed={on} className={cx("rounded-full px-3 py-1 text-[13px] font-semibold transition", on ? "bg-violet-500 text-white" : "bg-white/10 text-white/75 hover:bg-white/15")}>{label}</button>
-  );
-  return (
-    <div className="mt-1 space-y-2 border-t border-white/10 px-3 py-2.5">
-      <div className="flex items-center gap-1.5"><span className="w-[72px] text-[12px] text-white/50">Size</span>{(["S", "M", "L", "XL"] as const).map((v) => <Chip key={v} on={st.size === v} label={v} onClick={() => set({ size: v })} />)}</div>
-      <div className="flex items-center gap-1.5"><span className="w-[72px] text-[12px] text-white/50">Background</span>{([["none", "None"], ["shadow", "Shadow"], ["box", "Box"]] as const).map(([v, l]) => <Chip key={v} on={st.background === v} label={l} onClick={() => set({ background: v })} />)}</div>
-      <div className="flex items-center gap-1.5"><span className="w-[72px] text-[12px] text-white/50">Colour</span>{([["white", "White"], ["yellow", "Yellow"]] as const).map(([v, l]) => <Chip key={v} on={st.color === v} label={l} onClick={() => set({ color: v })} />)}</div>
-    </div>
-  );
-}
-
-function SettingsPanel(p: {
-  page: "main" | "subs" | "audio" | "delay" | "speed";
-  setPage: (pg: null | "main" | "subs" | "audio" | "delay" | "speed") => void;
-  subtitles: ProbeInfo["subtitles"];
-  audioTracks: NonNullable<ProbeInfo["audioTracks"]>;
-  audioIndex: number;
-  setAudioIndex: (i: number) => void;
-  subError?: boolean;
-  onFind?: () => void;
-  subIndex: number;
-  setSubIndex: (i: number) => void;
-  rememberNote?: string;
-  delay: number;
-  setDelay: (d: number) => void;
-  speed: number;
-  setSpeed: (s: number) => void;
-  levelling: boolean;
-  levelGainDb?: number;
-  setLevelling: (on: boolean) => void;
-}) {
-  const fmtDelay = (d: number) => (Math.abs(d) < 0.05 ? "0.0 s" : `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} s`);
-  const subLabel = p.subIndex >= 0 ? p.subtitles[p.subIndex]?.label ?? "On" : "Off";
-  const Row = ({ icon, label, value, onClick }: { icon: ReactNode; label: string; value: string; onClick: () => void }) => (
-    <button onClick={onClick} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-white transition hover:bg-white/10">
-      <span className="text-white/70">{icon}</span>
-      <span className="flex-1 font-semibold">{label}</span>
-      <span className="max-w-[150px] truncate text-[13px] text-white/55">{value}</span>
-      <ChevronRight size={16} className="text-white/45" />
-    </button>
-  );
-  const Option = ({ selected, label, onClick }: { selected: boolean; label: string; onClick: () => void }) => (
-    <button onClick={onClick} className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] transition hover:bg-white/10", selected ? "font-semibold text-white" : "text-white/80")}>
-      <span className="w-4">{selected && <Check size={16} className="text-violet-400" />}</span>
-      <span className="truncate">{label}</span>
-    </button>
-  );
-  const Header = ({ title }: { title: string }) => (
-    <div className="mb-1 flex items-center gap-2 border-b border-white/10 px-1 pb-2">
-      {p.page !== "main" && <button onClick={() => p.setPage("main")} aria-label="Back" className="flex h-8 w-8 items-center justify-center rounded-full text-white hover:bg-white/10"><ArrowLeft size={18} /></button>}
-      <span className="flex-1 px-2 text-[15px] font-semibold text-white">{title}</span>
-      <button onClick={() => p.setPage(null)} aria-label="Close" className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white"><X size={17} /></button>
-    </div>
-  );
-
-  return (
-    <div onClick={(e) => e.stopPropagation()} className="absolute bottom-[86px] right-[4%] z-10 w-[min(340px,86%)] rounded-2xl bg-[#141419]/95 p-2 shadow-[0_24px_70px_-15px_rgb(0_0_0/.95)] ring-1 ring-white/10 backdrop-blur-xl animate-pop">
-      {p.page === "main" && (
-        <>
-          <Header title="Settings" />
-          <Row icon={<Captions size={18} />} label="Subtitles" value={subLabel} onClick={() => p.setPage("subs")} />
-          {p.audioTracks.length > 1 && <Row icon={<AudioLines size={18} />} label="Audio" value={audioLabel(p.audioTracks[p.audioIndex] ?? p.audioTracks[0])} onClick={() => p.setPage("audio")} />}
-          <Row icon={<Timer size={18} />} label="Subtitle timing" value={fmtDelay(p.delay)} onClick={() => p.setPage("delay")} />
-          <Row icon={<Gauge size={18} />} label="Playback speed" value={p.speed === 1 ? "Normal" : `${p.speed}×`} onClick={() => p.setPage("speed")} />
-          <button onClick={() => p.setLevelling(!p.levelling)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-white transition hover:bg-white/10"
-            title="Boosts quiet videos to a normal loudness, with a limiter so loud moments don't distort">
-            <span className="text-white/70"><AudioLines size={18} /></span>
-            <span className="flex-1 font-semibold">Volume levelling</span>
-            <span className="text-[13px] text-white/55">
-              {p.levelling ? (p.levelGainDb !== undefined && Math.abs(p.levelGainDb) >= 1 ? `On · ${p.levelGainDb > 0 ? "+" : ""}${p.levelGainDb.toFixed(0)} dB` : p.levelGainDb === undefined ? "On · measuring…" : "On") : "Off"}
-            </span>
-            <span className={cx("relative h-5 w-9 rounded-full transition", p.levelling ? "bg-violet-500" : "bg-white/20")}>
-              <span className={cx("absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all", p.levelling ? "left-[18px]" : "left-0.5")} />
-            </span>
-          </button>
-        </>
-      )}
-      {p.page === "subs" && (
-        <>
-          <Header title="Subtitles" />
-          <Option selected={p.subIndex < 0} label="Off" onClick={() => p.setSubIndex(-1)} />
-          {p.subtitles.map((s) => <Option key={s.index} selected={p.subIndex === s.index} label={s.label} onClick={() => p.setSubIndex(s.index)} />)}
-          {p.subError && p.subIndex >= 0 && <p className="px-3 py-2 text-[13px] font-semibold text-amber-300">This subtitle couldn't be read. Try another one.</p>}
-          <SubtitleLook />
-          {p.subtitles.length > 0 && p.rememberNote && <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">{p.rememberNote}</p>}
-          {p.subtitles.length === 0 && <p className="px-3 py-2 text-[13px] text-white/55">No text subtitles for this video. Picture subtitles (DVD/Blu-ray) are available in the full player.</p>}
-          {p.onFind && <button onClick={p.onFind} className="mt-1 flex w-full items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 text-left text-[14px] font-semibold text-violet-300 transition hover:bg-white/10"><Search size={16} /> Find subtitles online…</button>}
-        </>
-      )}
-      {p.page === "audio" && (
-        <>
-          <Header title="Audio" />
-          {p.audioTracks.map((a) => <Option key={a.index} selected={p.audioIndex === a.index} label={audioLabel(a)} onClick={() => p.setAudioIndex(a.index)} />)}
-          <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">The video restarts at the same spot with the new track.</p>
-        </>
-      )}
-      {p.page === "delay" && (
-        <>
-          <Header title="Subtitle timing" />
-          <div className={cx("py-3 text-center text-3xl font-bold tabular-nums", Math.abs(p.delay) >= 0.05 ? "text-violet-300" : "text-white")}>{fmtDelay(p.delay)}</div>
-          <div className="grid grid-cols-4 gap-2 px-1">
-            {[-0.5, -0.1, 0.1, 0.5].map((d) => (
-              <button key={d} onClick={() => p.setDelay(p.delay + d)} className="h-10 rounded-xl bg-white/10 text-[14px] font-semibold tabular-nums text-white transition hover:bg-white/20 active:scale-95">
-                {d > 0 ? "+" : "−"}{Math.abs(d)}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center justify-between px-2 pb-1 pt-3 text-[12px] text-white/55">
-            <span>Too early → + · too late → − · Z / X keys</span>
-            {Math.abs(p.delay) >= 0.05 && <button onClick={() => p.setDelay(0)} className="font-semibold text-white hover:text-violet-300">Reset</button>}
-          </div>
-        </>
-      )}
-      {p.page === "speed" && (
-        <>
-          <Header title="Playback speed" />
-          {SPEEDS.map((s) => <Option key={s} selected={Math.abs(p.speed - s) < 0.01} label={s === 1 ? "Normal" : `${s}×`} onClick={() => p.setSpeed(s)} />)}
-        </>
-      )}
-    </div>
-  );
-}
-
-function EndScreen({ next, onReplay, mini, onClose }: { next?: { label: string; onPlay: () => void }; onReplay: () => void; mini?: boolean; onClose?: () => void }) {
-  // Only reached when auto-play is off or was cancelled: offer the choice, never start by itself.
-  return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/75 p-4 text-center animate-fade">
-      {!mini && next && <div className="text-[13px] font-semibold uppercase tracking-[0.08em] text-violet-300">Up next</div>}
-      {!mini && next && <div className="max-w-lg text-2xl font-semibold text-white">{next.label}</div>}
-      <div className="flex flex-wrap justify-center gap-2.5">
-        {next && <button onClick={next.onPlay} className={cx("flex items-center gap-2 rounded-full bg-violet-500 font-semibold text-white hover:bg-violet-400", mini ? "px-3.5 py-2 text-[13px]" : "px-6 py-3")}><Play size={mini ? 14 : 18} fill="currentColor" /> {mini ? "Next" : "Play now"}</button>}
-        <button onClick={onReplay} className={cx("flex items-center gap-2 rounded-full font-semibold text-white", next ? "bg-white/15 hover:bg-white/25" : "bg-violet-500 hover:bg-violet-400", mini ? "px-3.5 py-2 text-[13px]" : "px-6 py-3")}><RotateCcw size={mini ? 14 : 18} /> Watch again</button>
-        {mini && <button onClick={onClose} className="rounded-full bg-white/15 px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-white/25">Close</button>}
-      </div>
-    </div>
-  );
-}

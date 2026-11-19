@@ -7,7 +7,7 @@
 import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RectangleHorizontal, RectangleVertical, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseSeekPoint, parseVtt, type ProbeInfo } from "@/api/stream";
-import { audioLabel, startAudio } from "@/components/WebPlayer";
+import { audioLabel, startAudio } from "@/player/audio";
 import { cx } from "@/components/ui";
 import { usePlaybackEngine } from "@/player/usePlaybackEngine";
 import { useProgressSaver } from "@/player/useProgressSaver";
