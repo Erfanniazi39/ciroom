@@ -56,7 +56,7 @@ export class MseStream {
   private loading = false;
   private starting = false; // a load is waiting for /api/seekpoint or its first chunk: those have their own timeouts
   private noRange = 0; // appends in a row without a buffered range at the origin
-  private opened: Promise<void>;
+  private opened!: Promise<void>;
   private dead = false;
   private earlyEnd = -1; // where a stream last ended before the duration (a second end there = a real error)
   private recovered = false; // an append failure already triggered a recovery reload since the playhead last moved on
@@ -72,27 +72,34 @@ export class MseStream {
     private video: HTMLVideoElement,
     private path: string,
     private duration: number,
-    mime: string,
+    private mime: string,
     private level: boolean,
     private audio: number,
     private onError: (message: string) => void,
     private api: StreamSource = streamApi,
   ) {
-    this.url = URL.createObjectURL(this.ms);
-    video.src = this.url;
     this.lastT = this.progressBase = video.currentTime;
     this.lastMove = Date.now();
+    this.open();
     for (const ev of WATCH_EVENTS) video.addEventListener(ev, this.onVideoEvent);
     this.watchdog = setInterval(() => this.checkStall(), 1000);
+  }
+
+  /** Attach a fresh MediaSource to the <video> and open a SourceBuffer on it (constructor and rebuild() share this). */
+  private open() {
+    const ms = (this.ms = new MediaSource());
+    this.sb = null;
+    this.url = URL.createObjectURL(ms);
+    this.video.src = this.url;
     this.opened = new Promise((resolve) => {
-      this.ms.addEventListener("sourceopen", () => {
+      ms.addEventListener("sourceopen", () => {
         try {
-          this.ms.duration = duration;
-          this.sb = this.ms.addSourceBuffer(mime);
+          ms.duration = this.duration;
+          this.sb = ms.addSourceBuffer(this.mime);
           this.sb.mode = "segments";
           resolve();
         } catch (e) {
-          onError(`This video can't be played here (${e instanceof Error ? e.message : "codec"}). Try the full player.`);
+          this.onError(`This video can't be played here (${e instanceof Error ? e.message : "codec"}). Try the full player.`);
         }
       }, { once: true });
     });
@@ -115,14 +122,14 @@ export class MseStream {
   setLevel(on: boolean) {
     if (on === this.level) return;
     this.level = on;
-    void this.reloadFrom(this.video.currentTime);
+    void this.rebuild(this.video.currentTime);
   }
 
   /** Another audio track was chosen: reload from the current position (like a far seek). */
   setAudio(n: number) {
     if (n === this.audio) return;
     this.audio = n;
-    void this.reloadFrom(this.video.currentTime);
+    void this.rebuild(this.video.currentTime);
   }
 
   /** The video stalled: make sure something is loading at the playhead. (The watchdog calls the same logic.) */
@@ -206,6 +213,34 @@ export class MseStream {
   private isBuffered(t: number) {
     const r = this.rangeAt(t);
     return !!r && t <= r[1] - 0.5;
+  }
+
+  /**
+   * Start over on a brand-new MediaSource at `t`. Emptying the SourceBuffer (reloadFrom) leaves WebKit's decoder
+   * holding the old picture until the next keyframe (up to 10 s), so audio/levelling switches use this instead.
+   * Pause state, volume, mute and speed belong to the <video> element and survive the new src.
+   */
+  private async rebuild(t: number) {
+    if (this.dead) return;
+    const wasPlaying = !this.video.paused && !this.video.ended;
+    const oldUrl = this.url;
+    this.gen++; // stops the old fetch loop
+    this.ctrl?.abort();
+    this.loading = false;
+    this.starting = true; // the watchdog must not count the gap below as a stall
+    this.earlyEnd = -1;
+    this.recovered = false;
+    this.netRetries = 0;
+    this.stallReloads = 0;
+    this.open();
+    URL.revokeObjectURL(oldUrl);
+    this.lastT = this.progressBase = t;
+    this.lastMove = Date.now();
+    await this.opened;
+    if (this.dead) return;
+    this.video.currentTime = t;
+    void this.load(t);
+    if (wasPlaying) void this.video.play().catch(() => { /* the user can press play */ });
   }
 
   private async reloadFrom(t: number) {
