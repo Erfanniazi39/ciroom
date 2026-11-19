@@ -48,7 +48,12 @@
       "../mpv/": "mpv/",
       "runtime/package.json": "package.json"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
   },
   "plugins": {
     "updater": {
