@@ -107,23 +107,30 @@ jobs:
           Copy-Item (Get-Command node).Source src-tauri/binaries/node-x86_64-pc-windows-msvc.exe
       - name: Bundle mpv and ffmpeg (Windows has neither)
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
           $ProgressPreference = "SilentlyContinue"
-          $gh = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "ciroom-build" }
           $bin = "src-tauri/windows-bin"
           New-Item -ItemType Directory -Force $bin, dl | Out-Null
-          # ffmpeg + ffprobe: BtbN GPL shared build of the 8.1 release line (includes Chromaprint, used for skip intro)
-          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip -OutFile dl/ffmpeg.zip
+          # PINNED downloads: fixed release + SHA-256, so a changed or compromised upstream build can't ship unnoticed.
+          # To bump: pick a new release (BtbN: a dated "autobuild-..." tag, asset ffmpeg-n8.1.*-win64-gpl-shared-8.1.zip, hash in the tag's
+          # checksums.sha256; shinchiro: a release tag, asset mpv-x86_64-<date>-git-<hash>.7z, not "v3", hash shown on the asset's release page).
+          # Change URL + hash together, then run a test build and check ffmpeg (with Chromaprint) and mpv in the installer.
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-18-12-39/ffmpeg-n8.1.3-36-ge22a4510c9-win64-gpl-shared-8.1.zip"
+          $ffmpegSha = "a8339655aaaf61739e013c65f04d26c716a1af7e18fd66a8ea4198f07ee994c0"
+          $mpvUrl = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-x86_64-20261111-git-bcde6b93cc.7z"
+          $mpvSha = "f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf"
+          function Get-Pinned($url, $sha, $out) {
+            Invoke-WebRequest $url -OutFile $out
+            $got = (Get-FileHash -Algorithm SHA256 $out).Hash.ToLower()
+            if ($got -ne $sha) { throw "SHA-256 mismatch for $url`nexpected $sha`ngot      $got" }
+          }
+          # ffmpeg + ffprobe: BtbN GPL shared build of the 8.1 line (includes Chromaprint, used for skip intro)
+          Get-Pinned $ffmpegUrl $ffmpegSha dl/ffmpeg.zip
           Expand-Archive dl/ffmpeg.zip dl/ffmpeg
           Get-ChildItem dl/ffmpeg -Recurse -Include ffmpeg.exe, ffprobe.exe, *.dll | Copy-Item -Destination $bin
-          # mpv: shinchiro build (the newest x86_64 one; not the "v3" build, which needs a newer CPU)
-          $rel = Invoke-RestMethod -Headers $gh https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest
-          $mp = $rel.assets | Where-Object { $_.name -match '^mpv-x86_64-\d{8}-git-.*\.7z$' } | Select-Object -First 1
-          if (-not $mp) { throw "mpv build not found in $($rel.tag_name): $($rel.assets.name -join ', ')" }
-          Invoke-WebRequest $mp.browser_download_url -OutFile dl/mpv.7z
+          # mpv: shinchiro build (x86_64, not the "v3" build, which needs a newer CPU)
+          Get-Pinned $mpvUrl $mpvSha dl/mpv.7z
           7z x dl/mpv.7z -odl/mpv -y | Out-Null
           Get-ChildItem dl/mpv -Recurse -Include mpv.exe, *.dll | Copy-Item -Destination $bin
           # Checks: Chromaprint present, both programs run
