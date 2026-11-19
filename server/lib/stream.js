@@ -43,7 +43,8 @@ const THUMB_DIR = path.join(CACHE_DIR, "thumbs");
 const THUMB_MAX_PARALLEL = 3;
 const THUMB_TIMEOUT_MS = 15_000;
 let thumbRunning = 0;
-/** @type {Array<() => void>} */ const thumbWaiting = [];
+const THUMB_MAX_WAITING = Number(process.env.CIROOM_TEST_THUMB_QUEUE) || 24;
+/** @type {Array<{ go: (run: boolean) => void, closed?: () => boolean }>} */ const thumbWaiting = [];
 
 // The thumbnails on disk are a cache: over 200 MB the oldest are deleted down to 75 % (a fully scrubbed 2-hour film is
 // ~1,440 files and the system disk is small). Checked after a write, at most once a minute, in the background.
@@ -72,18 +73,24 @@ async function pruneThumbs() {
 }
 
 /** One JPEG frame at t seconds. At most 3 ffmpeg run at once, each is killed after 15 s, and results are kept on disk.
- *  Returns an empty Buffer if ffmpeg failed or timed out. */
-async function thumbnail(/** @type {string} */ file, /** @type {number} */ t) {
+ *  At most THUMB_MAX_WAITING requests wait: past that the OLDEST waiter is dropped (null), and so is any waiter whose
+ *  request already closed. Returns an empty Buffer if ffmpeg failed or timed out, null if the request was dropped. */
+async function thumbnail(/** @type {string} */ file, /** @type {number} */ t, /** @type {(() => boolean) | undefined} */ closed = undefined, /** @type {number} */ vi = 0) {
   const st = fs.statSync(file);
-  const key = `${file}|${st.size}|${Math.round(st.mtimeMs)}|${t}`;
+  const key = `${file}|${st.size}|${Math.round(st.mtimeMs)}|${t}`; // (vi is 0 except for cover-art files, whose thumbnails are new anyway)
   const hit = thumbCache.get(key);
   if (hit) return hit;
   const diskFile = path.join(THUMB_DIR, createHash("sha1").update(key).digest("hex") + ".jpg");
   try { const b = fs.readFileSync(diskFile); if (b.length) { thumbCache.set(key, b); return b; } } catch { /* not cached yet */ }
-  if (thumbRunning >= THUMB_MAX_PARALLEL) await new Promise((r) => thumbWaiting.push(() => r(undefined)));
-  else thumbRunning++;
+  if (thumbRunning >= THUMB_MAX_PARALLEL) {
+    const run = await new Promise((r) => {
+      thumbWaiting.push({ go: r, closed });
+      while (thumbWaiting.length > THUMB_MAX_WAITING) /** @type {any} */ (thumbWaiting.shift()).go(false);
+    });
+    if (!run) return null;
+  } else thumbRunning++;
   try {
-    const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-ss", String(t), "-i", file, "-frames:v", "1", "-an", "-sn",
+    const { stdout } = await run("ffmpeg", ["-v", "error", "-nostdin", "-ss", String(t), "-i", file, "-map", `0:v:${vi}`, "-frames:v", "1", "-an", "-sn",
       "-vf", "scale=320:-2", "-q:v", "5", "-f", "mjpeg", "pipe:1"], { encoding: "buffer", maxBuffer: 4 << 20, timeout: THUMB_TIMEOUT_MS, killSignal: "SIGKILL" });
     const jpg = /** @type {Buffer} */ (stdout);
     if (jpg.length) {
@@ -94,8 +101,9 @@ async function thumbnail(/** @type {string} */ file, /** @type {number} */ t) {
     return jpg;
   } catch { return Buffer.alloc(0); }
   finally {
-    const next = thumbWaiting.shift();
-    if (next) next(); else thumbRunning--;
+    let next = thumbWaiting.shift();
+    while (next && next.closed?.()) { next.go(false); next = thumbWaiting.shift(); }
+    if (next) next.go(true); else thumbRunning--;
   }
 }
 
@@ -145,6 +153,11 @@ function cacheSet(/** @type {Map<string, any>} */ map, /** @type {string} */ key
   while (map.size > max) map.delete(map.keys().next().value);
 }
 
+/** videoIndex of an already probed file, else 0. */
+function cachedVideoIndex(/** @type {string} */ file) {
+  try { const st = fs.statSync(file); return probeCache.get(`${file}|${st.size}|${st.mtimeMs}`)?.videoIndex ?? 0; } catch { return 0; }
+}
+
 async function probe(/** @type {string} */ file) {
   // Keyed by path + size + mtime: a replaced or re-encoded file is probed again.
   let key = file;
@@ -154,7 +167,10 @@ async function probe(/** @type {string} */ file) {
   const info = JSON.parse(stdout);
   const v = info.streams.find((/** @type {any} */ s) => s.codec_type === "video" && !s.disposition?.attached_pic);
   const a = info.streams.find((/** @type {any} */ s) => s.codec_type === "audio");
+  // ffmpeg's `-map 0:v:N` counts ALL video streams, cover art included.
+  const videoIndex = Math.max(0, info.streams.filter((/** @type {any} */ s) => s.codec_type === "video").indexOf(v));
   const result = {
+    videoIndex,
     duration: Number(info.format?.duration) || 0,
     width: v?.width ?? 0,
     height: v?.height ?? 0,
@@ -188,10 +204,10 @@ async function probe(/** @type {string} */ file) {
  */
 const SEEKPOINT_TIMEOUT_MS = Number(process.env.CIROOM_TEST_SEEKPOINT_TIMEOUT_MS) || 8000; // tests may shorten it
 /** @returns {Promise<{ start: number, exact: boolean }>} exact=false: the lookup timed out or found nothing, `start` is just the asked time. */
-function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** @type {number} */ aud = 0) {
+function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** @type {number} */ aud = 0, /** @type {number} */ vi = 0) {
   return new Promise((resolve) => {
     const ff = spawn("ffmpeg", ["-hide_banner", "-loglevel", "quiet", "-nostdin", "-ss", ss, "-i", file,
-      "-map", "0:v:0", "-map", `0:a:${aud}?`, "-c", "copy", "-copyts", "-frames:v", "3", "-f", "nut", "pipe:1"], { stdio: ["ignore", "pipe", "ignore"] });
+      "-map", `0:v:${vi}`, "-map", `0:a:${aud}?`, "-c", "copy", "-copyts", "-frames:v", "3", "-f", "nut", "pipe:1"], { stdio: ["ignore", "pipe", "ignore"] });
     const pr = spawn("ffprobe", ["-v", "quiet", "-show_entries", "packet=dts_time", "-of", "csv=p=0", "-"], { stdio: ["pipe", "pipe", "ignore"] });
     ff.stdout.pipe(pr.stdin);
     pr.stdin.on("error", () => {});
@@ -380,7 +396,7 @@ export function streamRoutes(resolveVideo) {
         if (t <= 0) { json(200, { start: 0, mode: "copy" }); return true; }
         // A copy can only cut at a keyframe. If the lookup fails or times out we don't know where it would cut,
         // so this seek is streamed in exact (re-encoded) mode instead of guessing: /api/stream?mode=transcode.
-        const o = await streamOrigin(file, t.toFixed(3), audioIndex(info, u));
+        const o = await streamOrigin(file, t.toFixed(3), audioIndex(info, u), info.videoIndex ?? 0);
         json(200, o.exact ? { start: o.start, mode: "copy" } : { start: t, mode: "transcode" });
         return true;
       }
@@ -397,7 +413,7 @@ export function streamRoutes(resolveVideo) {
           const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
           if (useVa && vdev) args.push("-vaapi_device", vdev, ...(VAAPI_DECODE.has(String(info.video)) ? ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"] : []));
           if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
-          args.push("-i", file, "-map", "0:v:0", "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
+          args.push("-i", file, "-map", `0:v:${info.videoIndex ?? 0}`, "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
           const h = low ? 480 : 720;
           if (copying) args.push("-c:v", "copy");
           else if (useVa && vdev) {
@@ -509,7 +525,10 @@ export function streamRoutes(resolveVideo) {
 
       if (u.pathname === "/api/thumb") {
         const t = Math.max(0, Math.round(Number(u.searchParams.get("t")) || 0));
-        const jpg = await thumbnail(file, t);
+        // The player probes before it asks for thumbnails; if it didn't, 0 is right unless cover art comes first (no extra ffprobe per hover).
+        const vi = cachedVideoIndex(file);
+        const jpg = await thumbnail(file, t, () => req.destroyed || res.destroyed || res.writableEnded, vi);
+        if (!jpg) { json(503, { error: "thumbnail queue full" }); return true; }
         if (!jpg.length) { json(504, { error: "thumbnail failed" }); return true; }
         res.statusCode = 200;
         res.setHeader("Content-Type", "image/jpeg");

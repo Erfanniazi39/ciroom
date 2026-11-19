@@ -202,17 +202,32 @@ export function createCiRoom(mediaRoot) {
     constructor() { super("Request body too large"); }
   }
 
+  /** Thrown when the client goes away before the body is complete. The socket is gone, so the handlers' catch answers nothing useful. */
+  class BodyAborted extends Error {
+    constructor() { super("Request body aborted"); }
+  }
+
   /** @param {import("node:http").IncomingMessage} req @returns {Promise<any>} */
   const body = (req) => new Promise((resolve, reject) => {
     const limit = bodyLimit(req);
     const chunks = [];
     let size = 0;
-    req.on("data", (c) => {
+    let done = false;
+    const settle = (/** @type {() => void} */ f) => {
+      if (done) return;
+      done = true;
+      req.off("data", onData); req.off("end", onEnd); req.off("error", onAbort); req.off("close", onClose);
+      f();
+    };
+    const onData = (/** @type {Buffer} */ c) => {
       size += c.length;
-      if (size > limit) { chunks.length = 0; reject(new BodyTooLarge()); return; }
-      if (size <= limit) chunks.push(c);
-    });
-    req.on("end", () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString() || "{}")); } catch { resolve({}); } });
+      if (size > limit) { chunks.length = 0; settle(() => reject(new BodyTooLarge())); req.on("data", () => {}); return; } // keep draining: the 413 goes out while the client is still sending
+      chunks.push(c);
+    };
+    const onEnd = () => settle(() => { try { resolve(JSON.parse(Buffer.concat(chunks).toString() || "{}")); } catch { resolve({}); } });
+    const onAbort = () => settle(() => reject(new BodyAborted()));
+    const onClose = () => { if (!req.complete) onAbort(); };
+    req.on("data", onData); req.on("end", onEnd); req.on("error", onAbort); req.on("close", onClose);
   });
 
   /** Apply a player command (shared by /api/player/cmd and the phone remote). @returns {boolean} false if unknown */
@@ -358,6 +373,7 @@ export function createCiRoom(mediaRoot) {
             await party.handle(req, res, peer, onThisPc, pjson, body);
           } catch (e) {
             if (e instanceof BodyTooLarge) return void pjson(413, { error: e.message });
+            if (e instanceof BodyAborted) return void res.destroy();
             pjson(400, { error: onThisPc && e instanceof Error ? e.message : "Something went wrong" });
           }
           return;
@@ -498,6 +514,7 @@ export function createCiRoom(mediaRoot) {
           return json(404, { error: "Unknown endpoint" });
         } catch (e) {
           if (e instanceof BodyTooLarge) return json(413, { error: e.message });
+          if (e instanceof BodyAborted) return void res.destroy();
           return json(400, { error: e instanceof Error ? e.message : String(e) });
         }
     },
