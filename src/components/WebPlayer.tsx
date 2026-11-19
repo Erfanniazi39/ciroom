@@ -5,7 +5,7 @@ import {
 import { registerWebController } from "@/store/webControl";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as RPointerEvent, type ReactNode } from "react";
 import { MseStream, streamMime } from "@/lib/mse";
-import { activeCueText, type Markers, streamApi, type Cue, type ProbeInfo, type StreamMode } from "@/api/stream";
+import { type Markers, streamApi, type ProbeInfo, type StreamMode } from "@/api/stream";
 import { timecode } from "@/lib/format";
 import { SubtitleFinder } from "./SubtitleFinder";
 import type { SearchContext } from "@/api/subsearch";
@@ -13,6 +13,7 @@ import { usePlayback } from "@/store/playback";
 import { isElsewhere, takeBack } from "@/lib/oneScreen";
 import { pickSubtitle, startSubtitle, subPrefFor, useSettings, type SubtitleStyle } from "@/store/settings";
 import { useUser } from "@/store/user";
+import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
 
 const SUB_SCALE = { S: 0.8, M: 1, L: 1.3, XL: 1.7 } as const;
@@ -74,7 +75,6 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
 
   const [info, setInfo] = useState<ProbeInfo | null>(null);
   const [lateGain, setLateGain] = useState<number | undefined>(undefined); // measured after the first probe
-  const [subError, setSubError] = useState(false); // the chosen subtitle file couldn't be read
   const [subList, setSubList] = useState<ProbeInfo["subtitles"]>([]);
   const [finder, setFinder] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,8 +96,6 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const [controls, setControls] = useState(true);
   const [menu, setMenu] = useState<null | "main" | "subs" | "audio" | "delay" | "speed">(null);
   const [subIndex, setSubIndex] = useState(-1);
-  const [cues, setCues] = useState<Cue[]>([]);
-  const [cueText, setCueText] = useState("");
   const [ended, setEnded] = useState(false);
   const [upNextDismissed, setUpNextDismissed] = useState(false);
   const hideTimer = useRef<number>();
@@ -202,13 +200,10 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     chooseSub(on >= 0 ? on : list[0]?.index ?? -1);
   }, [prefKey, chooseSub]);
 
-  useEffect(() => {
-    if (subIndex < 0) { setCues([]); return; }
-    let alive = true;
-    setSubError(false);
-    streamApi.subtitles(path, subListRef.current.find((s) => s.index === subIndex) ?? { index: subIndex }).then((c) => alive && setCues(c)).catch(() => { if (alive) { setCues([]); setSubError(true); } });
-    return () => { alive = false; };
-  }, [path, subIndex]);
+  const { cues, error: subError } = useCues(
+    subIndex < 0 ? null : () => streamApi.subtitles(path, subListRef.current.find((s) => s.index === subIndex) ?? { index: subIndex }),
+    [path, subIndex],
+  );
 
   // ── Video element wiring ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -282,31 +277,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (Math.abs(t - lastSaved.current) >= 10) save();
   };
 
-  // Subtitle cue at the current time (with per-title sync offset). Not a per-frame loop: re-checked on play/pause/seek/
-  // time updates, and while playing by a timer set for the next cue boundary (at most 1 s away, so a rate change or a
-  // stall can't leave a wrong line for long). Boundaries are hit within ~20 ms.
-  useEffect(() => {
-    if (!cues.length) { setCueText(""); return; }
-    const v = videoRef.current;
-    if (!v) return;
-    let timer = 0;
-    let last = "";
-    const update = () => {
-      window.clearTimeout(timer);
-      const t = offset + v.currentTime - subDelay;
-      const txt = activeCueText(cues, t);
-      if (txt !== last) { last = txt; setCueText(txt); }
-      if (v.paused || v.ended) return;
-      let next = Infinity; // the next moment the line changes: a cue starting, or an active one ending
-      for (const c of cues) { if (c.start > t) { next = Math.min(next, c.start); break; } if (t < c.end) next = Math.min(next, c.end); }
-      const wait = Number.isFinite(next) ? Math.max(15, Math.min(1000, ((next - t) / (v.playbackRate || 1)) * 1000 + 5)) : 1000;
-      timer = window.setTimeout(update, wait);
-    };
-    const events = ["play", "playing", "pause", "seeked", "seeking", "ratechange", "timeupdate"] as const;
-    for (const e of events) v.addEventListener(e, update);
-    update();
-    return () => { window.clearTimeout(timer); for (const e of events) v.removeEventListener(e, update); };
-  }, [cues, offset, subDelay]);
+  const cueText = useActiveCue(videoRef, cues, offset, subDelay);
 
   // ── Controls visibility ───────────────────────────────────────────────────────────────────
   const poke = useCallback(() => {

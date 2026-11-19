@@ -6,9 +6,10 @@
  */
 import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RectangleHorizontal, RectangleVertical, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { activeCueText, parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
+import { parseSeekPoint, parseVtt, type ProbeInfo } from "@/api/stream";
 import { audioLabel, startAudio } from "@/components/WebPlayer";
 import { cx } from "@/components/ui";
+import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { findEpisode } from "@/lib/library";
 import { episodeCode, timecode } from "@/lib/format";
 import { lowStreamMime, MseStream, streamMime, type StreamSource } from "@/lib/mse";
@@ -111,8 +112,6 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const [menu, setMenu] = useState<Menu>(null);
   const [subs, setSubs] = useState(-1);
   const [audio, setAudio] = useState(0);
-  const [cue, setCue] = useState("");
-  const [subError, setSubError] = useState(false);
   const [full, setFull] = useState(false);
   const [needsTap, setNeedsTap] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -131,7 +130,6 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const box = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const mse = useRef<MseStream | null>(null);
-  const cues = useRef<Cue[]>([]);
   const probeRef = useRef<PhoneProbe | null>(null);
   const idRef = useRef(curId);
   const startRef = useRef(startAt); // where the next (re)build starts
@@ -178,7 +176,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     let alive = true;
     const v = video.current;
     if (!v) return;
-    setLoading(true); setError(null); setEnded(false); setProbe(null); setCue(""); cues.current = [];
+    setLoading(true); setError(null); setEnded(false); setProbe(null);
     (async () => {
       let res: Response;
       try { res = await fetch(`/api/remote/watch/probe?id=${q(curId)}`); } catch { if (alive) { setError(explain(0)); setLoading(false); } return; }
@@ -219,17 +217,19 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   }, [curId, quality, reload]);
 
   // Subtitle cues for the chosen track.
-  useEffect(() => {
-    cues.current = []; setCue(""); setSubError(false);
-    const p = probe;
-    if (!p || subs < 0) return;
-    const s = p.subtitles.find((x) => x.index === subs);
-    let alive = true;
-    fetch(`/api/remote/watch/subtitle.vtt?id=${q(curId)}&${s?.embedded ? `e=${s.stream}` : `i=${subs}`}`)
-      .then(async (r) => { if (!r.ok) throw new Error(); const c = parseVtt(await r.text()); if (alive) { cues.current = c; if (!c.length) setSubError(true); } })
-      .catch(() => { if (alive) setSubError(true); });
-    return () => { alive = false; };
-  }, [probe, subs, curId]);
+  const subFile = probe && subs >= 0 ? probe.subtitles.find((x) => x.index === subs) : undefined;
+  const { cues, error: subError } = useCues(
+    probe && subs >= 0
+      ? async () => {
+          const r = await fetch(`/api/remote/watch/subtitle.vtt?id=${q(curId)}&${subFile?.embedded ? `e=${subFile.stream}` : `i=${subs}`}`);
+          if (!r.ok) throw new Error();
+          return parseVtt(await r.text());
+        }
+      : null,
+    [probe, subs, curId],
+    true,
+  );
+  const cue = useActiveCue(video, cues, 0, 0);
 
   // Clock: current time, subtitle line, watch time.
   useEffect(() => {
@@ -239,11 +239,10 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     const tick = window.setInterval(() => {
       const t = v.currentTime;
       setTime(t);
-      setCue(activeCueText(cues.current, t));
       if (!v.paused && !v.ended && v.readyState >= 3 && lastT >= 0 && t > lastT && t - lastT < 2) watched.current += 1;
       lastT = t;
     }, 1000);
-    const fast = window.setInterval(() => { const t = v.currentTime; setTime(t); setCue(activeCueText(cues.current, t)); }, 250);
+    const fast = window.setInterval(() => { const t = v.currentTime; setTime(t); }, 250);
     return () => { window.clearInterval(tick); window.clearInterval(fast); };
   }, []);
 
