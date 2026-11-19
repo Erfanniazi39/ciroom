@@ -3,9 +3,8 @@ import {
   RotateCw, Search, Settings, SkipForward, Timer, Volume1, Volume2, VolumeX, X, Maximize2,
 } from "lucide-react";
 import { registerWebController } from "@/store/webControl";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as RPointerEvent, type ReactNode } from "react";
-import { MseStream, streamMime } from "@/lib/mse";
-import { type Markers, streamApi, type ProbeInfo, type StreamMode } from "@/api/stream";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from "react";
+import { type Markers, streamApi, type ProbeInfo } from "@/api/stream";
 import { timecode } from "@/lib/format";
 import { SubtitleFinder } from "./SubtitleFinder";
 import type { SearchContext } from "@/api/subsearch";
@@ -13,6 +12,8 @@ import { usePlayback } from "@/store/playback";
 import { isElsewhere, takeBack } from "@/lib/oneScreen";
 import { pickSubtitle, startSubtitle, subPrefFor, useSettings, type SubtitleStyle } from "@/store/settings";
 import { useUser } from "@/store/user";
+import { type Clock, useClock } from "@/player/clock";
+import { usePlaybackEngine } from "@/player/usePlaybackEngine";
 import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
@@ -42,25 +43,6 @@ export interface WebPlayerProps {
  * fragmented MP4 from ffmpeg (copy for H.264/AAC, transcode otherwise). Every seek-bar
  * jump restarts the stream (the pipe isn't seekable) at the keyframe before the target; `offset` is measured.
  */
-/** What changes ~4×/s (the clock and the loaded range) lives outside React state, so only the seek bar and the timecode re-render for it. */
-interface ClockState { time: number; bufStart: number; bufferedEnd: number }
-function createClock(t: number) {
-  let s: ClockState = { time: t, bufStart: t, bufferedEnd: t };
-  const subs = new Set<() => void>();
-  return {
-    get: () => s,
-    set(p: Partial<ClockState>) {
-      const n = { ...s, ...p };
-      if (n.time === s.time && n.bufStart === s.bufStart && n.bufferedEnd === s.bufferedEnd) return;
-      s = n;
-      subs.forEach((f) => f());
-    },
-    subscribe(f: () => void) { subs.add(f); return () => { subs.delete(f); }; },
-  };
-}
-type Clock = ReturnType<typeof createClock>;
-const useClock = (c: Clock) => useSyncExternalStore(c.subscribe, c.get);
-
 export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration, next, onOpenFull, mini = false, onExpand, onClose, find }: WebPlayerProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -78,15 +60,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const [lateGain, setLateGain] = useState<number | undefined>(undefined); // measured after the first probe
   const [subList, setSubList] = useState<ProbeInfo["subtitles"]>([]);
   const [finder, setFinder] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [offset, setOffset] = useState(startAt); // source time of the current stream's time 0 (measured)
-  const [streamT, setStreamT] = useState(startAt); // the `t` the current stream was requested with
-  const clockRef = useRef<Clock | null>(null);
-  clockRef.current ??= createClock(startAt);
-  const clock = clockRef.current;
   const [time, setTime] = useState(startAt); // absolute current time, whole seconds only: for the up-next card, skip buttons and such (the clock and seek bar read the clock store)
   const [playing, setPlaying] = useState(false);
-  const [waiting, setWaiting] = useState(true);
   const [needsGesture, setNeedsGesture] = useState(false);
   const muted = useSettings((s) => s.muted);
   const speed = useSettings((s) => s.playbackSpeed);
@@ -107,60 +82,12 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   useEffect(() => { wantPlay.current = true; }, [path]); // a new file starts playing
 
   const duration = info?.duration || fallbackDuration;
-  // `offset` is the source time of the current stream's time 0, measured by /api/seekpoint: stream copy can only
-  // start on a keyframe, up to ~10 s before the click. All times shown are offset + currentTime, so the bar,
-  // clock and subtitles match the picture. `pending` blocks stale time updates until the new stream loads;
-  // `seekSeq` drops replies from superseded clicks.
-  const [ready, setReady] = useState(false);
-  const offsetRef = useRef(startAt);
-  offsetRef.current = offset;
-  const pending = useRef<number | null>(null);
-  const seekSeq = useRef(0);
   const levelling = useUser((s) => s.levelling);
   const setLevelling = useUser((s) => s.setLevelling);
-  const [levelKey, setLevelKey] = useState(levelling); // the levelling setting the current stream uses
-  const [audioIdx, setAudioIdx] = useState(0); // which audio stream of the file is playing (`&a=`)
-  const [streamMode, setStreamMode] = useState<StreamMode>("copy"); // `transcode` when the keyframe lookup failed: exact start
-  const src = useMemo(() => (ready ? streamApi.streamUrl(path, streamT, levelKey, audioIdx, streamMode) : undefined), [ready, path, streamT, levelKey, audioIdx, streamMode]);
-
-  /** (Re)start the stream so that playback lands exactly on `target`. */
-  const restartAt = useCallback((target: number, alsoApply?: () => void) => {
-    const seq = ++seekSeq.current;
-    target = Math.round(target * 1000) / 1000; // same value in /api/seekpoint and /api/stream
-    pending.current = target;
-    videoRef.current?.pause();
-    setWaiting(true);
-    streamApi.seekPoint(path, target, audioIdx).then(({ start, mode }) => {
-      if (seq !== seekSeq.current) return; // a newer click won
-      alsoApply?.(); // e.g. a new levelling setting, so the stream reloads once, at the right place
-      clock.set({ bufferedEnd: start });
-      setOffset(start);
-      setStreamMode(mode);
-      setStreamT(target);
-      setReady(true);
-    });
-  }, [path, ready, audioIdx, clock]); // eslint-disable-line react-hooks/exhaustive-deps -- `ready` makes the callback change once the first load is done (kept as it was); clock is a stable ref value
-
-  // Playback engine: chunked (MediaSource, src/lib/mse.ts) when supported: instant jumps inside what's
-  // loaded, exact landing elsewhere. Otherwise the plain fMP4 pipe above (every jump restarts the stream).
-  const mseRef = useRef<MseStream | null>(null);
-  const [mode, setMode] = useState<"mse" | "pipe" | null>(null);
-  useEffect(() => {
-    if (!info) return;
-    const v = videoRef.current;
-    const mime = streamMime(info);
-    if (v && MseStream.supported(mime)) {
-      setMode("mse");
-      setOffset(0); // the MediaSource timeline IS the file's timeline
-      pending.current = null;
-      const m = new MseStream(v, path, info.duration, mime, levelKey, audioIdx, setError);
-      mseRef.current = m;
-      void m.start(startAt);
-      return () => { m.destroy(); mseRef.current = null; };
-    }
-    setMode("pipe");
-    restartAt(startAt); // resume position goes through the keyframe lookup
-  }, [info]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The playback engine owns the <video> source (MediaSource or the plain stream) and the seek bookkeeping: src/player/usePlaybackEngine.ts.
+  // All times shown are offset + currentTime, so the bar, clock and subtitles match the picture.
+  const engine = usePlaybackEngine({ videoRef, path, info, getStartAt: () => startAt, level: levelling, audio: 0, allowPipe: true });
+  const { mode, src, offset, offsetRef, pending, mseRef, clock, waiting, setWaiting, error, setError, audioIdx, setAudioIdx } = engine;
 
   // ── File info (duration, subtitles) ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -256,16 +183,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     return () => { window.clearInterval(t); flush(); };
   }, [id, titleId, addWatchTime]);
 
-  const updateBuffered = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    if (mseRef.current) {
-      const r = mseRef.current.rangeAt(v.currentTime);
-      if (r) clock.set({ bufStart: r[0], bufferedEnd: r[1] });
-    } else if (v.buffered.length) {
-      clock.set({ bufStart: offset, bufferedEnd: offset + v.buffered.end(v.buffered.length - 1) });
-    }
-  };
+  const updateBuffered = engine.updateBuffered;
 
   const onTimeUpdate = () => {
     const v = videoRef.current!;
@@ -328,8 +246,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   // ── Actions ───────────────────────────────────────────────────────────────────────────────
   function replay() {
     setEnded(false);
-    if (mseRef.current) { mseRef.current.seek(0); videoRef.current?.play().catch(() => setNeedsGesture(true)); }
-    else restartAt(0);
+    engine.replay(() => setNeedsGesture(true));
   }
 
   // Playing again after a phone had this title: continue from the phone's position.
@@ -362,9 +279,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     timeRef.current = target;
     clock.set({ time: target });
     setTime(Math.floor(target));
-    if (mseRef.current) mseRef.current.seek(target); // instant when loaded, exact either way
-    else restartAt(target); // pipe mode: not seekable, so restart the stream
-  }, [duration, restartAt, clock]);
+    engine.seek(target); // instant when loaded (MSE), exact either way; the pipe restarts its stream
+  }, [duration, engine.seek, clock]); // eslint-disable-line react-hooks/exhaustive-deps -- `engine` itself is a new object every render
   const seekRef = useRef(seek);
   seekRef.current = seek;
 
@@ -658,8 +574,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
             // Audio comes from the server: restart the stream where we are with the chosen track, and remember it.
             const t = info?.audioTracks?.find((a) => a.index === i);
             if (t?.language) useUser.getState().setAudioPref(prefKey, t.language);
-            if (mseRef.current) { setAudioIdx(i); mseRef.current.setAudio(i); }
-            else restartAt(timeRef.current, () => setAudioIdx(i));
+            engine.changeAudio(i, timeRef.current);
           }}
           subError={subError}
           onFind={find ? () => { setMenu(null); setFinder(true); } : undefined}
@@ -675,8 +590,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
           setLevelling={(on) => {
             // Audio changes server-side, so restart the stream where we are with the new setting.
             setLevelling(on);
-            if (mseRef.current) { setLevelKey(on); mseRef.current.setLevel(on); }
-            else restartAt(timeRef.current, () => setLevelKey(on));
+            engine.changeLevel(on, timeRef.current);
           }}
         />
       )}

@@ -5,10 +5,11 @@
  * the database directly. "Send to PC" hands the current position to the PC window and starts it there.
  */
 import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RectangleHorizontal, RectangleVertical, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseSeekPoint, parseVtt, type ProbeInfo } from "@/api/stream";
 import { audioLabel, startAudio } from "@/components/WebPlayer";
 import { cx } from "@/components/ui";
+import { usePlaybackEngine } from "@/player/usePlaybackEngine";
 import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { findEpisode } from "@/lib/library";
@@ -130,7 +131,6 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
 
   const box = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
-  const mse = useRef<MseStream | null>(null);
   const probeRef = useRef<PhoneProbe | null>(null);
   const idRef = useRef(curId);
   const startRef = useRef(startAt); // where the next (re)build starts
@@ -177,11 +177,10 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     void post("/api/remote/state", { id: idRef.current, position: Math.max(0, Math.min(v.currentTime, p.duration || v.currentTime)), playing }, keepalive);
   }, []);
 
-  // ── Load the video (again when the episode or the quality changes) ──────────────────────────
+  // ── Load the probe (again when the episode or the quality changes); the engine builds the stream from it ──
+  const low = quality === "low";
   useEffect(() => {
     let alive = true;
-    const v = video.current;
-    if (!v) return;
     setLoading(true); setError(null); setEnded(false); setProbe(null);
     (async () => {
       let res: Response;
@@ -195,32 +194,33 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
       }
       const p = (await res.json()) as PhoneProbe;
       if (!alive) return;
-      const low = quality === "low";
       const mime = low ? lowStreamMime(p) : streamMime(p);
       if (!MseStream.supported(mime)) { setError("This browser can't play this video. Try Chrome."); setLoading(false); return; }
-      probeRef.current = p; setProbe(p);
+      probeRef.current = p;
       const key = titleKey(curId);
       const aIdx = startAudio(p.audioTracks ?? [], user?.audioPrefs?.[key]);
       const sIdx = startSubtitle(p.subtitles, user?.subPrefs?.[key], user?.prefs);
-      setAudio(aIdx); setSubs(sIdx);
-      mse.current?.destroy();
-      const m = new MseStream(v, "", p.duration, mime, true, aIdx, (msg) => {
-        const text = msg.replace(/ or use the full player\.?|Try the full player\.?/g, "").trim();
-        // A stream that dies because phones were switched off (another network) deserves the real reason.
-        fetch("/api/remote/me").then((r) => setError(r.status === 403 ? explain(403) : text), () => setError(text));
-      }, source(curId, low));
-      mse.current = m;
-      const at = Math.max(0, Math.min(startRef.current, Math.max(0, p.duration - 5)));
-      markSaved(at);
-      await m.start(at);
-      if (!alive) return;
-      setLoading(false);
-      v.play().catch(() => setNeedsTap(true));
+      setAudio(aIdx); engine.setAudioIdx(aIdx); setSubs(sIdx);
+      markSaved(Math.max(0, Math.min(startRef.current, Math.max(0, p.duration - 5))));
+      setProbe(p);
     })();
-    return () => { alive = false; mse.current?.destroy(); mse.current = null; };
+    return () => { alive = false; };
     // user is read once per video: later changes (our own progress echoing back) must not rebuild the player
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curId, quality, reload]);
+
+  const engine = usePlaybackEngine({
+    videoRef: video, path: "", info: probe, mime: probe ? (low ? lowStreamMime(probe) : streamMime(probe)) : undefined,
+    source: useMemo(() => source(curId, low), [curId, low]),
+    getStartAt: () => (probeRef.current ? Math.max(0, Math.min(startRef.current, Math.max(0, probeRef.current.duration - 5))) : 0),
+    level: true, audio: 0,
+    onError: (msg) => {
+      const text = msg.replace(/ or use the full player\.?|Try the full player\.?/g, "").trim();
+      // A stream that dies because phones were switched off (another network) deserves the real reason.
+      fetch("/api/remote/me").then((r) => setError(r.status === 403 ? explain(403) : text), () => setError(text));
+    },
+    onStarted: () => { setLoading(false); void video.current?.play().catch(() => setNeedsTap(true)); },
+  });
 
   // Subtitle cues for the chosen track.
   const subFile = probe && subs >= 0 ? probe.subtitles.find((x) => x.index === subs) : undefined;
@@ -327,7 +327,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
 
   const duration = probe?.duration ?? 0;
   const shown = drag ?? time;
-  const seekTo = (t: number) => { const to = Math.max(0, Math.min(duration - 0.5, t)); mse.current?.seek(to); setTime(to); wake(); };
+  const seekTo = (t: number) => { const to = Math.max(0, Math.min(duration - 0.5, t)); engine.mseRef.current?.seek(to); setTime(to); wake(); };
   /** "Continue here": take the PC's live position (if it shows this video), then play. Playing pauses the PC. */
   const continueHere = () => {
     const v = video.current;
@@ -366,7 +366,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     const pref = subPrefFor(probe?.subtitles ?? [], i);
     if (pref) void post("/api/remote/cmd", { cmd: "subPref", id: curId, pref });
   };
-  const pickAudio = (i: number) => { setAudio(i); setMenu(null); mse.current?.setAudio(i); };
+  const pickAudio = (i: number) => { setAudio(i); setMenu(null); engine.mseRef.current?.setAudio(i); };
   const pickQuality = (qv: Quality) => {
     setMenu(null);
     if (qv === quality) return;
@@ -411,7 +411,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
         onPlay={() => { setPaused(false); setNeedsTap(false); setEnded(false); wake(); sendState(true); }}
         onPause={() => { setPaused(true); setControls(true); if (!video.current?.ended) void report(true); sendState(false); }}
         onEnded={() => { setEnded(true); setControls(true); void report(true); }}
-        onWaiting={() => mse.current?.onWaiting()}
+        onWaiting={() => engine.mseRef.current?.onWaiting()}
       />
 
       {cue && <div ref={cueRef} dir="auto" className="pointer-events-none absolute inset-x-3 text-center transition-[bottom] duration-200" style={{ bottom: cueBottom }}><span className={cx("mx-auto line-clamp-2 w-fit max-w-full whitespace-pre-line rounded bg-black/70 px-2 py-1 leading-snug", compact ? "text-[clamp(13px,3.6vw,18px)]" : "text-[clamp(15px,3.8vw,22px)]")}>{cue}</span></div>}
