@@ -45,6 +45,32 @@ const THUMB_TIMEOUT_MS = 15_000;
 let thumbRunning = 0;
 /** @type {Array<() => void>} */ const thumbWaiting = [];
 
+// The thumbnails on disk are a cache: over 200 MB the oldest are deleted down to 75 % (a fully scrubbed 2-hour film is
+// ~1,440 files and the system disk is small). Checked after a write, at most once a minute, in the background.
+const THUMB_MAX_BYTES = Math.max(1, Number(process.env.CIROOM_THUMB_MAX_MB ?? 200) * 1024 * 1024);
+const THUMB_PRUNE_EVERY_MS = process.env.CIROOM_THUMB_PRUNE_MS !== undefined ? Number(process.env.CIROOM_THUMB_PRUNE_MS) : 60_000;
+let thumbPruneAt = 0;
+let thumbPruning = false;
+async function pruneThumbs() {
+  if (thumbPruning || Date.now() - thumbPruneAt < THUMB_PRUNE_EVERY_MS) return;
+  thumbPruning = true;
+  thumbPruneAt = Date.now();
+  try {
+    const names = await fs.promises.readdir(THUMB_DIR);
+    /** @type {{ f: string, size: number, mtime: number }[]} */ const files = [];
+    for (const n of names) {
+      try { const st = await fs.promises.stat(path.join(THUMB_DIR, n)); if (st.isFile()) files.push({ f: path.join(THUMB_DIR, n), size: st.size, mtime: st.mtimeMs }); } catch { /* removed meanwhile */ }
+    }
+    let total = files.reduce((a, x) => a + x.size, 0);
+    if (total <= THUMB_MAX_BYTES) return;
+    files.sort((a, b) => a.mtime - b.mtime); // oldest first
+    for (const x of files) {
+      if (total <= THUMB_MAX_BYTES * 0.75) break;
+      try { await fs.promises.unlink(x.f); total -= x.size; } catch { /* already gone */ }
+    }
+  } catch { /* no folder yet */ } finally { thumbPruning = false; }
+}
+
 /** One JPEG frame at t seconds. At most 3 ffmpeg run at once, each is killed after 15 s, and results are kept on disk.
  *  Returns an empty Buffer if ffmpeg failed or timed out. */
 async function thumbnail(/** @type {string} */ file, /** @type {number} */ t) {
@@ -63,7 +89,7 @@ async function thumbnail(/** @type {string} */ file, /** @type {number} */ t) {
     if (jpg.length) {
       if (thumbCache.size > 600) thumbCache.clear();
       thumbCache.set(key, jpg);
-      try { fs.mkdirSync(THUMB_DIR, { recursive: true }); const tmp = diskFile + ".tmp"; fs.writeFileSync(tmp, jpg); fs.renameSync(tmp, diskFile); } catch { /* cache only */ }
+      try { fs.mkdirSync(THUMB_DIR, { recursive: true }); const tmp = diskFile + ".tmp"; fs.writeFileSync(tmp, jpg); fs.renameSync(tmp, diskFile); void pruneThumbs(); } catch { /* cache only */ }
     }
     return jpg;
   } catch { return Buffer.alloc(0); }

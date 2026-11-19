@@ -188,6 +188,9 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   const windowOnline = () => windows.size > 0 || Date.now() - report.at < 6000;
   const publicState = () => ({ online: windowOnline(), now: nowPlaying(), user: report.user });
 
+  /** The windows only report to the phone while a phone is connected: tell them the count whenever it changes. */
+  let lastPhoneCount = -1;
+  const announcePhones = () => { if (phones.size === lastPhoneCount) return; lastPhoneCount = phones.size; sendWindows({ cmd: "phones", count: phones.size }); };
   function pushPhones(force = false) {
     if (!phones.size) return;
     const s = JSON.stringify(publicState());
@@ -311,10 +314,11 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
       if (route === "/api/remote/events" && req.method === "GET") {
         sse(res);
         phones.add(res);
+        announcePhones();
         const evDev = deviceOf(req)?.id;
         if (evDev) eventStreams.set(evDev, (eventStreams.get(evDev) ?? 0) + 1);
         res.on("close", () => {
-          phones.delete(res); ensureTick();
+          phones.delete(res); ensureTick(); announcePhones();
           if (evDev) { const n = (eventStreams.get(evDev) ?? 1) - 1; if (n > 0) eventStreams.set(evDev, n); else { eventStreams.delete(evDev); phoneNow.delete(evDev); } }
         });
         ensureTick();
@@ -477,6 +481,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         // Hand over what phones watched while no window was open (before anything else on this stream).
         for (const p of Object.values(pending)) res.write(`data: ${JSON.stringify({ cmd: "progress", ...p })}\n\n`);
         if (Object.keys(pending).length) { pending = {}; savePending(); }
+        res.write(`data: ${JSON.stringify({ cmd: "phones", count: phones.size })}\n\n`); // so a new window knows whether to report
         windows.add(res);
         res.on("close", () => { windows.delete(res); pushPhones(); });
         pushPhones(true);

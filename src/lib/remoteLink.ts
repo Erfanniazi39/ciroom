@@ -16,7 +16,7 @@ import { useSettings } from "@/store/settings";
 import { useUser, type SubPref } from "@/store/user";
 import { getWebController } from "@/store/webControl";
 
-interface Cmd { cmd: string; value?: number; id?: string; fromStart?: boolean; pref?: SubPref; position?: number; duration?: number; watched?: number; at?: number; playing?: boolean; by?: string }
+interface Cmd { cmd: string; count?: number; value?: number; id?: string; fromStart?: boolean; pref?: SubPref; position?: number; duration?: number; watched?: number; at?: number; playing?: boolean; by?: string }
 
 /** Movie id, or the series id of an episode: what watch time and subtitle choices are kept under. Null for an unknown id. */
 function titleIdOf(id: string): string | null {
@@ -71,6 +71,11 @@ export function useRemoteLink() {
           if (!((u.progress[c.id]?.updatedAt ?? 0) > (c.at ?? Date.now()))) u.savePosition(c.id, c.position!, c.duration!);
           // One live report is at most 120 s; a hand-over of what was watched while this window was closed can add up to 12 h.
           if (Number.isFinite(c.watched) && c.watched! > 0 && c.watched! <= 43200) u.addWatchTime(title, c.watched!);
+          break;
+        }
+        case "phones": {
+          // Reports to the phone cost a request a second: only while one is connected (one right away when it connects).
+          if (Number.isFinite(c.count)) setReporting(c.count! > 0);
           break;
         }
         case "phoneState": {
@@ -133,15 +138,19 @@ export function useRemoteLink() {
       if (user !== lastUser) { lastUser = user; body.user = JSON.parse(user); }
       fetch("/api/remote/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => undefined);
     }
-    report();
-    const t = window.setInterval(report, 1000);
-    // A play/pause on this PC must reach the phone within a moment (it pauses itself on our paused → playing edge), not a second later.
-    let lastShape = "";
-    const edge = window.setInterval(() => {
-      const ctl = getWebController();
-      const shape = `${usePlayback.getState().session?.id ?? ""}|${ctl ? ctl.getState().paused : ""}`;
-      if (shape !== lastShape) { lastShape = shape; report(); }
-    }, 200);
+    let t = 0, edge = 0, lastShape = "";
+    function setReporting(on: boolean) {
+      if (!alive || on === !!t) return;
+      if (!on) { window.clearInterval(t); window.clearInterval(edge); t = edge = 0; return; }
+      report();
+      t = window.setInterval(report, 1000);
+      // A play/pause on this PC must reach the phone within a moment (it pauses itself on our paused → playing edge), not a second later.
+      edge = window.setInterval(() => {
+        const ctl = getWebController();
+        const shape = `${usePlayback.getState().session?.id ?? ""}|${ctl ? ctl.getState().paused : ""}`;
+        if (shape !== lastShape) { lastShape = shape; report(); }
+      }, 200);
+    }
     return () => { alive = false; es.close(); window.clearInterval(t); window.clearInterval(edge); };
   }, [navigate]);
 }

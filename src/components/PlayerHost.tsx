@@ -61,7 +61,7 @@ export function PlayerHost() {
   // The id isn't in the library anymore (removed by a rescan).
   useEffect(() => { if (lib && session && !item) close(); }, [lib, session, item, close]);
 
-  // On the watch page, follow the slot's rectangle every frame (it moves with scrolling and resizing).
+  // On the watch page, follow the slot's rectangle (it moves with scrolling and resizing): event-driven, see schedule() below.
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (!box || !session) return;
@@ -70,6 +70,8 @@ export function PlayerHost() {
       return;
     }
     let raf = 0;
+    /** Measure once per frame at most, after whatever changed (resize, scroll, fullscreen, mode): no loop running every frame. */
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; follow(); }); };
     // `f` corrects for page zoom (TV mode): coordinates read from the slot and applied to a fixed box can differ
     // by the zoom factor depending on the engine, so measure where the box really lands and adjust.
     // Nothing is written (and no layout is forced) on frames where the slot didn't move.
@@ -80,7 +82,6 @@ export function PlayerHost() {
       if (document.fullscreenElement === box) {
         // Real fullscreen belongs to this box (it outlives episode changes, so it survives them): let the UA fill the screen.
         if (last !== "fs") { last = "fs"; box.style.cssText = "visibility:visible"; }
-        raf = requestAnimationFrame(follow);
         return;
       }
       if (usePlayback.getState().cover) {
@@ -91,11 +92,12 @@ export function PlayerHost() {
           box.style.cssText = `left:0;top:0;width:${100 * cf}vw;height:${100 * cf}vh;z-index:70;visibility:visible`;
           const landed = box.getBoundingClientRect();
           if (landed.width > 0 && Math.abs(landed.width / window.innerWidth - 1) > 0.01) cf = cf / (landed.width / window.innerWidth);
+          schedule(); // once more: the zoom correction above changes how the box lands
         }
-        raf = requestAnimationFrame(follow);
         return;
       }
       const slot = document.getElementById(WATCH_SLOT_ID);
+      if (slot !== observed) { ro.disconnect(); observed = slot; if (slot) ro.observe(slot); }
       if (slot) {
         const r = slot.getBoundingClientRect();
         const sig = `${r.left}|${r.top}|${r.width}|${r.height}|${f}`;
@@ -103,16 +105,33 @@ export function PlayerHost() {
           last = sig;
           box.style.cssText = `left:${r.left * f}px;top:${r.top * f}px;width:${r.width * f}px;height:${r.height * f}px;visibility:visible`;
           const landed = box.getBoundingClientRect();
-          if (r.width > 0 && landed.width > 0 && Math.abs(landed.width / r.width - 1) > 0.01) f = f / (landed.width / r.width);
+          if (r.width > 0 && landed.width > 0 && Math.abs(landed.width / r.width - 1) > 0.01) { f = f / (landed.width / r.width); schedule(); }
         }
       } else if (last !== "hidden") {
         last = "hidden";
         box.style.visibility = "hidden";
       }
-      raf = requestAnimationFrame(follow);
     };
+    // What can move or resize the slot: its own size, the window, scrolling anywhere (capture: inner scrollers too),
+    // fullscreen, and the "cover" mode. The slow timer is only a safety net for layout shifts that fire none of these
+    // (content above the slot growing, sidebar animations): 4 cheap checks a second instead of 60.
+    const ro = new ResizeObserver(schedule);
+    let observed: HTMLElement | null = null;
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, { capture: true, passive: true });
+    document.addEventListener("fullscreenchange", schedule);
+    const unsub = usePlayback.subscribe((s, p) => { if (s.cover !== p.cover) schedule(); });
+    const safety = window.setInterval(schedule, 250);
     follow();
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, { capture: true } as EventListenerOptions);
+      document.removeEventListener("fullscreenchange", schedule);
+      unsub();
+      window.clearInterval(safety);
+    };
   }, [onWatch, session]);
 
   // Leaving the watch page ends the in-window fullscreen (the mini player takes over).

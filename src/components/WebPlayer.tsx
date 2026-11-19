@@ -3,7 +3,7 @@ import {
   RotateCw, Search, Settings, SkipForward, Timer, Volume1, Volume2, VolumeX, X, Maximize2,
 } from "lucide-react";
 import { registerWebController } from "@/store/webControl";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as RPointerEvent, type ReactNode } from "react";
 import { MseStream, streamMime } from "@/lib/mse";
 import { activeCueText, type Markers, streamApi, type Cue, type ProbeInfo, type StreamMode } from "@/api/stream";
 import { timecode } from "@/lib/format";
@@ -39,6 +39,25 @@ export interface WebPlayerProps {
  * fragmented MP4 from ffmpeg (copy for H.264/AAC, transcode otherwise). Every seek-bar
  * jump restarts the stream (the pipe isn't seekable) at the keyframe before the target; `offset` is measured.
  */
+/** What changes ~4×/s (the clock and the loaded range) lives outside React state, so only the seek bar and the timecode re-render for it. */
+interface ClockState { time: number; bufStart: number; bufferedEnd: number }
+function createClock(t: number) {
+  let s: ClockState = { time: t, bufStart: t, bufferedEnd: t };
+  const subs = new Set<() => void>();
+  return {
+    get: () => s,
+    set(p: Partial<ClockState>) {
+      const n = { ...s, ...p };
+      if (n.time === s.time && n.bufStart === s.bufStart && n.bufferedEnd === s.bufferedEnd) return;
+      s = n;
+      subs.forEach((f) => f());
+    },
+    subscribe(f: () => void) { subs.add(f); return () => { subs.delete(f); }; },
+  };
+}
+type Clock = ReturnType<typeof createClock>;
+const useClock = (c: Clock) => useSyncExternalStore(c.subscribe, c.get);
+
 export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration, next, onOpenFull, mini = false, onExpand, onClose, find }: WebPlayerProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -59,8 +78,10 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(startAt); // source time of the current stream's time 0 (measured)
   const [streamT, setStreamT] = useState(startAt); // the `t` the current stream was requested with
-  const [time, setTime] = useState(startAt); // absolute current time
-  const [bufferedEnd, setBufferedEnd] = useState(startAt);
+  const clockRef = useRef<Clock | null>(null);
+  clockRef.current ??= createClock(startAt);
+  const clock = clockRef.current;
+  const [time, setTime] = useState(startAt); // absolute current time, whole seconds only: for the up-next card, skip buttons and such (the clock and seek bar read the clock store)
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(true);
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -109,7 +130,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     streamApi.seekPoint(path, target, audioIdx).then(({ start, mode }) => {
       if (seq !== seekSeq.current) return; // a newer click won
       alsoApply?.(); // e.g. a new levelling setting, so the stream reloads once, at the right place
-      setBufferedEnd(start);
+      clock.set({ bufferedEnd: start });
       setOffset(start);
       setStreamMode(mode);
       setStreamT(target);
@@ -121,7 +142,6 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   // loaded, exact landing elsewhere. Otherwise the plain fMP4 pipe above (every jump restarts the stream).
   const mseRef = useRef<MseStream | null>(null);
   const [mode, setMode] = useState<"mse" | "pipe" | null>(null);
-  const [bufStart, setBufStart] = useState(startAt);
   useEffect(() => {
     if (!info) return;
     const v = videoRef.current;
@@ -240,10 +260,9 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (!v) return;
     if (mseRef.current) {
       const r = mseRef.current.rangeAt(v.currentTime);
-      if (r) { setBufStart(r[0]); setBufferedEnd(r[1]); }
+      if (r) clock.set({ bufStart: r[0], bufferedEnd: r[1] });
     } else if (v.buffered.length) {
-      setBufStart(offset);
-      setBufferedEnd(offset + v.buffered.end(v.buffered.length - 1));
+      clock.set({ bufStart: offset, bufferedEnd: offset + v.buffered.end(v.buffered.length - 1) });
     }
   };
 
@@ -252,27 +271,36 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (pending.current !== null) return; // a seek is in flight: keep showing its target time
     const t = offset + v.currentTime;
     timeRef.current = t;
-    setTime(t);
+    clock.set({ time: t });
+    setTime(Math.floor(t));
     updateBuffered();
     if (Math.abs(t - lastSaved.current) >= 10) save();
   };
 
-  // Subtitle cue at the current time (with per-title sync offset), checked every frame.
+  // Subtitle cue at the current time (with per-title sync offset). Not a per-frame loop: re-checked on play/pause/seek/
+  // time updates, and while playing by a timer set for the next cue boundary (at most 1 s away, so a rate change or a
+  // stall can't leave a wrong line for long). Boundaries are hit within ~20 ms.
   useEffect(() => {
     if (!cues.length) { setCueText(""); return; }
-    let raf = 0;
+    const v = videoRef.current;
+    if (!v) return;
+    let timer = 0;
     let last = "";
-    const loop = () => {
-      const v = videoRef.current;
-      if (v) {
-        const t = offset + v.currentTime - subDelay;
-        const txt = activeCueText(cues, t);
-        if (txt !== last) { last = txt; setCueText(txt); }
-      }
-      raf = requestAnimationFrame(loop);
+    const update = () => {
+      window.clearTimeout(timer);
+      const t = offset + v.currentTime - subDelay;
+      const txt = activeCueText(cues, t);
+      if (txt !== last) { last = txt; setCueText(txt); }
+      if (v.paused || v.ended) return;
+      let next = Infinity; // the next moment the line changes: a cue starting, or an active one ending
+      for (const c of cues) { if (c.start > t) { next = Math.min(next, c.start); break; } if (t < c.end) next = Math.min(next, c.end); }
+      const wait = Number.isFinite(next) ? Math.max(15, Math.min(1000, ((next - t) / (v.playbackRate || 1)) * 1000 + 5)) : 1000;
+      timer = window.setTimeout(update, wait);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    const events = ["play", "playing", "pause", "seeked", "seeking", "ratechange", "timeupdate"] as const;
+    for (const e of events) v.addEventListener(e, update);
+    update();
+    return () => { window.clearTimeout(timer); for (const e of events) v.removeEventListener(e, update); };
   }, [cues, offset, subDelay]);
 
   // ── Controls visibility ───────────────────────────────────────────────────────────────────
@@ -356,10 +384,11 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     const target = Math.max(0, Math.min(abs, Math.max(0, duration - 1)));
     setEnded(false);
     timeRef.current = target;
-    setTime(target);
+    clock.set({ time: target });
+    setTime(Math.floor(target));
     if (mseRef.current) mseRef.current.seek(target); // instant when loaded, exact either way
     else restartAt(target); // pipe mode: not seekable, so restart the stream
-  }, [duration, restartAt]);
+  }, [duration, restartAt, clock]);
   const seekRef = useRef(seek);
   seekRef.current = seek;
 
@@ -570,7 +599,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
             </div>
             <button onClick={() => setUpNextDismissed(true)} aria-label="Cancel auto-play" title="Cancel auto-play" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white"><X size={17} /></button>
           </div>
-          <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-violet-500 transition-[width] duration-300 ease-linear" style={{ width: `${(1 - remaining / upNextSeconds) * 100}%` }} /></div>
+          <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-violet-500 transition-[width] duration-1000 ease-linear" style={{ width: `${(1 - remaining / upNextSeconds) * 100}%` }} /></div>
           <button onClick={next!.onPlay} className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-violet-500 py-2.5 text-[14px] font-semibold text-white hover:bg-violet-400"><Play size={16} fill="currentColor" /> Play now</button>
         </div>
       )}
@@ -588,7 +617,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
               {playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" className="ml-0.5" />}
             </button>
             {next && <button onClick={next.onPlay} aria-label={`Next: ${next.label}`} title={`Next: ${next.label}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white hover:bg-white/20"><SkipForward size={16} /></button>}
-            <div className="min-w-0 flex-1"><SeekBar path={path} time={time} duration={duration} offset={bufStart} bufferedEnd={bufferedEnd} onSeek={seek} compact /></div>
+            <div className="min-w-0 flex-1"><SeekBar clock={clock} path={path} duration={duration} onSeek={seek} compact /></div>
           </div>
         </div>
       )}
@@ -606,17 +635,17 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       <div className={cx("absolute inset-x-0 bottom-0 transition-opacity duration-300", mini ? "hidden" : showControls ? "opacity-100" : "pointer-events-none opacity-0")}>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/85 via-black/40 to-transparent" />
         <div className="relative px-[4%] pb-3">
-          <SeekBar path={path} time={time} duration={duration} offset={bufStart} bufferedEnd={bufferedEnd} onSeek={seek} />
+          <SeekBar clock={clock} path={path} duration={duration} onSeek={seek} />
           <div className="mt-1 flex items-center gap-1.5">
             <button onClick={togglePlay} aria-label={playing ? "Pause (K)" : "Play (K)"} title={playing ? "Pause (K)" : "Play (K)"}
               className="mr-1 flex h-11 w-11 items-center justify-center rounded-full bg-violet-500 text-white transition hover:scale-105 hover:bg-violet-400 active:scale-95">
               {playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
             </button>
-            <CtrlButton label="Back 10 s (←)" onClick={() => seek(time - 10)}><RotateCcw size={20} /></CtrlButton>
-            <CtrlButton label="Forward 10 s (→)" onClick={() => seek(time + 10)}><RotateCw size={20} /></CtrlButton>
+            <CtrlButton label="Back 10 s (←)" onClick={() => seek(timeRef.current - 10)}><RotateCcw size={20} /></CtrlButton>
+            <CtrlButton label="Forward 10 s (→)" onClick={() => seek(timeRef.current + 10)}><RotateCw size={20} /></CtrlButton>
             {next && <CtrlButton label={`Next: ${next.label}`} onClick={next.onPlay}><SkipForward size={20} /></CtrlButton>}
             <Volume volume={volumePref} muted={muted} onVolume={setVolume} onMute={() => setMuted((m) => !m)} />
-            <span className="ml-2 text-[13px] font-semibold tabular-nums text-white/90">{timecode(time)} <span className="text-white/50">/ {timecode(duration)}</span></span>
+            <Timecode clock={clock} duration={duration} />
 
             <div className="ml-auto flex items-center gap-1">
               {speed !== 1 && <span className="mr-1 rounded-full bg-violet-500/25 px-2 py-0.5 text-[12px] font-bold text-violet-200">{speed}×</span>}
@@ -680,7 +709,13 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
 }
 
 /** Seek bar: played (violet), buffered, hover fill + thumbnail preview, round handle, click/drag. */
-function SeekBar({ path, time, duration, offset, bufferedEnd, onSeek, compact }: { path: string; time: number; duration: number; offset: number; bufferedEnd: number; onSeek: (t: number) => void; compact?: boolean }) {
+function Timecode({ clock, duration }: { clock: Clock; duration: number }) {
+  const { time } = useClock(clock);
+  return <span className="ml-2 text-[13px] font-semibold tabular-nums text-white/90">{timecode(time)} <span className="text-white/50">/ {timecode(duration)}</span></span>;
+}
+
+function SeekBar({ clock, path, duration, onSeek, compact }: { clock: Clock; path: string; duration: number; onSeek: (t: number) => void; compact?: boolean }) {
+  const { time, bufStart: offset, bufferedEnd } = useClock(clock);
   const ref = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
