@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parseSeekPoint, parseVtt, type ProbeInfo } from "@/api/stream";
 import { audioLabel, startAudio } from "@/components/WebPlayer";
 import { cx } from "@/components/ui";
+import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { findEpisode } from "@/lib/library";
 import { episodeCode, timecode } from "@/lib/format";
@@ -139,7 +140,6 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   idRef.current = curId;
   const pcRef = useRef(pc);
   pcRef.current = pc;
-  const lastRep = useRef(startAt); // position of the last progress save: an idle player never saves again
   const pcAt = useRef(Date.now()); // when the PC's position was last heard (it keeps moving while the PC plays)
   const elsewhere = useRef(false); // while true this phone must not save progress (the PC has the newer position)
 
@@ -151,18 +151,24 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   const say = useCallback((m: string) => { setNote(m); window.setTimeout(() => setNote((n) => (n === m ? null : n)), 3500); }, []);
 
   /** Progress through the PC window. `final`: the last save of this moment (pause, close, hide), allowed to come sooner. */
-  const report = useCallback(async (final = false) => {
-    const v = video.current, p = probeRef.current;
-    if (!v || !p || !p.duration || elsewhere.current) return true;
-    const pos = Math.max(0, Math.min(v.currentTime, p.duration));
-    const w = Math.min(120, Math.round(watched.current));
-    if (pos < 1 && w === 0) return true;
-    if (w === 0 && Math.abs(pos - lastRep.current) < 1) return true; // nothing moved since the last save
-    let r = await post("/api/remote/progress", { id: idRef.current, position: pos, duration: p.duration, watched: w, final }, true);
-    if (!r.ok && r.status === 429 && final) { await new Promise((res) => setTimeout(res, 650)); r = await post("/api/remote/progress", { id: idRef.current, position: pos, duration: p.duration, watched: w, final }, true); }
-    if (r.ok) { watched.current = Math.max(0, watched.current - w); lastRep.current = pos; }
-    return r.ok;
-  }, []);
+  const { save: report, markSaved } = useProgressSaver({
+    startAt, resetKey: curId, saveOnHide: true,
+    getPosition: () => { const v = video.current, p = probeRef.current; return v && p ? Math.max(0, Math.min(v.currentTime, p.duration)) : 0; },
+    isPlaying: () => !!video.current && !video.current.paused,
+    blocked: () => elsewhere.current,
+    hasPending: () => Math.round(watched.current) > 0,
+    save: async (pos, final) => {
+      const p = probeRef.current;
+      if (!p || !p.duration) return true;
+      const w = Math.min(120, Math.round(watched.current));
+      if (pos < 1 && w === 0) return true;
+      const body = { id: idRef.current, position: pos, duration: p.duration, watched: w, final };
+      let r = await post("/api/remote/progress", body, true);
+      if (!r.ok && r.status === 429 && final) { await new Promise((res) => setTimeout(res, 650)); r = await post("/api/remote/progress", body, true); }
+      if (r.ok) watched.current = Math.max(0, watched.current - w);
+      return r.ok;
+    },
+  });
 
   /** One screen at a time: tell the PC whether this phone is playing (it pauses its own player when the phone starts). */
   const sendState = useCallback((playing: boolean, keepalive = false) => {
@@ -205,7 +211,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
       }, source(curId, low));
       mse.current = m;
       const at = Math.max(0, Math.min(startRef.current, Math.max(0, p.duration - 5)));
-      lastRep.current = at;
+      markSaved(at);
       await m.start(at);
       if (!alive) return;
       setLoading(false);
@@ -259,16 +265,13 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     return () => window.clearInterval(t);
   }, []);
 
-  // Progress: every 10 s while playing; on pause, close, hide. Playing state every 5 s while playing.
+  // Playing state every 5 s while playing; on close or hide the PC is told this phone stopped. (Progress itself: useProgressSaver.)
   useEffect(() => {
-    const t = window.setInterval(() => { if (!video.current?.paused) void report(false); }, 10_000);
     const beat = window.setInterval(() => { if (video.current && !video.current.paused) sendState(true); }, 5_000);
-    const hide = () => { if (document.visibilityState === "hidden") void report(true); };
-    const gone = () => { void report(true); sendState(false, true); };
-    document.addEventListener("visibilitychange", hide);
+    const gone = () => sendState(false, true);
     window.addEventListener("pagehide", gone);
-    return () => { window.clearInterval(t); window.clearInterval(beat); document.removeEventListener("visibilitychange", hide); window.removeEventListener("pagehide", gone); };
-  }, [report, sendState]);
+    return () => { window.clearInterval(beat); window.removeEventListener("pagehide", gone); };
+  }, [sendState]);
 
   // The PC started playing this video (its play button, Space, Send to PC…): this phone has the older position, playing or
   // paused. Pause if playing, stop saving, and offer "Continue here". Edge only (paused → playing), so they can't ping-pong.
@@ -333,7 +336,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     elsewhere.current = false; setTakenByPc(false);
     if (p && p.id === idRef.current && Number.isFinite(p.position)) {
       const there = p.position + (p.paused ? 0 : Math.max(0, (Date.now() - pcAt.current) / 1000));
-      if (Math.abs(there - v.currentTime) > 2) { seekTo(there); lastRep.current = there; }
+      if (Math.abs(there - v.currentTime) > 2) { seekTo(there); markSaved(there); }
     }
     void v.play().catch(() => setNeedsTap(true));
     wake();

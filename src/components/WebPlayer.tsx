@@ -13,6 +13,7 @@ import { usePlayback } from "@/store/playback";
 import { isElsewhere, takeBack } from "@/lib/oneScreen";
 import { pickSubtitle, startSubtitle, subPrefFor, useSettings, type SubtitleStyle } from "@/store/settings";
 import { useUser } from "@/store/user";
+import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
 
@@ -99,7 +100,6 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const [ended, setEnded] = useState(false);
   const [upNextDismissed, setUpNextDismissed] = useState(false);
   const hideTimer = useRef<number>();
-  const lastSaved = useRef(startAt);
   const timeRef = useRef(startAt);
   // Should the video be playing? True at the start and after any play; false once the user (or the party host) pauses.
   // A seek fires `canplay` again, and that must not un-pause a paused video.
@@ -233,12 +233,16 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     if (finderRequest !== lastRequest.current) { lastRequest.current = finderRequest; if (find && !mini) setFinder(true); }
   }, [finderRequest, find, mini]);
 
-  const save = useCallback(() => {
-    if (isElsewhere(id)) return; // a phone has this title: our older position must not rewind its progress
-    if (Math.abs(timeRef.current - lastSaved.current) < 1) return; // nothing moved since the last save: an idle player never writes
-    if (duration > 0) savePosition(id, timeRef.current, duration);
-    lastSaved.current = timeRef.current;
-  }, [id, duration, savePosition]);
+  const playingRef = useRef(false);
+  playingRef.current = playing;
+  const { save: saveNow } = useProgressSaver({
+    startAt, resetKey: id, saveOnUnmount: true,
+    getPosition: () => timeRef.current,
+    isPlaying: () => playingRef.current,
+    blocked: () => isElsewhere(id), // a phone has this title: our older position must not rewind its progress
+    save: (pos) => { if (duration > 0) savePosition(id, pos, duration); else return false; },
+  });
+  const save = useCallback(() => { void saveNow(); }, [saveNow]);
 
   // Real watch time for Stats: whole seconds while the video is actually playing, flushed every 15 s and on leave.
   const watched = useRef(0);
@@ -251,9 +255,6 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     }, 1000);
     return () => { window.clearInterval(t); flush(); };
   }, [id, titleId, addWatchTime]);
-
-  // Save on leave.
-  useEffect(() => () => { if (timeRef.current > 1) save(); }, [save]);
 
   const updateBuffered = () => {
     const v = videoRef.current;
@@ -274,7 +275,6 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     clock.set({ time: t });
     setTime(Math.floor(t));
     updateBuffered();
-    if (Math.abs(t - lastSaved.current) >= 10) save();
   };
 
   const cueText = useActiveCue(videoRef, cues, offset, subDelay);
