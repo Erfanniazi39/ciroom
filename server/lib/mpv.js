@@ -16,7 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
 import { audioTrackFor, cachedGain, levelFilter, measureGainInBackground } from "./stream.js";
-import { MPV_SOCKET } from "./paths.js";
+import { LIBRARY_FILE, MPV_SOCKET } from "./paths.js";
 import { defineRoutes } from "./routes.js";
 
 /** Track language codes (ISO 639) ↔ the language names CiRoom uses for subtitles. */
@@ -51,6 +51,14 @@ const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid"
  *   finalSave: called when mpv goes away, to keep its last position (the progress code lives in remote.js).
  */
 export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
+  /** The later parts of a multi-part movie (from the saved scan), checked like any played path; [] for everything else. */
+  const morePartsOf = (/** @type {string} */ file) => {
+    try {
+      const lib = JSON.parse(fs.readFileSync(LIBRARY_FILE, "utf8"));
+      const m = (lib.movies ?? []).find((/** @type {any} */ x) => x.parts?.[0]?.path === file);
+      return (m?.parts ?? []).slice(1).map((/** @type {any} */ x) => { try { return resolveVideo(String(x.path)); } catch { return ""; } }).filter(Boolean);
+    } catch { return []; }
+  };
   const socketPath = MPV_SOCKET;
 
   /** @type {any} */ const st = { proc: null, sock: null, running: false, file: "", props: {}, ended: false, hasNext: false, itemId: null };
@@ -208,7 +216,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
             `--sub-delay=${Number(subDelay) || 0}`,
             `--volume=${Math.max(0, Math.min(130, Number(volume) || 100))}`, "--volume-max=130",
             ...(levelAf ? [`--af=lavfi=[${levelAf}]`] : []),
-            file,
+            file, ...morePartsOf(file), // a multi-part movie (CD1/CD2) is one mpv playlist
           ], { stdio: "ignore" });
           st.proc = proc;
           proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock = null; } });

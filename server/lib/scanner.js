@@ -132,6 +132,39 @@ const subdirs = (/** @type {string} */ dir) => { try { return fs.readdirSync(dir
 /** Largest first; equal size → a "clean" name (no double extension), then the shorter name. */
 const bestFirst = (/** @type {any} */ a, /** @type {any} */ b) => b.size - a.size || Number(/\.\w{3}\.\w{3}$/.test(a.name)) - Number(/\.\w{3}\.\w{3}$/.test(b.name)) || a.name.length - b.name.length;
 
+/** "cd1", "part 2", "pt3", "disc1" (any separator, optional brackets) right before the extension. */
+const PART_TOKEN = /[\s._-]*[([]?(?:cd|part|pt|dis[ck])[\s._-]*0*([1-9])[)\]]?(?=\.[a-z0-9]{2,4}$)/i;
+/**
+ * Files of one movie folder that differ only by cd1/cd2, part1/part2… → one movie in order, else null.
+ * @param {{ name: string }[]} vids
+ */
+export function moviePartsOf(vids) {
+  /** @type {Map<string, { v: any, n: number }[]>} */ const groups = new Map();
+  for (const v of vids) {
+    const m = v.name.match(PART_TOKEN);
+    if (!m) continue;
+    const key = v.name.replace(PART_TOKEN, "").toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), { v, n: Number(m[1]) }]);
+  }
+  let best = null;
+  for (const g of groups.values()) if (g.length >= 2 && new Set(g.map((x) => x.n)).size === g.length && (!best || g.length > best.length)) best = g;
+  return best ? best.sort((a, b) => a.n - b.n).map((x) => x.v) : null;
+}
+
+const TAG_WORDS = /[\s._([-]+(?:2160p|1440p|1080[pi]|720p|576p|480p|4k|uhd|blu-?ray|bdrip|brrip|web-?dl|web-?rip|hdtv|hdrip|dvdrip|x\.?26[45]|h\.?26[45]|hevc|avc|10bit|aac|ac3|dts)(?![a-z0-9])/gi;
+/**
+ * "One Piece 1071 [1080p].mkv" → 1071. Only a 1–4 digit number at the END of the name (after dropping brackets,
+ * resolution/codec words and a year before it) counts. A lone 1900–2099 is read as a year, never an episode.
+ * @param {string} file
+ */
+export function absoluteNumber(file) {
+  let n = file.replace(/\.[a-z0-9]{2,4}$/i, "").replace(/\s*[([][^)\]]*[)\]]/g, " ").replace(TAG_WORDS, " ");
+  n = n.replace(/[\s._-]+(?:19|20)\d{2}(?=[\s._-]+\d{1,4}\s*$)/, " "); // "Show 2010 - 05": the year isn't the episode
+  const m = n.match(/(?:^|[\s._-])0*(\d{1,4})[\s._-]*$/);
+  const v = m ? Number(m[1]) : 0;
+  return v > 0 && !(v >= 1900 && v <= 2099) ? v : undefined;
+}
+
 /**
  * One full scan of <mediaRoot>/Movies and /Series (synchronous, so it runs in a worker thread: see scan-worker.js).
  * @param {string} mediaRoot
@@ -196,13 +229,16 @@ export function scanLibrary(mediaRoot) {
     const makeMovie = (/** @type {string} */ abs, /** @type {string} */ rel, /** @type {string} */ folder, /** @type {string=} */ collectionId) => {
       const vids = listVideos(abs, 2).sort(bestFirst);
       if (!vids.length) { note("empty", rel, "No video file in this folder yet (download still running?). Press Scan now when it's done."); return null; }
-      const main = vids[0];
-      for (const d of vids.slice(1)) if (d.size > main.size * 0.5) note("duplicate", `${rel}/${d.name}`, `Another copy of this movie. CiRoom plays “${main.name}”.`);
+      const parts = moviePartsOf(vids); // CD1/CD2 → one movie with parts, not a duplicate
+      const main = parts ? parts[0] : vids[0];
+      const partSize = parts ? parts.reduce((a, p) => a + p.size, 0) : main.size;
+      for (const d of vids) if (d !== main && !parts?.includes(d) && d.size > partSize * 0.5) note("duplicate", `${rel}/${d.name}`, `Another copy of this movie. CiRoom plays “${main.name}”.`);
       const { title, year } = parseFolder(folder);
       const id = idFor(rel, title, year ? `${title} ${year}` : undefined, [main]);
       return {
         kind: "movie", id, title, year, genres: [], ratings: {}, cast: [], addedAt: new Date(main.mtime).toISOString(), collectionId,
         art: { hue: hueOf(id) }, file: { path: main.abs, sizeBytes: main.size, subtitles: [], status: "present" },
+        ...(parts ? { parts: parts.map((p) => ({ path: p.abs, sizeBytes: p.size })) } : {}),
       };
     };
     // Loose video files directly in Movies/: not added (no folder = no reliable title), but reported.
@@ -243,8 +279,18 @@ export function scanLibrary(mediaRoot) {
       const { title, year } = parseFolder(name);
       const id = idFor(rel, title, undefined, vids);
       /** @type {Map<number, Map<number, any>>} */ const seasons = new Map();
+      // Absolute numbering ("Show - 012.mkv"): only when NO video in the folder parses today and (nearly) all
+      // of them end in a number, so a stray file can't create fake episodes.
+      /** @type {Map<any, number> | null} */ let absNums = null;
+      if (vids.every((v) => parseEpisode(v.dirs, v.name).episode === undefined)) {
+        const nums = new Map(vids.map((v) => [v, absoluteNumber(v.name)]));
+        const hits = [...nums.values()].filter((n) => n !== undefined);
+        if (vids.length >= 2 && hits.length >= Math.ceil(vids.length * 0.9) && new Set(hits).size >= hits.length * 0.9) absNums = /** @type {any} */ (nums);
+      }
       for (const v of vids.sort(bestFirst)) {
-        const { season, episode, fromFile, alsoEpisode } = parseEpisode(v.dirs, v.name);
+        const parsed = parseEpisode(v.dirs, v.name);
+        const abs = absNums?.get(v);
+        const { season, episode, fromFile, alsoEpisode } = abs !== undefined ? { ...parsed, season: 1, episode: abs } : parsed;
         const vrel = `${rel}/${[...v.dirs, v.name].join("/")}`;
         if (season === undefined || episode === undefined) { note("unidentified", vrel, "Can't tell which episode this is. Put it in an S01/EP01 folder or name it S01E01."); continue; }
         if (!seasons.has(season)) seasons.set(season, new Map());
@@ -346,7 +392,7 @@ export function scannerRoutes(mediaRoot) {
     const bare = (/** @type {any} */ f) => (f ? { ...f, path: "" } : f);
     return {
       ...lib, roots: [], review: [],
-      movies: (lib.movies ?? []).map((/** @type {any} */ m) => ({ ...m, file: bare(m.file) })),
+      movies: (lib.movies ?? []).map((/** @type {any} */ m) => ({ ...m, file: bare(m.file), ...(m.parts ? { parts: m.parts.map(bare) } : {}) })),
       series: (lib.series ?? []).map((/** @type {any} */ s) => ({ ...s, seasons: (s.seasons ?? []).map((/** @type {any} */ se) => ({ ...se, episodes: (se.episodes ?? []).map((/** @type {any} */ e) => ({ ...e, file: bare(e.file) })) })) })),
     };
   };
