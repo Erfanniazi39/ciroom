@@ -5,7 +5,7 @@ import {
 import { registerWebController } from "@/store/webControl";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from "react";
 import { MseStream, streamMime } from "@/lib/mse";
-import { type Markers, streamApi, type Cue, type ProbeInfo, type StreamMode } from "@/api/stream";
+import { activeCueText, type Markers, streamApi, type Cue, type ProbeInfo, type StreamMode } from "@/api/stream";
 import { timecode } from "@/lib/format";
 import { SubtitleFinder } from "./SubtitleFinder";
 import type { SearchContext } from "@/api/subsearch";
@@ -266,8 +266,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       const v = videoRef.current;
       if (v) {
         const t = offset + v.currentTime - subDelay;
-        let txt = "";
-        for (const c of cues) { if (c.start > t) break; if (t < c.end) { txt = c.text; break; } }
+        const txt = activeCueText(cues, t);
         if (txt !== last) { last = txt; setCueText(txt); }
       }
       raf = requestAnimationFrame(loop);

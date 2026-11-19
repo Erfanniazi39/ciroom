@@ -6,7 +6,7 @@
  */
 import { AudioLines, Captions, Gauge, Loader2, Maximize, MonitorUp, Minimize, Pause, Play, RectangleHorizontal, RectangleVertical, RotateCcw, RotateCw, SkipForward, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
+import { activeCueText, parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
 import { audioLabel, startAudio } from "@/components/WebPlayer";
 import { cx } from "@/components/ui";
 import { findEpisode } from "@/lib/library";
@@ -237,12 +237,11 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     const tick = window.setInterval(() => {
       const t = v.currentTime;
       setTime(t);
-      const c = cues.current.find((x) => t >= x.start && t <= x.end);
-      setCue(c?.text ?? "");
+      setCue(activeCueText(cues.current, t));
       if (!v.paused && !v.ended && v.readyState >= 3 && lastT >= 0 && t > lastT && t - lastT < 2) watched.current += 1;
       lastT = t;
     }, 1000);
-    const fast = window.setInterval(() => { const t = v.currentTime; setTime(t); const c = cues.current.find((x) => t >= x.start && t <= x.end); setCue(c?.text ?? ""); }, 250);
+    const fast = window.setInterval(() => { const t = v.currentTime; setTime(t); setCue(activeCueText(cues.current, t)); }, 250);
     return () => { window.clearInterval(tick); window.clearInterval(fast); };
   }, []);
 

@@ -9,7 +9,7 @@
  * small drift → nudge playback speed; big drift → jump. While we load, we report "buffering" and the host waits.
  */
 import { MseStream, lowStreamMime, streamMime, type StreamSource } from "@/lib/mse";
-import { parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
+import { activeCueText, parseSeekPoint, parseVtt, type Cue, type ProbeInfo } from "@/api/stream";
 
 // ── tiny DOM helper ───────────────────────────────────────────────────────────────────────────
 type Kids = (Node | string | null | false | undefined)[];
@@ -440,8 +440,7 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
   const drawCue = () => {
     if (cues.length) {
       const t = video.currentTime - subDelay;
-      let txt = "";
-      for (const c of cues) { if (c.start > t) break; if (t < c.end) { txt = c.text; break; } }
+      const txt = activeCueText(cues, t);
       if (cue.textContent !== txt) cue.textContent = txt;
     }
     requestAnimationFrame(drawCue);

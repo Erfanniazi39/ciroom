@@ -91,6 +91,16 @@ function toSeconds(ts: string): number {
   return parts.reduce((acc, v) => acc * 60 + v, 0);
 }
 
+/** Every cue showing at time `t` (start ≤ t < end), in start order, joined with a line break: a second speaker or a sign that overlaps in time is shown too. `cues` are sorted by start. */
+export function activeCueText(cues: readonly Cue[], t: number): string {
+  let txt = "";
+  for (const c of cues) {
+    if (c.start > t) break;
+    if (t < c.end) txt = txt ? `${txt}\n${c.text}` : c.text;
+  }
+  return txt;
+}
+
 /** Minimal WebVTT parser: absolute times, tags stripped (keeps line breaks). */
 export function parseVtt(vtt: string): Cue[] {
   const cues: Cue[] = [];
