@@ -157,6 +157,18 @@ export default function Settings() {
         <Row label="Turn subtitles on automatically" hint="Only when the video has subtitle files next to it.">
           <Toggle on={st.subtitlesDefault} onChange={(v) => st.set({ subtitlesDefault: v })} label="Subtitles on by default" />
         </Row>
+        <Row label="Subtitle size" hint="Page player and mini player. The same choices are in the player's Subtitles menu.">
+          <Segmented label="Subtitle size" value={st.subtitleStyle.size} onChange={(v) => st.set({ subtitleStyle: { ...st.subtitleStyle, size: v as "S" | "M" | "L" | "XL" } })}
+            options={["S", "M", "L", "XL"].map((n) => ({ value: n, label: n }))} />
+        </Row>
+        <Row label="Subtitle background">
+          <Segmented label="Subtitle background" value={st.subtitleStyle.background} onChange={(v) => st.set({ subtitleStyle: { ...st.subtitleStyle, background: v as "none" | "shadow" | "box" } })}
+            options={[{ value: "none", label: "None" }, { value: "shadow", label: "Shadow" }, { value: "box", label: "Box" }]} />
+        </Row>
+        <Row label="Subtitle colour">
+          <Segmented label="Subtitle colour" value={st.subtitleStyle.color} onChange={(v) => st.set({ subtitleStyle: { ...st.subtitleStyle, color: v as "white" | "yellow" } })}
+            options={[{ value: "white", label: "White" }, { value: "yellow", label: "Yellow" }]} />
+        </Row>
         <Row label="Subtitle language order" hint="Words matched against the subtitle names, in order. Leave empty to use the first one found. Applies to the in-page player; the full player has its own order (English first).">
           <input
             value={st.subtitleLanguages}

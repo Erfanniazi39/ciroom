@@ -11,10 +11,11 @@ import { SubtitleFinder } from "./SubtitleFinder";
 import type { SearchContext } from "@/api/subsearch";
 import { usePlayback } from "@/store/playback";
 import { isElsewhere, takeBack } from "@/lib/oneScreen";
-import { pickSubtitle, startSubtitle, subPrefFor, useSettings } from "@/store/settings";
+import { pickSubtitle, startSubtitle, subPrefFor, useSettings, type SubtitleStyle } from "@/store/settings";
 import { useUser } from "@/store/user";
 import { cx } from "./ui";
 
+const SUB_SCALE = { S: 0.8, M: 1, L: 1.3, XL: 1.7 } as const;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const HIDE_MS = 2500;
 
@@ -63,6 +64,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const videoRef = useRef<HTMLVideoElement>(null);
   const savePosition = useUser((s) => s.savePosition);
   const volumePref = useUser((s) => s.volume);
+  const pageVolume = Math.min(volumePref, 100); // the page player stops at 100; only mpv goes up to 130
   const setVolumePref = useUser((s) => s.setVolume);
   const subDelay = useUser((s) => s.subDelays[id] ?? 0);
   const setSubDelay = useUser((s) => s.setSubDelay);
@@ -85,8 +87,11 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(true);
   const [needsGesture, setNeedsGesture] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [speed, setSpeed] = useState(1);
+  const muted = useSettings((s) => s.muted);
+  const speed = useSettings((s) => s.playbackSpeed);
+  const subStyle = useSettings((s) => s.subtitleStyle);
+  const setMuted = (m: boolean | ((m: boolean) => boolean)) => useSettings.getState().set({ muted: typeof m === "function" ? m(useSettings.getState().muted) : m });
+  const setSpeed = (v: number) => useSettings.getState().set({ playbackSpeed: v });
   const [realFs, setFullscreen] = useState(false); // the browser's real fullscreen
   const [controls, setControls] = useState(true);
   const [menu, setMenu] = useState<null | "main" | "subs" | "audio" | "delay" | "speed">(null);
@@ -426,7 +431,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       paused: videoRef.current ? videoRef.current.paused || ended : true,
       // Exact video time (timeupdate, which feeds timeRef, only fires ~4×/s); a seek in flight shows its target.
       position: videoRef.current && pending.current === null ? offsetRef.current + videoRef.current.currentTime : timeRef.current,
-      duration, volume: volumePref, muted, hasNext: !!next, fullscreen, subDelay,
+      duration, volume: pageVolume, muted, hasNext: !!next, fullscreen, subDelay,
       subs: subList.map((s) => ({ id: s.index, label: s.label || s.name })), subId: subIndex,
       path, waiting: waiting || pending.current !== null, rate: speed, ended,
       skip: skipRef.current,
@@ -474,8 +479,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       if (k === " " || k === "k") togglePlay();
       else if (k === "arrowleft" || k === "j") seek(timeRef.current - 10);
       else if (k === "arrowright" || k === "l") seek(timeRef.current + 10);
-      else if (k === "arrowup") setVolume(Math.min(130, volumePref + 5));
-      else if (k === "arrowdown") setVolume(Math.max(0, volumePref - 5));
+      else if (k === "arrowup") setVolume(Math.min(100, pageVolume + 5));
+      else if (k === "arrowdown") setVolume(Math.max(0, pageVolume - 5));
       else if (k === "f") toggleFullscreen();
       else if (k === "m") setMuted((m) => !m);
       else if (k === "c") { if (subList.length) toggleSubs(); else if (find) setFinder(true); }
@@ -543,8 +548,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
         <div className={cx("pointer-events-none absolute inset-x-0 flex justify-center px-[8%] transition-[bottom] duration-200", mini ? "bottom-3" : showControls ? "bottom-[110px]" : "bottom-[6%]")}>
           <span
             dir="auto"
-            className="whitespace-pre-line text-center font-semibold leading-snug text-white [text-shadow:0_0_4px_#000,0_2px_6px_#000,0_0_2px_#000]"
-            style={{ fontSize: mini ? "13px" : fullscreen ? "clamp(26px,2.6vw,48px)" : "clamp(15px,1.7vw,28px)" }}
+            className={cx("whitespace-pre-line text-center font-semibold leading-snug", subStyle.color === "yellow" ? "text-yellow-300" : "text-white", subStyle.background === "box" && "rounded-lg bg-black/70 px-3 py-0.5 [box-decoration-break:clone]")}
+            style={{ fontSize: `calc(${mini ? "13px" : fullscreen ? "clamp(26px,2.6vw,48px)" : "clamp(15px,1.7vw,28px)"} * ${SUB_SCALE[subStyle.size]})`, textShadow: subStyle.background === "shadow" ? "0 0 4px #000,0 2px 6px #000,0 0 2px #000" : subStyle.background === "none" ? "0 0 2px #000" : "none" }}
           >
             {cueText}
           </span>
@@ -644,7 +649,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
             <CtrlButton label="Back 10 s (←)" onClick={() => seek(timeRef.current - 10)}><RotateCcw size={20} /></CtrlButton>
             <CtrlButton label="Forward 10 s (→)" onClick={() => seek(timeRef.current + 10)}><RotateCw size={20} /></CtrlButton>
             {next && <CtrlButton label={`Next: ${next.label}`} onClick={next.onPlay}><SkipForward size={20} /></CtrlButton>}
-            <Volume volume={volumePref} muted={muted} onVolume={setVolume} onMute={() => setMuted((m) => !m)} />
+            <Volume volume={pageVolume} muted={muted} onVolume={setVolume} onMute={() => setMuted((m) => !m)} />
             <Timecode clock={clock} duration={duration} />
 
             <div className="ml-auto flex items-center gap-1">
@@ -817,6 +822,22 @@ export function audioLabel(t: AudioTrack | undefined): string {
   return t.title && lang && !t.title.toLowerCase().includes(lang.toLowerCase()) ? `${lang} · ${t.title}` : extra ? `${name} · ${extra}` : name;
 }
 
+/** Size, colour and background of the subtitle line (saved in Settings, used by the page player and the mini player). */
+function SubtitleLook() {
+  const st = useSettings((s) => s.subtitleStyle);
+  const set = (patch: Partial<SubtitleStyle>) => useSettings.getState().set({ subtitleStyle: { ...st, ...patch } });
+  const Chip = ({ on, label, onClick }: { on: boolean; label: string; onClick: () => void }) => (
+    <button onClick={onClick} aria-pressed={on} className={cx("rounded-full px-3 py-1 text-[13px] font-semibold transition", on ? "bg-violet-500 text-white" : "bg-white/10 text-white/75 hover:bg-white/15")}>{label}</button>
+  );
+  return (
+    <div className="mt-1 space-y-2 border-t border-white/10 px-3 py-2.5">
+      <div className="flex items-center gap-1.5"><span className="w-[72px] text-[12px] text-white/50">Size</span>{(["S", "M", "L", "XL"] as const).map((v) => <Chip key={v} on={st.size === v} label={v} onClick={() => set({ size: v })} />)}</div>
+      <div className="flex items-center gap-1.5"><span className="w-[72px] text-[12px] text-white/50">Background</span>{([["none", "None"], ["shadow", "Shadow"], ["box", "Box"]] as const).map(([v, l]) => <Chip key={v} on={st.background === v} label={l} onClick={() => set({ background: v })} />)}</div>
+      <div className="flex items-center gap-1.5"><span className="w-[72px] text-[12px] text-white/50">Colour</span>{([["white", "White"], ["yellow", "Yellow"]] as const).map(([v, l]) => <Chip key={v} on={st.color === v} label={l} onClick={() => set({ color: v })} />)}</div>
+    </div>
+  );
+}
+
 function SettingsPanel(p: {
   page: "main" | "subs" | "audio" | "delay" | "speed";
   setPage: (pg: null | "main" | "subs" | "audio" | "delay" | "speed") => void;
@@ -889,6 +910,7 @@ function SettingsPanel(p: {
           <Option selected={p.subIndex < 0} label="Off" onClick={() => p.setSubIndex(-1)} />
           {p.subtitles.map((s) => <Option key={s.index} selected={p.subIndex === s.index} label={s.label} onClick={() => p.setSubIndex(s.index)} />)}
           {p.subError && p.subIndex >= 0 && <p className="px-3 py-2 text-[13px] font-semibold text-amber-300">This subtitle couldn't be read. Try another one.</p>}
+          <SubtitleLook />
           {p.subtitles.length > 0 && p.rememberNote && <p className="px-3 pb-1 pt-2 text-[12px] text-white/45">{p.rememberNote}</p>}
           {p.subtitles.length === 0 && <p className="px-3 py-2 text-[13px] text-white/55">No text subtitles for this video. Picture subtitles (DVD/Blu-ray) are available in the full player.</p>}
           {p.onFind && <button onClick={p.onFind} className="mt-1 flex w-full items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 text-left text-[14px] font-semibold text-violet-300 transition hover:bg-white/10"><Search size={16} /> Find subtitles online…</button>}

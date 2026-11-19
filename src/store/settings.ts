@@ -7,7 +7,20 @@ import { persist } from "zustand/middleware";
 import { serverStorage } from "@/lib/serverStorage";
 import type { SubPref } from "./user";
 
+export interface SubtitleStyle {
+  size: "S" | "M" | "L" | "XL";
+  background: "none" | "shadow" | "box";
+  color: "white" | "yellow";
+}
+
+export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = { size: "M", background: "shadow", color: "white" };
+
 export interface SettingsState {
+  /** Page player: speed and mute carry over from one video to the next. */
+  playbackSpeed: number;
+  muted: boolean;
+  /** Subtitle look in the page player and the mini player. */
+  subtitleStyle: SubtitleStyle;
   /** Play the next episode automatically when one ends. */
   autoplayNext: boolean;
   /** The "Up next" card appears this many seconds before the end. */
@@ -28,6 +41,9 @@ export interface SettingsState {
 export const useSettings = create<SettingsState>()(
   persist(
     (set) => ({
+      playbackSpeed: 1,
+      muted: false,
+      subtitleStyle: DEFAULT_SUBTITLE_STYLE,
       autoplayNext: true,
       upNextSeconds: 15,
       miniPlayer: true,
