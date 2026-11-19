@@ -45,7 +45,7 @@ const PHONE_POST = [/^\/api\/remote\/cmd$/, /^\/api\/remote\/progress$/, /^\/api
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");
 
 /**
- * @param {any} mpv adapter: { running(): boolean, snapshot(): any, command(c: any): void }
+ * @param {any} mpv adapter: { running(): boolean, snapshot(): any, command(c: any): void, itemId?(): string | null }
  * @param {() => number} [getPort] @param {() => void} [onToggle]
  * @param {{ resolveVideo: (p: string) => string, stream: any } | null} [media] what phone watching needs (file lookup + streaming)
  */
@@ -207,13 +207,49 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     res.on("close", () => clearInterval(ping));
   };
 
+  // ── mpv progress while no window is open ───────────────────────────────────────────────
+  // The window owns the user state and saves mpv's position itself (NowPlayingBar). When NO window is connected the
+  // server queues the same kind of entry a phone would (pending file → replayed when a window connects), so closing
+  // the window while mpv plays doesn't lose the place. Never writes the database.
+  const MPV_SAVE_MS = Math.max(50, Number(process.env.CIROOM_MPV_SAVE_MS) || 15_000);
+  /** @type {{ id: string, pos: number, at: number } | null} */
+  let mpvTrack = null; // the item being followed: last saved position and when we last looked
+  /** Watch seconds are only counted while mpv is really playing, as the window does. */
+  function mpvSaveTick(final = false) {
+    const id = mpv.itemId?.() ?? null;
+    if (!id || !mpv.running()) { mpvTrack = null; return; }
+    const item = itemFor(id);
+    if (!item) return;
+    const snap = mpv.snapshot(true);
+    const now = Date.now();
+    const duration = Number(snap.duration) > 0 ? Number(snap.duration) : 0;
+    const position = snap.ended && duration ? duration : Number(snap.position);
+    if (!mpvTrack || mpvTrack.id !== id) mpvTrack = { id, pos: Number.isFinite(position) ? position : 0, at: now };
+    const movedBy = position - mpvTrack.pos;
+    const sinceLast = Math.min(120, (now - mpvTrack.at) / 1000);
+    const playing = !snap.paused && movedBy > 0 && movedBy < sinceLast + 5;
+    mpvTrack.at = now;
+    if (!Number.isFinite(position) || position < 0 || !duration || position > duration + 1) return;
+    if (windows.size) { mpvTrack.pos = position; return; } // a window is open: it saves (unchanged behaviour)
+    if (freshPhones().some((p) => p.id === id && p.playing)) { mpvTrack.pos = position; return; } // a phone holds this title: its position wins
+    if (!snap.ended && Math.abs(movedBy) < 1) return; // not moved since the last save
+    const old = pending[id];
+    pending[id] = { id, position: Math.min(position, duration), duration, watched: Math.min(43200, (old?.watched ?? 0) + (playing ? Math.min(movedBy, sinceLast) : 0)), at: now, source: "mpv" };
+    mpvTrack.pos = position;
+    savePending();
+    if (final) mpvTrack = null;
+  }
+  const mpvTimer = () => { const t = setInterval(() => { try { mpvSaveTick(); } catch { /* keep going */ } }, MPV_SAVE_MS); t.unref?.(); return t; };
+
   return {
     /** True while phones are served: the remote is on AND this PC is on a trusted network (the server then listens for other devices). */
     isEnabled: () => isActive(),
     /** True when the user switched the remote on (even if this network isn't trusted). */
     isSwitchedOn: () => !!cfg.enabled,
+    /** One progress check for mpv (also called by the bridge when mpv exits, with final=true). */
+    mpvSaveTick,
     /** Starts the network check. Called when the server starts (never by `vite build`). */
-    start: () => { ensureNetTimer(); if (cfg.enabled) refreshNet(true).catch(() => {}); },
+    start: () => { mpvTimer(); ensureNetTimer(); if (cfg.enabled) refreshNet(true).catch(() => {}); },
     /**
      * Gate for requests from other devices (this PC is never gated). Returns an HTTP status to refuse with, or 0 to continue.
      * @param {import("node:http").IncomingMessage} req @param {string} ip

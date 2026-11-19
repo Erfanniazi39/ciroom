@@ -81,13 +81,17 @@ export function createCiRoom(mediaRoot) {
   const socketPath = MPV_SOCKET;
 
   /** @type {any} */
-  const st = { proc: null, sock: null, running: false, file: "", props: {}, ended: false, hasNext: false };
+  /** @type {any} */ const st = { proc: null, sock: null, running: false, file: "", props: {}, ended: false, hasNext: false, itemId: null };
   const resetProps = () => { st.nextRequested = false; st.props = { "time-pos": 0, duration: 0, pause: false, volume: 100, mute: false, speed: 1, "sub-delay": 0, sid: false, aid: false, "track-list": [] }; st.ended = false; };
   resetProps();
+
+  /** Save mpv's last position (server side, only when no window is open) before the player goes away. */
+  const finalSave = () => { try { remote.mpvSaveTick(true); } catch { /* best effort */ } };
 
   const send = (/** @type {unknown[]} */ command) => st.sock?.write(JSON.stringify({ command }) + "\n");
 
   function stop() {
+    if (st.running) finalSave();
     send(["quit"]);
     st.proc?.kill("SIGTERM");
     st.sock?.destroy();
@@ -248,7 +252,7 @@ export function createCiRoom(mediaRoot) {
   const art = artworkRoutes();
   const userdb = userdbRoutes();
   const stream = streamRoutes(resolveVideo);
-  const remote = remoteRoutes({ running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip }, () => server_port, () => netListeners.forEach((f) => f()), { resolveVideo, stream });
+  const remote = remoteRoutes({ itemId: () => st.itemId ?? null, running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip }, () => server_port, () => netListeners.forEach((f) => f()), { resolveVideo, stream });
   const meta = metadataRoutes();
   const scanner = scannerRoutes(rootAbs);
   const subSearch = subtitleSearchRoutes(resolveVideo);
@@ -389,7 +393,7 @@ export function createCiRoom(mediaRoot) {
           if (req.url === "/api/player" && req.method === "GET") return json(200, snapshot());
 
           if (req.url === "/api/play" && req.method === "POST") {
-            const { path: p, startAt = 0, subDelay = 0, volume = 100, title = "", hasNext = false, dryRun = false, level = true, subPref = null, audioLang = null } = await body(req);
+            const { path: p, startAt = 0, subDelay = 0, volume = 100, title = "", hasNext = false, dryRun = false, level = true, subPref = null, audioLang = null, itemId = null } = await body(req);
             const file = resolveVideo(String(p));
             // Remembered per-series choices (the UI sends them): subtitle language/off and audio language.
             const subs = subtitlesFor(file);
@@ -410,7 +414,7 @@ export function createCiRoom(mediaRoot) {
             stop();
             try { fs.unlinkSync(socketPath); } catch { /* not there */ }
             resetProps();
-            Object.assign(st, { running: true, file, hasNext: !!hasNext });
+            Object.assign(st, { running: true, file, hasNext: !!hasNext, itemId: typeof itemId === "string" && /^[a-z0-9-]{1,200}$/.test(itemId) ? itemId : null });
             st.props["time-pos"] = startAt;
             const proc = spawn("mpv", [
               `--config-dir=${MPV_CONFIG}`, // Marquee's own look + shortcuts (mpv/), not the user's ~/.config/mpv
@@ -427,7 +431,7 @@ export function createCiRoom(mediaRoot) {
               file,
             ], { stdio: "ignore" });
             st.proc = proc;
-            proc.on("exit", () => { if (st.proc === proc) { st.running = false; st.proc = null; st.sock = null; } });
+            proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock = null; } });
             proc.on("error", () => { st.running = false; });
             setTimeout(() => connect(), 200);
             return json(200, { ok: true, file });

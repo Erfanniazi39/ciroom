@@ -108,7 +108,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       const r = await fetch("/api/play", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: req.path, startAt: req.startAt, subDelay, volume, title: req.subtitle ? `${req.title} · ${req.subtitle}` : req.title, hasNext: !!req.nextId, level: levelling, subPref: subPrefs[prefKey] ?? null, audioLang: audioPrefs[prefKey] ?? null }),
+        body: JSON.stringify({ itemId: req.id, path: req.path, startAt: req.startAt, subDelay, volume, title: req.subtitle ? `${req.title} · ${req.subtitle}` : req.title, hasNext: !!req.nextId, level: levelling, subPref: subPrefs[prefKey] ?? null, audioLang: audioPrefs[prefKey] ?? null }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || "mpv could not start.");
