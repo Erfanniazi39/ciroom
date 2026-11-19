@@ -108,16 +108,16 @@ export function subtitleSearchRoutes(resolveVideo) {
             // Validate before saving, so a typo is reported immediately.
             const prev = s.subdlKey;
             s.subdlKey = next;
-            writeJsonAtomic(SETTINGS, s, { space: 2 });
+            writeJsonAtomic(SETTINGS, s, { space: 2, mode: 0o600 });
             try { await call({ api_key: next, film_name: "Inception", type: "movie", languages: "EN", year: "2010" }); }
             catch (e) {
               if (prev) s.subdlKey = prev; else delete s.subdlKey;
-              writeJsonAtomic(SETTINGS, s, { space: 2 });
+              writeJsonAtomic(SETTINGS, s, { space: 2, mode: 0o600 });
               throw e;
             }
           } else {
             delete s.subdlKey;
-            writeJsonAtomic(SETTINGS, s, { space: 2 });
+            writeJsonAtomic(SETTINGS, s, { space: 2, mode: 0o600 });
           }
           json(200, { hasKey: !!key() });
           return true;

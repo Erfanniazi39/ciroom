@@ -340,14 +340,24 @@ export function scannerRoutes(mediaRoot) {
     };
   }
 
+  /** The library as a phone may see it: no folder or file locations (it plays by id through /api/remote/watch). */
+  const forPhone = (/** @type {any} */ lib) => {
+    const bare = (/** @type {any} */ f) => (f ? { ...f, path: "" } : f);
+    return {
+      ...lib, roots: [], review: [],
+      movies: (lib.movies ?? []).map((/** @type {any} */ m) => ({ ...m, file: bare(m.file) })),
+      series: (lib.series ?? []).map((/** @type {any} */ s) => ({ ...s, seasons: (s.seasons ?? []).map((/** @type {any} */ se) => ({ ...se, episodes: (se.episodes ?? []).map((/** @type {any} */ e) => ({ ...e, file: bare(e.file) })) })) })),
+    };
+  };
+
   return {
     /** @returns {Promise<boolean>} true if handled */
-    async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(c:number,d:unknown)=>void} */ json) {
+    async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(c:number,d:unknown)=>void} */ json, local = true) {
       const url = String(req.url);
       if (url === "/api/library" && req.method === "GET") {
         let lib = readJson(LIB_FILE, null);
         if (!lib) { try { lib = await scan(); } catch (e) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; } writeJson(LIB_FILE, lib); }
-        json(200, lib);
+        json(200, local ? lib : forPhone(lib)); // other devices never get file locations
         return true;
       }
       if (url === "/api/library/scan" && req.method === "POST") {

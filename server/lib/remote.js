@@ -39,7 +39,7 @@ const PRIVATE_IP = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
 const VIRTUAL_IFACE = /^(docker|br-|veth|tun|tap|outline|tailscale|virbr|vboxnet|vmnet|lo$|vethernet|virtualbox|vmware|loopback|bluetooth)/i;
 
 /** What a paired phone may call. Everything else under /api is for this PC only. */
-const PHONE_GET = [/^\/api\/remote\/watch\/(probe|seekpoint|stream|subtitle\.vtt)\?/, /^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/thumb\?/, /^\/api\/remote\/events$/];
+const PHONE_GET = [/^\/api\/remote\/watch\/(probe|seekpoint|stream|subtitle\.vtt|thumb)\?/, /^\/api\/library(\?|$)/, /^\/api\/meta(\?|$)/, /^\/api\/art(\?|$)/, /^\/api\/art\/file\//, /^\/api\/remote\/events$/];
 const PHONE_POST = [/^\/api\/remote\/cmd$/, /^\/api\/remote\/progress$/, /^\/api\/remote\/state$/];
 
 const sha = (/** @type {string} */ s) => crypto.createHash("sha256").update(s).digest("hex");

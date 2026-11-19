@@ -80,19 +80,100 @@ mod installed {
         TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(150)).is_ok()
     }
 
-    /// True when CiRoom itself answers on this port (`GET /api/ping` → `{"app":"ciroom"}`), not some other program.
-    fn is_ciroom(port: u16) -> bool {
+    /// 128 random bits as 32 hex characters, or None if the system has no randomness.
+    fn random_hex() -> Option<String> {
+        let mut b = [0u8; 16];
+        getrandom::getrandom(&mut b).ok()?;
+        Some(b.iter().map(|x| format!("{x:02x}")).collect())
+    }
+
+    /// SHA-256 as 64 hex characters (the server answers with the same function of secret + nonce).
+    pub(crate) fn sha256_hex(data: &[u8]) -> String {
+        const K: [u32; 64] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        ];
+        let mut h: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+        let mut msg = data.to_vec();
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
+        }
+        msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+        for chunk in msg.chunks(64) {
+            let mut w = [0u32; 64];
+            for i in 0..16 {
+                w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
+            }
+            for i in 16..64 {
+                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+                let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+                w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+            }
+            let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+            for i in 0..64 {
+                let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+                let ch = (e & f) ^ (!e & g);
+                let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+                let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+                let maj = (a & b) ^ (a & c) ^ (b & c);
+                let t2 = s0.wrapping_add(maj);
+                hh = g;
+                g = f;
+                f = e;
+                e = d.wrapping_add(t1);
+                d = c;
+                c = b;
+                b = a;
+                a = t1.wrapping_add(t2);
+            }
+            for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+                *x = x.wrapping_add(y);
+            }
+        }
+        h.iter().map(|x| format!("{x:08x}")).collect()
+    }
+
+    /// True when CiRoom itself answers on this port, not some other program.
+    /// With a `secret` (the installed app): the server must prove it was started by us, by answering
+    /// `GET /api/ping?nonce=N` with `"proof": sha256(secret + N)`; a server without that (any other program, or an
+    /// older CiRoom) does not count. Without one (dev builds): `{"app":"ciroom"}` is enough, as before.
+    fn is_ciroom(port: u16, secret: Option<&str>) -> bool {
         let Ok(mut s) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(300)) else { return false };
         let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
         let _ = s.set_write_timeout(Some(Duration::from_millis(800)));
-        let req = format!("GET /api/ping HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        let nonce = if secret.is_some() { random_hex() } else { None };
+        if secret.is_some() && nonce.is_none() {
+            return false;
+        }
+        let query = nonce.as_ref().map(|n| format!("?nonce={n}")).unwrap_or_default();
+        let req = format!("GET /api/ping{query} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
         if s.write_all(req.as_bytes()).is_err() {
             return false;
         }
         let mut buf = Vec::new();
         let _ = s.take(4096).read_to_end(&mut buf); // a timeout just ends the read; what arrived is still checked
         let text = String::from_utf8_lossy(&buf);
-        text.starts_with("HTTP/1.") && text.contains("\"app\":\"ciroom\"")
+        if !(text.starts_with("HTTP/1.") && text.contains("\"app\":\"ciroom\"")) {
+            return false;
+        }
+        match (secret, nonce) {
+            (Some(sec), Some(n)) => text.contains(&format!("\"proof\":\"{}\"", sha256_hex(format!("{sec}{n}").as_bytes()))),
+            _ => true,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::sha256_hex;
+        #[test]
+        fn sha256_matches_the_standard_vectors() {
+            assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+            assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+            assert_eq!(sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+        }
     }
 
     /// A port nothing is using, from 1430 up (the test version uses 1430 itself, so it is skipped if busy).
@@ -115,9 +196,12 @@ mod installed {
         while port_open(PORT) && wait.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(200));
         }
+        // Installed builds: a secret only this app and its own server know (dev builds keep the plain check).
+        let secret = if cfg!(debug_assertions) { None } else { Some(random_hex().ok_or("no randomness for the server check")?) };
+        let secret = secret.as_deref();
         let mut port = PORT;
         if port_open(PORT) {
-            if is_ciroom(PORT) {
+            if is_ciroom(PORT, secret) {
                 return Ok(Started { port, child: None }); // CiRoom already runs here (e.g. `npm run desktop`): use it
             }
             port = free_port().ok_or("Port 1420 is used by another program and no other port is free")?;
@@ -132,6 +216,7 @@ mod installed {
         let mut cmd = Command::new(&node);
         cmd.arg(res.join("server").join("index.js"))
             .env("CIROOM_PORT", port.to_string())
+            .env("CIROOM_SHELL_SECRET", secret.unwrap_or(""))
             .env("CIROOM_VERSION", env!("CARGO_PKG_VERSION"))
             .env("CIROOM_DIST", res.join("dist"))
             .env("NODE_USE_ENV_PROXY", "1")
@@ -167,7 +252,7 @@ mod installed {
         let mut child = cmd.spawn().map_err(|e| format!("could not start {}: {e}", node.display()))?;
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(30) {
-            if is_ciroom(port) {
+            if is_ciroom(port, secret) {
                 return Ok(Started { port, child: Some(child) });
             }
             if let Ok(Some(status)) = child.try_wait() {

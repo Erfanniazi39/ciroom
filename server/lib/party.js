@@ -80,7 +80,7 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
   let hostSeen = 0;
 
   /** Live guests: SSE connections, last status, stream count, chat rate limiting. */
-  /** @type {Map<string, { conns: Set<import("node:http").ServerResponse>, status: any, streams: number, chatTimes: number[], cmdTimes: number[], leaveTimer: NodeJS.Timeout | null }>} */
+  /** @type {Map<string, { conns: Set<import("node:http").ServerResponse>, status: any, streams: number, chatTimes: number[], cmdTimes: number[], seekTimes: number[], seeking: number, leaveTimer: NodeJS.Timeout | null }>} */
   const live = new Map();
   /** @type {Set<import("node:http").ServerResponse>} */
   const hosts = new Set();
@@ -90,7 +90,7 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
 
   const liveOf = (/** @type {string} */ id) => {
     let l = live.get(id);
-    if (!l) { l = { conns: new Set(), status: null, streams: 0, chatTimes: [], cmdTimes: [], leaveTimer: null }; live.set(id, l); }
+    if (!l) { l = { conns: new Set(), status: null, streams: 0, chatTimes: [], cmdTimes: [], seekTimes: [], seeking: 0, leaveTimer: null }; live.set(id, l); }
     return l;
   };
 
@@ -446,6 +446,14 @@ export function partyRoutes({ resolveVideo, stream, getPort, onToggle = () => {}
         }
         if (route === "/api/party/stream" && u.searchParams.get("level") === "0") q.set("level", "0");
         if ((route === "/api/party/stream" || route === "/api/party/seekpoint") && u.searchParams.get("q") === "low") q.set("q", "low"); // guest's low-data choice (480p)
+        if (route === "/api/party/seekpoint") {
+          // Each call runs ffmpeg + ffprobe for up to 8 s: 3 per 2 s and one at a time per guest.
+          if (l.seeking >= 1 || !allow(l.seekTimes, 3, 2000)) return deny(res, 429, "Too many seeks at once");
+          l.seeking++;
+          let freed = false;
+          const free = () => { if (!freed) { freed = true; l.seeking--; } };
+          res.on("close", free); res.on("finish", free);
+        }
         if (route === "/api/party/stream" && u.searchParams.get("mode") === "transcode") q.set("mode", "transcode"); // exact start when the keyframe lookup failed
         if (route === "/api/party/stream") {
           if (l.streams >= MAX_STREAMS_PER_GUEST) return deny(res, 429, "Too many streams");

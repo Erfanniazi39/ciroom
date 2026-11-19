@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR as PATHS_DATA_DIR } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
+import { assertPublicHost } from "./netguard.js";
 
 const DATA = PATHS_DATA_DIR;
 const ART_DIR = path.join(DATA, "artwork");
@@ -37,6 +38,8 @@ const fileUrl = (/** @type {string|undefined} */ name) => (name ? `/api/art/file
 export const DATA_DIR = DATA;
 export const readArtIndex = () => readJson(INDEX, {});
 const settings = () => readJson(SETTINGS, {});
+// The API keys in settings.json are for this user only (no effect on NTFS/Windows, where file modes aren't enforced).
+try { fs.chmodSync(SETTINGS, 0o600); } catch { /* no file yet, or a drive without modes */ }
 
 /** GET a TMDB v3 endpoint with the user's saved key (v3 key → api_key, v4 token → Bearer). */
 export async function tmdb(/** @type {string} */ pathAndQuery) {
@@ -83,10 +86,19 @@ export function artworkRoutes() {
   }
 
   async function download(/** @type {string} */ url) {
-    const u = new URL(url);
-    if (!/^https?:$/.test(u.protocol)) throw new Error("Only http(s) links are supported");
-    const r = await fetch(u, { redirect: "follow", signal: AbortSignal.timeout(30000) });
-    if (!r.ok) throw new Error(`Download failed (HTTP ${r.status})`);
+    // Public addresses only, checked for the link AND for every redirect (max 3): a picture link must not reach the home network.
+    let u = new URL(url);
+    /** @type {Response | undefined} */ let r;
+    for (let hop = 0; hop <= 3; hop++) {
+      if (!/^https?:$/.test(u.protocol)) throw new Error("Only http(s) links are supported");
+      await assertPublicHost(u.hostname);
+      r = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(30000) });
+      const loc = r.status >= 300 && r.status < 400 ? r.headers.get("location") : null;
+      if (!loc) break;
+      if (hop === 3) throw new Error("Too many redirects");
+      u = new URL(loc, u);
+    }
+    if (!r || !r.ok) throw new Error(`Download failed (HTTP ${r?.status})`);
     const mime = (r.headers.get("content-type") || "").split(";")[0].trim();
     if (!EXT[mime]) throw new Error("That link is not an image");
     return { buf: Buffer.from(await r.arrayBuffer()), mime };
@@ -168,7 +180,7 @@ export function artworkRoutes() {
         const { tmdbKey } = await body(req);
         const s = settings();
         if (tmdbKey) s.tmdbKey = String(tmdbKey).trim(); else delete s.tmdbKey;
-        writeJson(SETTINGS, s);
+        writeJsonAtomic(SETTINGS, s, { space: 2, mode: 0o600 });
         if (s.tmdbKey) await tmdb("/configuration"); // validate now, so the user gets immediate feedback
         json(200, { hasTmdbKey: !!s.tmdbKey }); return true;
       }

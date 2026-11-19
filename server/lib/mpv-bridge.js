@@ -14,6 +14,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { artworkRoutes } from "./artwork-store.js";
@@ -308,6 +309,18 @@ export function createCiRoom(mediaRoot) {
           res.end(JSON.stringify({ error: "Use an IP address or localhost to reach CiRoom" }));
           return;
         }
+        // Cross-site reads: a web page could embed /api/stream?path=… (starts ffmpeg, tells whether a path exists).
+        // Our own page, the phone page and the guest page are always same-origin; browsers say so in Sec-Fetch-Site.
+        if (String(req.url).startsWith("/api/")) {
+          res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+          const site = req.headers["sec-fetch-site"];
+          if (site === "cross-site" || site === "same-site") {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Cross-site request refused" }));
+            return;
+          }
+        }
         // Cross-site protection: a web page in the user's browser can POST text/plain to 127.0.0.1 without a
         // preflight. Anything that changes something must come from our own page (same origin) and be JSON.
         if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
@@ -354,7 +367,12 @@ export function createCiRoom(mediaRoot) {
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store");
-          res.end(JSON.stringify({ app: "ciroom", version: appVersion() }));
+          // The desktop shell starts us with a secret and checks that WE are the program on its port: it sends a nonce and
+          // expects sha256(secret + nonce) back. The secret itself is never sent.
+          const secret = process.env.CIROOM_SHELL_SECRET ?? "";
+          const nonce = new URL(String(req.url), "http://x").searchParams.get("nonce") ?? "";
+          const proof = secret && /^[0-9a-f]{8,128}$/i.test(nonce) ? createHash("sha256").update(secret + nonce).digest("hex") : undefined;
+          res.end(JSON.stringify({ app: "ciroom", version: appVersion(), ...(proof ? { proof } : {}) }));
           return;
         }
         // Which of ffmpeg / ffprobe / mpv are missing (Settings shows it). This PC only.
@@ -400,7 +418,7 @@ export function createCiRoom(mediaRoot) {
           if (await stream.handle(req, res, json, body)) return;
           if (await subSearch.handle(req, res, json, body)) return;
           if (await meta.handle(req, res, body, json)) return;
-          if (await scanner.handle(req, res, json)) return;
+          if (await scanner.handle(req, res, json, local)) return;
 
           if (req.url === "/api/player" && req.method === "GET") return json(200, snapshot());
 

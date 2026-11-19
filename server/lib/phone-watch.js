@@ -7,6 +7,7 @@
  *
  *   GET /api/remote/watch/probe?id=
  *   GET /api/remote/watch/seekpoint?id=&t=&q=&a=
+ *   GET /api/remote/watch/thumb?id=&t=            → JPEG frame (by library id: phones never name a file)
  *   GET /api/remote/watch/stream?id=&t=&q=low&level=0&a=
  *   GET /api/remote/watch/subtitle.vtt?id=&i=|e=
  */
@@ -86,7 +87,7 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
       const route = u.pathname;
       if (!route.startsWith("/api/remote/watch/") || req.method !== "GET") return false;
       const what = route.slice("/api/remote/watch/".length);
-      if (!["probe", "seekpoint", "stream", "subtitle.vtt"].includes(what)) { fail(res, 404, "Unknown endpoint"); return true; }
+      if (!["probe", "seekpoint", "stream", "subtitle.vtt", "thumb"].includes(what)) { fail(res, 404, "Unknown endpoint"); return true; }
       const rawId = u.searchParams.get("id") ?? "";
       if (!ID.test(rawId)) { fail(res, 400, "Bad id"); return true; }
       const item = libraryItems().get(rawId);
@@ -102,6 +103,7 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
         const a = Math.floor(num("a"));
         if (Number.isFinite(a) && a >= 0 && a <= 99) q.set("a", String(a));
       }
+      if (what === "thumb") q.set("t", String(Math.max(0, Math.min(Math.round(num("t")) || 0, 24 * 3600))));
       if (what === "stream" && u.searchParams.get("level") === "0") q.set("level", "0");
       if (what === "stream" && u.searchParams.get("mode") === "transcode") q.set("mode", "transcode"); // exact start when the keyframe lookup failed
       if (what === "subtitle.vtt") {
