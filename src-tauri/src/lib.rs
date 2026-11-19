@@ -269,8 +269,21 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             if let Some(mut child) = handle.state::<Server>().0.lock().unwrap().take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                // Ask first: closing the server's stdin makes it save mpv's position, quit mpv and close the
+                // database (server/index.js shutdown()). Kill only if it hasn't finished in 4 s.
+                drop(child.stdin.take());
+                let start = std::time::Instant::now();
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) if start.elapsed() < std::time::Duration::from_secs(4) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                        _ => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                    }
+                }
             }
         }
     });

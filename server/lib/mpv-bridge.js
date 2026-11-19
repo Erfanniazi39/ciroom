@@ -274,6 +274,18 @@ export function createCiRoom(mediaRoot) {
     /** Starts the background work (skip-intro analysis). Never called by `vite build`. */
     start: () => { intro.start(); remote.start(); },
     setPort: (/** @type {number} */ p) => { server_port = p; },
+    /** Clean shutdown: queue mpv's last position (even if a window is still connected), ask mpv to quit, wait up to 1 s, then SIGTERM. */
+    async shutdown() {
+      if (!st.running) return;
+      try { remote.mpvSaveTick(true, true); } catch { /* best effort */ }
+      const proc = st.proc;
+      send(["quit"]);
+      if (proc && proc.exitCode === null) {
+        await Promise.race([new Promise((r) => proc.once("exit", r)), new Promise((r) => setTimeout(r, 1000))]);
+        if (proc.exitCode === null) proc.kill("SIGTERM");
+      }
+      st.running = false;
+    },
     /** True when other devices may need to reach this server (phone remote or watch party on). */
     wantsNetwork: () => remote.isEnabled() || party.isEnabled(),
     /** Calls `fn` whenever the phone remote or the watch party is switched on or off. */

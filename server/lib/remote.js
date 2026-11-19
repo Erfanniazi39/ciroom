@@ -215,7 +215,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   /** @type {{ id: string, pos: number, at: number } | null} */
   let mpvTrack = null; // the item being followed: last saved position and when we last looked
   /** Watch seconds are only counted while mpv is really playing, as the window does. */
-  function mpvSaveTick(final = false) {
+  function mpvSaveTick(final = false, force = false) {
     const id = mpv.itemId?.() ?? null;
     if (!id || !mpv.running()) { mpvTrack = null; return; }
     const item = itemFor(id);
@@ -230,7 +230,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     const playing = !snap.paused && movedBy > 0 && movedBy < sinceLast + 5;
     mpvTrack.at = now;
     if (!Number.isFinite(position) || position < 0 || !duration || position > duration + 1) return;
-    if (windows.size) { mpvTrack.pos = position; return; } // a window is open: it saves (unchanged behaviour)
+    if (windows.size && !force) { mpvTrack.pos = position; return; } // a window is open: it saves (unchanged behaviour)
     if (freshPhones().some((p) => p.id === id && p.playing)) { mpvTrack.pos = position; return; } // a phone holds this title: its position wins
     if (!snap.ended && Math.abs(movedBy) < 1) return; // not moved since the last save
     const old = pending[id];
@@ -246,7 +246,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     isEnabled: () => isActive(),
     /** True when the user switched the remote on (even if this network isn't trusted). */
     isSwitchedOn: () => !!cfg.enabled,
-    /** One progress check for mpv (also called by the bridge when mpv exits, with final=true). */
+    /** One progress check for mpv (also called by the bridge when mpv exits, with final=true; force=true on shutdown: the window is going away too). */
     mpvSaveTick,
     /** Starts the network check. Called when the server starts (never by `vite build`). */
     start: () => { mpvTimer(); ensureNetTimer(); if (cfg.enabled) refreshNet(true).catch(() => {}); },

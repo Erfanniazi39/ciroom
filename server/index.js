@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { createCiRoom } from "./lib/mpv-bridge.js";
 import { handleSmoke } from "./lib/smoke.js";
 import { DATA_DIR, isMediaRoot, savedMediaRoot } from "./lib/paths.js";
+import { closeDb } from "./lib/userdb.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIROOM_PORT) || 1420;
@@ -71,6 +72,7 @@ function serveStatic(/** @type {http.IncomingMessage} */ req, /** @type {http.Se
 const app = createCiRoom(MEDIA_ROOT);
 const server = http.createServer(async (req, res) => {
   if (await handleSmoke(req, res).catch(() => false)) return;
+  if (req.method === "POST" && String(req.url).split("?")[0] === "/api/shutdown") return handleShutdown(req, res);
   app.handle(req, res, () => serveStatic(req, res)).catch(() => { if (!res.headersSent) { res.statusCode = 500; res.end(); } });
 });
 /** @type {Set<import("node:net").Socket>} */
@@ -101,10 +103,34 @@ app.onNetworkChange(() => {
   // Switching off: drop connections from other devices that are still open (keep-alive).
   if (host === "127.0.0.1") for (const c of conns) if (!/^(127\.|::1$|::ffff:127\.)/.test(c.remoteAddress ?? "")) c.destroy();
 });
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { server.close(); process.exit(0); });
+
+// ── Clean shutdown ──────────────────────────────────────────────────────────────────────────
+// Runs once, whatever asks (signal, the app closing our stdin, POST /api/shutdown), and always ends within 3 s.
+let shuttingDown = false;
+async function shutdown(/** @type {string} */ reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[ciroom] shutting down (${reason})`);
+  setTimeout(() => process.exit(0), 3000); // hard deadline: nothing below may keep us alive
+  try { await app.shutdown(); } catch (e) { console.warn("[ciroom] shutdown: mpv:", e instanceof Error ? e.message : e); } // 1. mpv: last position, then quit
+  try { closeDb(); } catch (e) { console.warn("[ciroom] shutdown: database:", e instanceof Error ? e.message : e); } // 2. database: checkpoint + close (worker threads need no step: they end with the process)
+  try { server.close(); server.closeAllConnections(); } catch { /* closing */ } // 3. event streams and keep-alive connections
+  process.exit(0);
+}
+/** Loopback only, JSON only (a web page on another site can't send that without a CORS preflight, which we never grant), and our own Host. */
+function handleShutdown(/** @type {http.IncomingMessage} */ req, /** @type {http.ServerResponse} */ res) {
+  const ip = String(req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
+  const hostOk = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(String(req.headers.host ?? ""));
+  const jsonOk = /^application\/json/i.test(String(req.headers["content-type"] ?? ""));
+  if ((ip !== "127.0.0.1" && ip !== "::1") || !hostOk || !jsonOk) { res.statusCode = 403; res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ error: "Not allowed from this device" })); }
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify({ ok: true }), () => { void shutdown("request"); });
+}
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { void shutdown(sig); });
 // Started by the installed app: quit when the app ends (its end of this pipe closes, even after a crash).
 if (process.env.CIROOM_EXIT_WITH_STDIN === "1") {
-  process.stdin.on("end", () => process.exit(0));
-  process.stdin.on("error", () => process.exit(0));
+  process.stdin.on("end", () => { void shutdown("app closed"); });
+  process.stdin.on("error", () => { void shutdown("app closed"); });
   process.stdin.resume();
 }

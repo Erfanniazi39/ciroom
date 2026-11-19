@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
+import { LOCAL_DIR } from "./paths.js";
 
 const DB_FILE = path.join(DATA_DIR, "ciroom.db");
 const BACKUP_DIR = path.join(DATA_DIR, "backups");
@@ -63,6 +64,7 @@ const USER_SCALARS = ["volume", "levelling"];
 let db = /** @type {any} */ (null);
 async function open() {
   if (db) return db;
+  if (closed) throw new Error("CiRoom is shutting down");
   const { DatabaseSync } = await import("node:sqlite");
   fs.mkdirSync(DATA_DIR, { recursive: true });
   db = new DatabaseSync(DB_FILE);
@@ -75,20 +77,38 @@ async function open() {
   return db;
 }
 
-/** One backup a day (VACUUM INTO: a consistent copy), keeping the last 7. */
+/** Backups on this system's own disk (LOCAL_DIR): the data folder may sit on the shared NTFS drive, which has been damaged before. */
+const LOCAL_BACKUP_DIR = path.join(LOCAL_DIR, "backups");
+const BACKUP_NAME = /^ciroom-\d{4}-\d{2}-\d{2}\.db$/;
+
+/** One consistent copy (VACUUM INTO) per day into `dir`, keeping the newest `keep`. */
+function backupInto(/** @type {string} */ dir, /** @type {number} */ keep) {
+  fs.mkdirSync(dir, { recursive: true });
+  const d = new Date();
+  const name = `ciroom-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}.db`;
+  const file = path.join(dir, name);
+  if (fs.existsSync(file)) return;
+  db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+  try { fs.chmodSync(file, 0o600); } catch { /* not fatal */ }
+  for (const f of fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f)).sort().slice(0, -keep)) fs.unlinkSync(path.join(dir, f));
+}
+
+/** One backup a day, keeping the last 7 next to the data, plus the last 3 on this system's own disk when that is a different folder. */
 function backup() {
-  try {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const d = new Date();
-    const name = `ciroom-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}.db`;
-    const file = path.join(BACKUP_DIR, name);
-    if (fs.existsSync(file) || !imported()) return;
-    db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
-    const old = fs.readdirSync(BACKUP_DIR).filter((f) => /^ciroom-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort().slice(0, -7);
-    for (const f of old) fs.unlinkSync(path.join(BACKUP_DIR, f));
-  } catch (e) {
-    console.warn("[ciroom] database backup failed:", e instanceof Error ? e.message : e);
-  }
+  if (!imported()) return;
+  try { backupInto(BACKUP_DIR, 7); } catch (e) { console.warn("[ciroom] database backup failed:", e instanceof Error ? e.message : e); }
+  if (path.resolve(LOCAL_DIR) === path.resolve(DATA_DIR)) return;
+  try { backupInto(LOCAL_BACKUP_DIR, 3); } catch (e) { console.warn("[ciroom] second database backup failed:", e instanceof Error ? e.message : e); }
+}
+
+let closed = false;
+/** Shutdown: fold the write-ahead log into the database file and close it, so no .db-wal is left on the shared drive. Never reopens. */
+export function closeDb() {
+  closed = true;
+  if (!db) return;
+  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* busy or already closed */ }
+  try { db.close(); } catch { /* already closed */ }
+  db = null;
 }
 
 const imported = () => !!db.prepare("SELECT value FROM meta WHERE key = 'imported_at'").get();
