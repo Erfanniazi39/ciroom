@@ -18,7 +18,7 @@ import net from "node:net";
 import path from "node:path";
 import { artworkRoutes } from "./artwork-store.js";
 import { subtitleLanguage, subtitlesFor } from "./subtitles.js";
-import { cachedGain, levelFilter, measureGainInBackground, streamRoutes } from "./stream.js";
+import { cachedGain, encoderStatus, levelFilter, measureGainInBackground, streamRoutes } from "./stream.js";
 import { metadataRoutes } from "./metadata.js";
 import { scannerRoutes } from "./scanner.js";
 import { subtitleSearchRoutes } from "./subtitle-search.js";
@@ -362,7 +362,7 @@ export function createCiRoom(mediaRoot) {
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store");
-          res.end(JSON.stringify({ tools: await checkTools(String(req.url).includes("fresh=1")), storage: checkWritable(DATA_DIR) }));
+          res.end(JSON.stringify({ tools: await checkTools(String(req.url).includes("fresh=1")), storage: checkWritable(DATA_DIR), encoder: await encoderStatus() }));
           return;
         }
         if (!onThisPc) {

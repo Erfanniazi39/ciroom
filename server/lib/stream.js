@@ -181,6 +181,30 @@ function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** 
   });
 }
 
+// ── Hardware encoding (VA-API: Intel/AMD GPU, Linux only) ──────────────────────────────────────────
+// A software x264 transcode of a 10-bit HEVC file needs ~5 cores; the GPU does it for ~5 % of one. Detected once with a
+// 1-second test encode; CIROOM_NO_VAAPI=1 turns it off. If a VA-API encode fails before sending anything, VA-API is
+// switched off for the rest of the session and that stream is redone with x264.
+/** @type {Promise<string | null> | null} */ let vaapiDev = null;
+let vaapiBroken = false;
+async function detectVaapi() {
+  if (process.platform === "win32" || process.env.CIROOM_NO_VAAPI === "1") return null;
+  let devices = [];
+  try { devices = process.env.CIROOM_VAAPI_DEVICE ? [process.env.CIROOM_VAAPI_DEVICE] : fs.readdirSync("/dev/dri").filter((n) => /^renderD\d+$/.test(n)).sort().map((n) => `/dev/dri/${n}`); } catch { return null; }
+  for (const dev of devices) {
+    try {
+      await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-vaapi_device", dev, "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=1", "-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-global_quality", "26", "-f", "null", "-"], { timeout: 10_000 });
+      return dev;
+    } catch { /* this device can't encode: try the next */ }
+  }
+  return null;
+}
+const vaapiDevice = () => (vaapiDev ??= detectVaapi().catch(() => null));
+/** "vaapi" when transcodes run on the GPU, else "cpu". */
+export async function encoderStatus() { return (await vaapiDevice()) && !vaapiBroken ? "vaapi" : "cpu"; }
+/** Source codecs the GPU can decode too (others are decoded in software, then uploaded). */
+const VAAPI_DECODE = new Set(["h264", "hevc", "vp9", "mpeg2video", "vc1"]);
+
 /** "High", 31 → "avc1.64001f". */
 function avc1(/** @type {string|undefined} */ profile, /** @type {number|undefined} */ level) {
   const p = /** @type {Record<string,string>} */ ({ "Constrained Baseline": "4240", Baseline: "4200", Main: "4d00", High: "6400", "High 10": "6e00" })[profile ?? ""] ?? "6400";
@@ -325,14 +349,27 @@ export function streamRoutes(resolveVideo) {
       if (u.pathname === "/api/stream") {
         const info = await probe(file);
         const t = Math.max(0, Number(u.searchParams.get("t")) || 0);
-        const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
-        if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
-        args.push("-i", file, "-map", "0:v:0", "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
         const low = wantsLow(u);
         const exact = u.searchParams.get("mode") === "transcode"; // the player's keyframe lookup failed: re-encode this stream so it starts exactly at t
-        if (low) args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1", "-vf", "scale=-2:'min(480,ih)'", "-g", "48");
-        else if (info.copyVideo && !exact) args.push("-c:v", "copy");
-        else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
+        const copying = !low && info.copyVideo && !exact;
+        const vdev = copying || vaapiBroken ? null : await vaapiDevice();
+        /** Everything up to the audio options. useVa: encode on the GPU (h264_vaapi, constant quality: same GOP, profile and level as x264). */
+        const buildArgs = (/** @type {boolean} */ useVa) => {
+          const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
+          if (useVa && vdev) args.push("-vaapi_device", vdev, ...(VAAPI_DECODE.has(String(info.video)) ? ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"] : []));
+          if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
+          args.push("-i", file, "-map", "0:v:0", "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
+          const h = low ? 480 : 720;
+          if (copying) args.push("-c:v", "copy");
+          else if (useVa && vdev) {
+            const scale = `scale_vaapi=w=-2:h='min(${h},ih)':format=nv12`;
+            args.push("-vf", VAAPI_DECODE.has(String(info.video)) ? scale : `format=nv12,hwupload,${scale}`,
+              "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-global_quality", low ? "30" : "26", "-profile:v", "high", "-level", low ? "31" : "40", "-g", "48");
+          }
+          else if (low) args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1", "-vf", "scale=-2:'min(480,ih)'", "-g", "48");
+          else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
+          return args;
+        };
         const wantLevel = u.searchParams.get("level") !== "0";
         const known = wantLevel ? cachedGain(file) : undefined;
         if (wantLevel && known === undefined) measureGainInBackground(file); // this stream starts unlevelled; the next load has the gain
@@ -340,21 +377,37 @@ export function streamRoutes(resolveVideo) {
         // Audio is ALWAYS re-encoded (levelling only adds the gain filter). Copying the source audio untouched makes
         // WebKitGTK's MediaSource freeze the whole page (99% CPU, 2+ GB, never recovers) on large files, e.g. movies;
         // re-encoded audio is solid. 192k AAC stereo is transparent for this library (all stereo AAC/Opus).
-        if (info.hasAudio) args.push(...(level ? ["-af", level] : []), "-c:a", "aac", "-b:a", low ? "96k" : "192k", "-ac", "2");
-        args.push("-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
-
-        const ff = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
-        let err = "";
-        ff.stderr.on("data", (d) => { if (err.length < 2000) err += d; });
+        const tail = [...(info.hasAudio ? [...(level ? ["-af", level] : []), "-c:a", "aac", "-b:a", low ? "96k" : "192k", "-ac", "2"] : []),
+          "-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"];
         res.statusCode = 200;
         res.setHeader("Content-Type", "video/mp4");
         res.setHeader("Cache-Control", "no-store");
         res.setHeader("X-Stream-Mode", `${info.copyVideo && !low && !exact ? "copy" : low ? "low" : "transcode"}/aac${level ? " levelled" : wantLevel && known === undefined ? " unlevelled-pending" : ""}`);
-        ff.stdout.pipe(res);
-        const stop = () => { if (ff.exitCode === null) ff.kill("SIGKILL"); };
+        /** @param {boolean} useVa */
+        const launch = (useVa) => {
+          res.setHeader("X-Encoder", copying ? "copy" : useVa && vdev ? "vaapi" : "x264");
+          const ff = spawn("ffmpeg", [...buildArgs(useVa), ...tail], { stdio: ["ignore", "pipe", "pipe"] });
+          let err = "", sent = 0;
+          ff.stderr.on("data", (d) => { if (err.length < 2000) err += d; });
+          ff.stdout.on("data", (c) => { sent += c.length; });
+          ff.stdout.pipe(res, { end: false });
+          ff.on("close", (code, signal) => {
+            if (useVa && vdev && code && !signal && !sent && !res.destroyed) {
+              // The GPU encode failed before sending anything: don't use it again this session, redo this stream with x264.
+              if (!vaapiBroken) console.warn("[stream] VA-API encode failed, using x264 from now on:", err.trim().split("\n").pop());
+              vaapiBroken = true;
+              cur = launch(false);
+              return;
+            }
+            if (code && code !== 255 && err) console.error("[stream] ffmpeg:", err.trim());
+            if (!res.writableEnded) res.end();
+          });
+          return ff;
+        };
+        let cur = launch(!!vdev);
+        const stop = () => { if (cur.exitCode === null && cur.signalCode === null) cur.kill("SIGKILL"); };
         req.on("close", stop);
         res.on("close", stop);
-        ff.on("exit", (code) => { if (code && code !== 255 && err) console.error("[stream] ffmpeg:", err.trim()); });
         return true;
       }
 

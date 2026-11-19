@@ -14,6 +14,14 @@ import { useSettings } from "@/store/settings";
 import { useUser } from "@/store/user";
 import type { LibraryRoot } from "@/types/media";
 
+/** Read-only: whether videos that need converting (10-bit HEVC, 480p low-data) are converted on the GPU or the CPU. */
+function EncoderStatus() {
+  const [enc, setEnc] = useState<string | null>(null);
+  useEffect(() => { fetch("/api/system/tools").then((r) => (r.ok ? r.json() : null)).then((d) => setEnc(d?.encoder ?? null)).catch(() => undefined); }, []);
+  if (!enc) return null;
+  return <span className="text-[14px] text-fg-muted">{enc === "vaapi" ? "On (graphics chip, VA-API)" : "Off (processor)"}</span>;
+}
+
 /** Shows a warning when ffmpeg, ffprobe or mpv can't be run (dev/deps.js). Nothing when all is well. */
 function MissingTools() {
   const [tools, setTools] = useState<{ name: string; ok: boolean; needed: string; help: string | null }[] | null>(null);
@@ -139,6 +147,9 @@ export default function Settings() {
         </Row>
         <Row label="Volume levelling" hint="Boost quiet videos to a normal loudness, in both players. Takes effect the next time a video starts.">
           <Toggle on={levelling} onChange={setLevelling} label="Volume levelling" />
+        </Row>
+        <Row label="Hardware encoding" hint="Videos the page player has to convert (for example 10-bit HEVC, or the low-data setting) are converted on the graphics chip when it can, which keeps the processor free. Nothing to set up.">
+          <EncoderStatus />
         </Row>
         <Row label="Skip intro and credits" hint="CiRoom finds each series' intro and end credits by comparing the episodes of a season, in the background. A “Skip intro” / “Next episode” button appears while they play (key S), in both players and on the phone remote.">
           <SkipIntroStatus />
