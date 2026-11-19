@@ -1,7 +1,7 @@
 import { Check, CircleAlert, FileText, Loader2, RefreshCw, Star } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/api";
-import { metaApi } from "@/api/meta";
+import { metaApi, type UnmatchedTitle } from "@/api/meta";
 import { relativeDate } from "@/lib/format";
 import { useLibrary } from "@/store/library";
 import type { Title } from "@/types/media";
@@ -30,6 +30,10 @@ export function MetadataSettings() {
   const [imdbNote, setImdbNote] = useState<string | null>(null);
   const [fixing, setFixing] = useState<Title | null>(null);
   const cancel = useRef(false);
+  // Titles TMDB could not match with confidence: nothing was saved for them, the user picks one ("Fix match").
+  const [unmatched, setUnmatched] = useState<Record<string, UnmatchedTitle>>({});
+  const loadUnmatched = () => metaApi.unmatched().then(setUnmatched).catch(() => undefined);
+  useEffect(() => { void loadUnmatched(); }, []);
 
   // Match against the FOLDER title (the composed title may already be TMDB's).
   const [base, setBase] = useState<Awaited<ReturnType<typeof api.getLibrary>> | null>(null);
@@ -67,6 +71,7 @@ export function MetadataSettings() {
       }
     }
     setProgress((p) => ({ ...p, done: p.total, current: "" }));
+    void loadUnmatched();
     if (!cancel.current) await refreshImdb(true);
     setRunning(null);
   };
@@ -85,7 +90,8 @@ export function MetadataSettings() {
     }
   };
 
-  const failed = outcomes.filter((o) => !o.ok);
+  const failed = outcomes.filter((o) => !o.ok && !unmatched[o.id]); // the unmatched ones have their own list below
+  const unmatchedTitles = titles.filter((t) => unmatched[t.id]);
   const matchList = titles.filter((t) => meta[t.id]);
 
   return (
@@ -146,6 +152,24 @@ export function MetadataSettings() {
           </ul>
         )}
 
+        {unmatchedTitles.length > 0 && (
+          <div className="mt-4">
+            <div className="text-[13px] font-medium">No confident match ({unmatchedTitles.length})</div>
+            <ul className="mt-2 space-y-1.5">
+              {unmatchedTitles.map((t) => (
+                <li key={t.id} className="flex items-center gap-3 rounded-xl bg-accent/[.06] px-3 py-2">
+                  <CircleAlert size={16} className="shrink-0 text-accent" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[14px] font-medium">{t.title}</div>
+                    <div className="meta truncate text-[12px]">{unmatched[t.id].reason}{unmatched[t.id].candidates[0] ? ` · closest: ${unmatched[t.id].candidates.slice(0, 3).map((c) => `${c.title}${c.year ? ` (${c.year})` : ""}`).join(", ")}` : ""}</div>
+                  </div>
+                  <Button onClick={() => setFixing(t)}>Choose…</Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {matchList.length > 0 && (
           <details className="group mt-5">
             <summary className="meta cursor-pointer select-none hover:text-fg">Check matches ({matchList.length})</summary>
@@ -176,7 +200,7 @@ export function MetadataSettings() {
         <ArtworkDialog
           open
           mode="match"
-          onClose={() => setFixing(null)}
+          onClose={() => { setFixing(null); void loadUnmatched(); void reloadMeta(); }}
           id={fixing.id}
           type={fixing.kind === "movie" ? "movie" : "tv"}
           title={requestFor(fixing).query}

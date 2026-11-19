@@ -21,6 +21,7 @@ import path from "node:path";
 import { DATA_DIR as PATHS_DATA_DIR } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { assertPublicHost } from "./netguard.js";
+import { bestMatch, norm, similarity } from "./match.js";
 
 const DATA = PATHS_DATA_DIR;
 const ART_DIR = path.join(DATA, "artwork");
@@ -55,16 +56,24 @@ export async function tmdb(/** @type {string} */ pathAndQuery) {
   return r.json();
 }
 
-export function norm(/** @type {string} */ s) {
-  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").replace(/^(the|a|an) /, "").trim();
+export { norm, similarity };
+
+/** TMDB search → [{ tmdbId, title, year, overview, poster, hasBackdrop }], with the year dropped if it finds nothing. */
+export async function searchTmdb(/** @type {"movie"|"tv"} */ type, /** @type {string} */ query, /** @type {number=} */ year) {
+  const q = new URLSearchParams({ query, include_adult: "false" });
+  if (year) q.set(type === "movie" ? "year" : "first_air_date_year", String(year));
+  let data = await tmdb(`/search/${type}?${q}`);
+  if (!data.results?.length && year) { q.delete(type === "movie" ? "year" : "first_air_date_year"); data = await tmdb(`/search/${type}?${q}`); }
+  return (data.results || []).slice(0, 12).map((/** @type {any} */ r) => ({
+    tmdbId: r.id,
+    title: r.title ?? r.name,
+    year: Number((r.release_date ?? r.first_air_date ?? "").slice(0, 4)) || null,
+    overview: r.overview,
+    poster: r.poster_path ? `${IMG}/w185${r.poster_path}` : null,
+    hasBackdrop: !!r.backdrop_path,
+  }));
 }
-/** Token-overlap similarity, 0–1. Good enough for titles. */
-export function similarity(/** @type {string} */ a, /** @type {string} */ b) {
-  const A = new Set(norm(a).split(" ")), B = new Set(norm(b).split(" "));
-  if (norm(a) === norm(b)) return 1;
-  const inter = [...A].filter((x) => B.has(x)).length;
-  return (2 * inter) / (A.size + B.size || 1);
-}
+
 
 export function artworkRoutes() {
   fs.mkdirSync(ART_DIR, { recursive: true });
@@ -102,21 +111,6 @@ export function artworkRoutes() {
     const mime = (r.headers.get("content-type") || "").split(";")[0].trim();
     if (!EXT[mime]) throw new Error("That link is not an image");
     return { buf: Buffer.from(await r.arrayBuffer()), mime };
-  }
-
-  async function search(/** @type {"movie"|"tv"} */ type, /** @type {string} */ query, /** @type {number=} */ year) {
-    const q = new URLSearchParams({ query, include_adult: "false" });
-    if (year) q.set(type === "movie" ? "year" : "first_air_date_year", String(year));
-    let data = await tmdb(`/search/${type}?${q}`);
-    if (!data.results?.length && year) { q.delete(type === "movie" ? "year" : "first_air_date_year"); data = await tmdb(`/search/${type}?${q}`); }
-    return (data.results || []).slice(0, 12).map((/** @type {any} */ r) => ({
-      tmdbId: r.id,
-      title: r.title ?? r.name,
-      year: Number((r.release_date ?? r.first_air_date ?? "").slice(0, 4)) || null,
-      overview: r.overview,
-      poster: r.poster_path ? `${IMG}/w185${r.poster_path}` : null,
-      hasBackdrop: !!r.backdrop_path,
-    }));
   }
 
   async function apply(/** @type {string} */ id, /** @type {"movie"|"tv"} */ type, /** @type {number} */ tmdbId) {
@@ -187,7 +181,7 @@ export function artworkRoutes() {
 
       if (url === "/api/tmdb/search" && req.method === "POST") {
         const { type, query, year } = await body(req);
-        json(200, await search(type === "tv" ? "tv" : "movie", String(query), year)); return true;
+        json(200, await searchTmdb(type === "tv" ? "tv" : "movie", String(query), year)); return true;
       }
       if (url === "/api/tmdb/apply" && req.method === "POST") {
         const { id, type, tmdbId } = await body(req);
@@ -197,14 +191,10 @@ export function artworkRoutes() {
       if (url === "/api/tmdb/match" && req.method === "POST") {
         const { id, type, title, year } = await body(req);
         const t = type === "tv" ? "tv" : "movie";
-        const results = await search(t, String(title), year);
-        const scored = results.map((/** @type {any} */ r) => ({
-          r, score: similarity(title, r.title) * 0.75 + (year && r.year ? (r.year === year ? 0.25 : Math.abs(r.year - year) <= 1 ? 0.12 : 0) : 0.1),
-        })).sort((/** @type {any} */ a, /** @type {any} */ b) => b.score - a.score);
-        const best = scored[0];
-        if (!best || best.score < 0.6) { json(200, { matched: false, reason: best ? `Best guess “${best.r.title}” was not confident enough` : "No results" }); return true; }
-        await apply(String(id), t, best.r.tmdbId);
-        json(200, { matched: true, title: best.r.title, year: best.r.year, score: Number(best.score.toFixed(2)), art: publicIndex()[id] }); return true;
+        const m = await bestMatch(searchTmdb, t, String(title), year);
+        if (!m.matched) { json(200, { matched: false, reason: m.reason, candidates: m.candidates }); return true; }
+        await apply(String(id), t, m.best.tmdbId);
+        json(200, { matched: true, title: m.best.title, year: m.best.year, score: Number(m.score.toFixed(2)), art: publicIndex()[id] }); return true;
       }
       return false;
     },

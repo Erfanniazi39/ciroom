@@ -44,6 +44,11 @@ export interface Trailer {
   site: "YouTube";
 }
 export type MetaIndex = Record<string, MetaEntry>;
+export interface MatchCandidate { tmdbId: number; title: string; year: number | null; score: number }
+export interface UnmatchedTitle { query: string; year: number | null; type: "movie" | "tv"; reason: string; candidates: MatchCandidate[]; at: string }
+export class NoConfidentMatch extends Error {
+  constructor(public reason: string, public candidates: MatchCandidate[]) { super(`No confident match. ${reason}`); }
+}
 
 export interface FileFacts {
   file?: string;
@@ -73,7 +78,14 @@ async function call<T>(url: string, body?: unknown): Promise<T> {
 
 export const metaApi = {
   index: () => call<MetaIndex>("/api/meta"),
-  fetch: (req: { id: string; type: "movie" | "tv"; query: string; year?: number; seasons?: number[]; tmdbId?: number }) => call<MetaEntry>("/api/meta/fetch", req),
+  /** Throws NoConfidentMatch when TMDB's best guess is too weak: nothing is saved, the title is listed for "Fix match". */
+  fetch: async (req: { id: string; type: "movie" | "tv"; query: string; year?: number; seasons?: number[]; tmdbId?: number }): Promise<MetaEntry> => {
+    const r = await call<MetaEntry | { matched: false; reason: string; candidates: MatchCandidate[] }>("/api/meta/fetch", req);
+    if ("matched" in r && r.matched === false) throw new NoConfidentMatch(r.reason, r.candidates);
+    return r as MetaEntry;
+  },
+  /** Titles without a confident TMDB match (id → what was tried). */
+  unmatched: () => call<Record<string, UnmatchedTitle>>("/api/meta/unmatched"),
   imdb: () => call<{ updated: number; missing: string[]; datasetDate: string }>("/api/meta/imdb", {}),
   reset: (id: string) => call<object>("/api/meta/reset", { id }),
   trailer: (id: string) => call<{ trailer: Trailer | null }>("/api/meta/trailer", { id }).then((r) => r.trailer),

@@ -8,7 +8,9 @@
  *   title.ratings.tsv.gz     IMDb dataset (tconst, averageRating, numVotes), refreshed at most daily
  *
  *   GET  /api/meta                                         → index
- *   POST /api/meta/fetch { id, type, query, year?, seasons?, tmdbId? }  → entry (tmdbId given = manual fix, locked)
+ *   GET  /api/meta/unmatched                               → titles without a confident match (for "fix match")
+ *   POST /api/meta/fetch { id, type, query, year?, seasons?, tmdbId? }  → entry (tmdbId given = manual fix, locked),
+ *                                                  or { matched:false, reason, candidates } when the best guess scores under MATCH_MIN (nothing saved)
  *   POST /api/meta/imdb                                    → { updated, missing, datasetDate }
  *   POST /api/meta/reset { id }                            → {}
  */
@@ -16,11 +18,14 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import readline from "node:readline";
-import { DATA_DIR, readArtIndex, similarity, tmdb } from "./artwork-store.js";
+import { DATA_DIR, readArtIndex, searchTmdb, tmdb } from "./artwork-store.js";
+import { bestMatch } from "./match.js";
 import { writeJsonAtomic } from "./fsutil.js";
 
 const META_DIR = path.join(DATA_DIR, "metadata");
 const INDEX = path.join(META_DIR, "index.json");
+/** Titles TMDB could not match with confidence (nothing saved for them): id → { query, year, type, reason, candidates, at }. Cleared when a fetch succeeds. */
+const UNMATCHED = path.join(META_DIR, "unmatched.json");
 const IMDB_FILE = path.join(META_DIR, "title.ratings.tsv.gz");
 const IMDB_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz";
 const DAY = 86_400_000;
@@ -28,20 +33,6 @@ const DAY = 86_400_000;
 const readJson = (/** @type {string} */ f, /** @type {any} */ dflt) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return dflt; } };
 const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v, { space: 1 });;
 const yearOf = (/** @type {string|undefined|null} */ d) => (d ? Number(d.slice(0, 4)) || undefined : undefined);
-
-/** Pick the best TMDB result for a folder title (+ year when the folder has one). */
-async function searchBest(/** @type {"movie"|"tv"} */ type, /** @type {string} */ query, /** @type {number=} */ year) {
-  const q = new URLSearchParams({ query, include_adult: "false" });
-  if (year) q.set(type === "movie" ? "year" : "first_air_date_year", String(year));
-  let data = await tmdb(`/search/${type}?${q}`);
-  if (!data.results?.length && year) { q.delete(type === "movie" ? "year" : "first_air_date_year"); data = await tmdb(`/search/${type}?${q}`); }
-  const scored = (data.results || []).slice(0, 10).map((/** @type {any} */ r, /** @type {number} */ i) => {
-    const title = r.title ?? r.name, y = yearOf(r.release_date ?? r.first_air_date);
-    const yearScore = year && y ? (y === year ? 0.25 : Math.abs(y - year) <= 1 ? 0.12 : 0) : 0.1;
-    return { r, title, year: y, score: similarity(query, title) * 0.75 + yearScore - i * 0.01 }; // TMDB order ≈ popularity
-  }).sort((/** @type {any} */ a, /** @type {any} */ b) => b.score - a.score);
-  return scored[0] ?? null;
-}
 
 export function metadataRoutes() {
   fs.mkdirSync(META_DIR, { recursive: true });
@@ -95,9 +86,15 @@ export function metadataRoutes() {
     else if (prev?.locked && prev.tmdbId) { tmdbId = prev.tmdbId; matchedBy = prev.matchedBy; }
     else if (readArtIndex()[req.id]?.tmdbId) { tmdbId = readArtIndex()[req.id].tmdbId; matchedBy = "artwork"; }
     else {
-      const best = await searchBest(req.type, req.query, req.year);
-      if (!best) throw new Error(`TMDB has no results for “${req.query}”`);
-      tmdbId = best.r.id; matchedBy = "search"; confidence = Number(best.score.toFixed(2)); matchedTitle = `${best.title}${best.year ? ` (${best.year})` : ""}`;
+      const m = await bestMatch(searchTmdb, req.type, req.query, req.year);
+      if (!m.matched) {
+        // Not confident: save nothing (an existing entry stays as it is) and list the title for a manual choice.
+        const un = readJson(UNMATCHED, {});
+        un[req.id] = { query: req.query, year: req.year ?? null, type: req.type, reason: m.reason, candidates: m.candidates, at: new Date().toISOString() };
+        writeJson(UNMATCHED, un);
+        return { matched: false, reason: m.reason, candidates: m.candidates };
+      }
+      tmdbId = m.best.tmdbId; matchedBy = "search"; confidence = m.score; matchedTitle = `${m.best.title}${m.best.year ? ` (${m.best.year})` : ""}`;
     }
 
     const d = await tmdb(`/${req.type}/${tmdbId}?append_to_response=credits,external_ids,videos&include_video_language=en,null`);
@@ -144,6 +141,8 @@ export function metadataRoutes() {
     const all = index();
     all[req.id] = entry;
     writeJson(INDEX, all);
+    const un = readJson(UNMATCHED, {});
+    if (un[req.id]) { delete un[req.id]; writeJson(UNMATCHED, un); } // matched now (or chosen by hand)
     return entry;
   }
 
@@ -184,6 +183,7 @@ export function metadataRoutes() {
     async handle(/** @type {any} */ req, /** @type {any} */ res, /** @type {(r:any)=>Promise<any>} */ body, /** @type {(c:number,d:unknown)=>void} */ json) {
       const url = String(req.url);
       if (url === "/api/meta" && req.method === "GET") { json(200, index()); return true; }
+      if (url === "/api/meta/unmatched" && req.method === "GET") { json(200, readJson(UNMATCHED, {})); return true; }
       if (url === "/api/meta/fetch" && req.method === "POST") {
         const b = await body(req);
         if (!b.id || !b.query) throw new Error("id and query are required");
