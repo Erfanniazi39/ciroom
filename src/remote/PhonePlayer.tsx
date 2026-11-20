@@ -15,6 +15,7 @@ import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { findEpisode } from "@/lib/library";
 import { episodeCode, timecode } from "@/lib/format";
 import { lowStreamMime, MseStream, streamMime, type StreamSource } from "@/lib/mse";
+import { useBackLayer } from "./useBackLayer";
 import { useLibrary } from "@/store/library";
 import { startSubtitle, subPrefFor } from "@/store/settings";
 import type { SubPref } from "@/store/user";
@@ -97,6 +98,16 @@ const post = (url: string, body: unknown, keepalive = false) =>
   );
 
 /** What the PC says it is playing (from /api/remote/events). */
+/** The Android app's bridge (keep the screen on, lock the orientation); absent in a normal browser. */
+interface NativeScreen { keepOn(on: boolean): void; lockPortrait(portrait: boolean): void }
+const nativeScreen = () => (window as unknown as { CiRoomScreen?: NativeScreen }).CiRoomScreen;
+/** Portrait or landscape: the app does it natively (the WebView has no screen.orientation.lock), browsers use the API. */
+async function lockTo(portrait: boolean) {
+  const n = nativeScreen();
+  if (n) { n.lockPortrait(portrait); return; }
+  await (screen.orientation as Orientable).lock?.(portrait ? "portrait" : "landscape");
+}
+
 export interface PcNow { id: string | null; paused: boolean; position: number }
 
 export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }: { id: string; startAt: number; user: PhoneUser | null; pc: PcNow | null; onClose: () => void; onLost: () => void }) {
@@ -122,7 +133,7 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
 
   const portrait = useMediaQuery("(orientation: portrait)");
   const [portraitLock, setPortraitLock] = useState(() => readFlag(LOCK_KEY)); // full screen stays portrait
-  const [lockOk, setLockOk] = useState(() => typeof (screen.orientation as Orientable | undefined)?.lock === "function");
+  const [lockOk, setLockOk] = useState(() => !!nativeScreen() || typeof (screen.orientation as Orientable | undefined)?.lock === "function");
   const [hint, setHint] = useState(false);
   const [stageRef, stageH] = useHeight();
   const [topRef, topH] = useHeight();
@@ -293,6 +304,22 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
   }, [pcPlaying, report, sendState]);
   useEffect(() => { elsewhere.current = false; setTakenByPc(false); }, [curId]);
 
+  // Back closes the open menu first, then (in RemoteApp) the player.
+  useBackLayer(!!menu, () => setMenu(null));
+
+  // The screen stays on while this phone plays. A plain http page has no navigator.wakeLock, so the Android app
+  // offers CiRoomScreen.keepOn; browsers that have a wake lock use that.
+  useEffect(() => {
+    if (paused || ended) return;
+    const native = nativeScreen();
+    let lock: { release(): Promise<void> } | null = null;
+    let gone = false;
+    try { native?.keepOn(true); } catch { /* ignore */ }
+    const wl = (navigator as unknown as { wakeLock?: { request(t: "screen"): Promise<{ release(): Promise<void> }> } }).wakeLock;
+    void wl?.request("screen").then((l) => { if (gone) void l.release().catch(() => undefined); else lock = l; }).catch(() => undefined);
+    return () => { gone = true; try { native?.keepOn(false); } catch { /* ignore */ } void lock?.release().catch(() => undefined); };
+  }, [paused, ended]);
+
   // Fullscreen state, and landscape while in it (Android Chrome allows the lock only in fullscreen).
   useEffect(() => {
     const on = () => {
@@ -307,13 +334,13 @@ export function PhonePlayer({ id: firstId, startAt, user, pc, onClose, onLost }:
     try {
       if (document.fullscreenElement) { await document.exitFullscreen(); return; }
       await box.current?.requestFullscreen();
-      try { await (screen.orientation as Orientable).lock?.(readFlag(LOCK_KEY) ? "portrait" : "landscape"); } catch { /* the phone may not allow it */ }
+      try { await lockTo(readFlag(LOCK_KEY)); } catch { /* the phone may not allow it */ }
     } catch { say("This browser didn't allow fullscreen."); }
   };
   /** In full screen: switch between landscape and portrait. The choice is remembered. */
   const toggleLock = async () => {
     const to = !portraitLock;
-    try { await (screen.orientation as Orientable).lock?.(to ? "portrait" : "landscape"); setPortraitLock(to); saveFlag(LOCK_KEY, to); }
+    try { await lockTo(to); setPortraitLock(to); saveFlag(LOCK_KEY, to); }
     catch { setLockOk(false); } // this phone/browser can't lock: hide the button
   };
 

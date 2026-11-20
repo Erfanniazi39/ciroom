@@ -12,6 +12,7 @@ import { continueWatching, findEpisode, nextUp } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import type { Episode, Movie, Progress, Series } from "@/types/media";
 import { PhonePlayer, type PhoneUser } from "./PhonePlayer";
+import { useBackLayer } from "./useBackLayer";
 
 interface Now {
   source: "page" | "mpv";
@@ -161,6 +162,10 @@ function Remote({ onLost }: { onLost: () => void }) {
     const resume = at ?? (!fromStart && p && !p.watched && p.position > 30 ? p.position : 0);
     setWatching({ id, startAt: resume, user: live.user });
   }, [live.user]);
+
+  // Back (the phone's button): player → title → Library → Remote; never straight out of the page.
+  useBackLayer(tab === "library", () => setTab("remote"));
+  useBackLayer(!!watching, () => setWatching(null));
 
   const status = !linked ? { text: "Can't reach the PC", ok: false } : !live.online ? { text: "CiRoom is closed on the PC", ok: false } : { text: "Connected", ok: true };
 
@@ -409,6 +414,8 @@ function LibraryPanel({ lib, progress, play, watch, online }: { lib: Lib; progre
     const needle = q.trim().toLowerCase();
     return [...src].filter((t) => !needle || t.title.toLowerCase().includes(needle)).sort((a, b) => a.title.localeCompare(b.title));
   }, [lib, kind, q]);
+
+  useBackLayer(!!open, () => setOpen(null));
 
   if (!lib) return <div className="flex justify-center pt-20"><Loader2 className="animate-spin text-fg-subtle" /></div>;
   if (open) return <Detail title={open} progress={progress} play={play} watch={watch} online={online} onBack={() => setOpen(null)} />;
