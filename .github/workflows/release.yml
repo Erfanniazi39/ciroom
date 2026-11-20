@@ -155,16 +155,17 @@ jobs:
 
   # The Android app (an APK for the user's phone), signed with the Android key. It only adds one file to the draft release:
   # never latest.json (that file is the desktop updater's). A missing secret fails the job, so an unsigned APK is never published.
+  # The signing secrets are given only to the two steps that use them (not to the third-party actions). The log shows only the key's SHA-256 (the DN holds a name).
   android:
     needs: release
     runs-on: ubuntu-latest
-    env:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - name: The signing secrets are all there
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
             if [ -z "${!v}" ]; then echo "::error::The repository secret $v is missing (Settings, Secrets and variables, Actions). Not building an unsigned APK."; exit 1; fi
@@ -191,6 +192,11 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
       - run: npm ci
       - name: Build the signed APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ciroom-android.jks"
           export CIROOM_ANDROID_KEYSTORE="$RUNNER_TEMP/ciroom-android.jks"
@@ -202,7 +208,7 @@ jobs:
           cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk "CiRoom_${version}_android-arm64.apk"
       - name: The APK is signed
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs CiRoom_*_android-arm64.apk | grep -E "Signer #1 certificate (DN|SHA-256)"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs CiRoom_*_android-arm64.apk | grep "Signer #1 certificate SHA-256"
       # gh can't find a draft release by its tag, so look the id up in the list, then talk to the API directly.
       - name: Add the APK to the draft release
         env:

@@ -121,7 +121,7 @@ class MainActivity : TauriActivity() {
         val onPcPage = home != null && webView.url?.startsWith("http") == true && !webView.url!!.startsWith(home)
         when {
           webView.canGoBack() -> webView.goBack()
-          onPcPage -> webView.loadUrl("$home/?noauto=1")
+          onPcPage -> client?.showConnect(webView, "$home/?noauto=1")
           else -> { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
         }
       }
@@ -141,6 +141,17 @@ private class ConnectFallbackClient(private val inner: WebViewClient, firstUrl: 
 
   private fun origin(u: Uri) = "${u.scheme}://${u.authority}"
 
+  private var clearHistoryOnConnect = false
+
+  /**
+   * Shows the Connect page and, once it has loaded, forgets the PC pages behind it. Otherwise connecting again would
+   * leave the old PC page under the new one, and Back at the top of the PC's page would need two presses.
+   */
+  fun showConnect(view: WebView, url: String) {
+    clearHistoryOnConnect = true
+    view.loadUrl(url)
+  }
+
   override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
     if (connectOrigin == null) connectOrigin = origin(Uri.parse(url))
     // A new page: no fullscreen or keep-awake left over from the previous one.
@@ -153,7 +164,7 @@ private class ConnectFallbackClient(private val inner: WebViewClient, firstUrl: 
     val home = connectOrigin
     if (request.isForMainFrame && home != null && origin(request.url) != home) {
       view.stopLoading()
-      view.loadUrl("$home/?error=unreachable")
+      showConnect(view, "$home/?error=unreachable")
       return
     }
     inner.onReceivedError(view, request, error)
@@ -165,7 +176,14 @@ private class ConnectFallbackClient(private val inner: WebViewClient, firstUrl: 
   override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
     inner.shouldOverrideUrlLoading(view, request)
 
-  override fun onPageFinished(view: WebView, url: String) = inner.onPageFinished(view, url)
+  override fun onPageFinished(view: WebView, url: String) {
+    val home = connectOrigin
+    if (clearHistoryOnConnect && home != null && url.startsWith(home)) {
+      clearHistoryOnConnect = false
+      view.clearHistory()
+    }
+    inner.onPageFinished(view, url)
+  }
 }
 
 class PairedCheck(private val activity: MainActivity) {
