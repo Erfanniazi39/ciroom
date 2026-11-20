@@ -7,14 +7,21 @@
 //!
 //! Also: one CiRoom at a time (a second launch focuses the open window), in-app updates (Settings → Updates),
 //! and an app-menu entry for the AppImage.
+//!
+//! Android: a thin client. No server, no updater, no single-instance: the window just opens the bundled
+//! Connect page (android-app/), which then sends the WebView to the PC's own page.
 
+#[cfg(desktop)]
 use std::sync::Mutex;
-use tauri::{Manager, RunEvent, WebviewWindowBuilder};
+use tauri::WebviewWindowBuilder;
+#[cfg(desktop)]
+use tauri::{Manager, RunEvent};
 
 /// The server process, stopped on exit.
+#[cfg(desktop)]
 struct Server(Mutex<Option<std::process::Child>>);
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(desktop, not(debug_assertions)))]
 mod installed {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -310,6 +317,7 @@ code{{display:block;margin-top:.5rem;padding:.6rem .8rem;background:#1a1a22;bord
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
     #[cfg(desktop)]
     {
@@ -324,12 +332,15 @@ pub fn run() {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
     }
+    #[cfg(desktop)]
+    {
+        builder = builder.manage(Server(Mutex::new(None)));
+    }
     let app = builder
-        .manage(Server(Mutex::new(None)))
         .setup(|app| {
             #[allow(unused_mut)]
             let mut cfg = app.config().app.windows.first().cloned().ok_or("no window in tauri.conf.json")?;
-            #[cfg(not(debug_assertions))]
+            #[cfg(all(desktop, not(debug_assertions)))]
             {
                 installed::menu_entry();
                 let url = match installed::start_server(app.handle()) {
@@ -351,6 +362,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while starting CiRoom");
 
+    #[cfg(not(desktop))]
+    app.run(|_, _| {});
+    #[cfg(desktop)]
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             if let Some(mut child) = handle.state::<Server>().0.lock().unwrap().take() {

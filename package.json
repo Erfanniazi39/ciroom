@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "NODE_USE_ENV_PROXY=1 vite",
     "build": "tsc -b && vite build && node scripts/build-party.js",
+    "build:android": "vite build --config vite.android.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",

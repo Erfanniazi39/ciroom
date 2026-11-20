@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-android
 *.log
 .DS_Store
 src-tauri/target
@@ -33,6 +34,7 @@ $RECYCLE.BIN/
 project-state.md
 project-knowledge-archive.md
 improvements.md
+launch-plan.md
 next-session-prompt.md
 docs/CiRoom-Report.md
 docs/*.png
@@ -46,3 +48,9 @@ src-tauri/.cargo/
 .dev-data/
 src-tauri/binaries/
 src-tauri/windows-bin/
+
+# Android app: build output, local SDK paths, signing files
+local.properties
+keystore.properties
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/**/build/
