@@ -14,7 +14,10 @@
         color-scheme: dark;
       }
       * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overscroll-behavior: none; }
+      /* An app, not a web page: nothing selects or pops a menu, except what the user types. */
+      body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      input { -webkit-user-select: text; user-select: text; }
       body { font: 16px/1.5 system-ui, "Noto Sans Arabic", "Noto Naskh Arabic", "Vazirmatn", sans-serif; }
       /* While the camera is open it shows through the page. */
       html:has(body.scanning), body.scanning { background: transparent; }
@@ -42,6 +45,7 @@
       .scan { text-align: center; }
       .frame { width: min(70vw, 18rem); aspect-ratio: 1; margin: 0 auto 1rem; border: 3px solid var(--accent); border-radius: 20px; box-shadow: 0 0 0 100vmax rgb(10 10 13 / .65); }
       .scan .msg { background: rgb(10 10 13 / .8); padding: .6rem .8rem; border-radius: 12px; color: var(--fg); }
+      .about { margin: 0; direction: ltr; text-align: center; color: var(--fg-subtle); font-size: .8rem; }
       bdi { unicode-bidi: isolate; direction: ltr; }
       input[dir="ltr"] { text-align: left; }
     </style>

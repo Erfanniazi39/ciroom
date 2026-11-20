@@ -171,7 +171,7 @@ function Remote({ onLost }: { onLost: () => void }) {
 
   return (
     <>
-      <header className="flex items-center justify-between px-5 pb-2 pt-[max(16px,env(safe-area-inset-top))]">
+      <header className="flex items-center justify-between px-5 pb-2 pt-[max(16px,calc(env(safe-area-inset-top)+6px))]">
         <Logo />
         <span className={cx("flex items-center gap-1.5 rounded-full bg-white/[.06] px-3 py-1 text-xs font-medium", status.ok ? "text-fg-muted" : "text-danger")}>
           {status.ok ? <span className="h-2 w-2 rounded-full bg-success" /> : <WifiOff size={13} />}

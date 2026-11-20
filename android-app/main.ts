@@ -1,6 +1,7 @@
 // The Android app's first screen: finds the user's PC and opens its own page in this WebView.
 // Ways in: scan the QR code from the PC's Settings → Phone remote, type the address, or the saved PC.
 // The check "is CiRoom there?" is done in Rust (src-tauri/src/pc_check.rs): the PC's server sends no CORS headers.
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { cancel, checkPermissions, Format, requestPermissions, scan } from "@tauri-apps/plugin-barcode-scanner";
 import { type Pc, parseAddress, parseQr, pcLabel, pcUrl, readSaved } from "./connect-lib";
@@ -14,6 +15,9 @@ const lang = params.get("lang") === "fa" || params.get("lang") === "en" ? (param
 const T = STRINGS[lang];
 document.documentElement.lang = lang;
 document.documentElement.dir = lang === "fa" ? "rtl" : "ltr";
+
+let version = ""; // the app's own version, filled in a moment after start (the About line shows it when it arrives)
+void getVersion().then((v) => { version = v; document.querySelectorAll(".about bdi.ver").forEach((n) => { n.textContent = v; }); }).catch(() => undefined);
 
 const SAVED_KEY = "ciroom.pc";
 const app = document.getElementById("app")!;
@@ -50,6 +54,13 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEl
   if (cls) n.className = cls;
   n.append(...kids);
   return n;
+}
+/** "CiRoom 0.1.5 · 192.168.1.20:1420": the app's version, and the PC when one is saved. Always left-to-right. */
+function about(pc: Pc | null): HTMLElement {
+  const ver = el("bdi", { class: "ver" }, version);
+  const p = el("p", { class: "about" }, "CiRoom ", ver);
+  if (pc) p.append(" · ", el("bdi", {}, pcLabel(pc)));
+  return p;
 }
 /** A string from the table, with `{host}` shown as a left-to-right address. */
 function text(key: Key, host?: string): (Node | string)[] {
@@ -91,6 +102,7 @@ function home(error?: Key): void {
     button("scan", () => void scanQr(), paired ? "" : "primary"),
     el("div", { class: "or" }, T.or),
     el("div", {}, label, el("div", { class: "row" }, field, button("connect", go))),
+    about(pc),
   );
 }
 
@@ -108,6 +120,7 @@ function failed(pc: Pc | null, status: Status): void {
     el("p", { class: "err", role: "alert" }, ...text(key)),
     ...(pc ? [button("tryAgain", () => void connect(pc), "primary")] : []),
     button("changePc", () => home(), pc ? "" : "primary"),
+    about(pc),
   );
 }
 

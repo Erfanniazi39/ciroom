@@ -1,6 +1,12 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+    <!-- CiRoom is always dark: dark window (no white flash on start), light system-bar icons, dark splash. -->
     <style name="Theme.ciroom" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <item name="android:windowBackground">@color/ciroom_bg</item>
+        <item name="android:colorBackground">@color/ciroom_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowSplashScreenBackground" tools:targetApi="31">@color/ciroom_bg</item>
+        <item name="android:windowSplashScreenIconBackgroundColor" tools:targetApi="33">@color/ic_launcher_background</item>
     </style>
 </resources>

@@ -24,6 +24,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -35,7 +36,11 @@ class MainActivity : TauriActivity() {
   override val handleBackNavigation = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    enableEdgeToEdge()
+    // CiRoom is dark in every phone theme: transparent bars over the dark page, always light icons.
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+      navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+    )
     super.onCreate(savedInstanceState)
   }
 
@@ -68,7 +73,7 @@ class MainActivity : TauriActivity() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
       window.attributes = window.attributes.also { it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT }
     }
-    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT // portrait outside the player (as in the manifest)
     val cb = customViewCallback
     customViewCallback = null
     cb?.onCustomViewHidden()
