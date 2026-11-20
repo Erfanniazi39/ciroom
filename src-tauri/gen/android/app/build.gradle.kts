@@ -70,7 +70,11 @@ rust {
     rootDirRel = "../../../"
 }
 
+// The QR scanner plugin's ML Kit API (play-services-mlkit-barcode-scanning) normally downloads its model through
+// Google Play services, which fails on phones without working Play services ("Failed to create thin barcode
+// scanner"). The bundled model below ships inside the APK instead (~2.5 MB bigger) and the API finds it on its own.
 dependencies {
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CiRoom's PC serves its page over plain http on the home Wi-Fi (no certificate is possible for a LAN address).
+     Android can't allow "192.168.*" in this file, so http is allowed everywhere; what keeps it to the home network
+     is the app itself: it only ever opens a private IPv4 address (10.x, 172.16-31.x, 192.168.x) that the user
+     scanned or typed (android-app/connect-lib.ts, and again in src-tauri/src/pc_check.rs). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

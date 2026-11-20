@@ -11,6 +11,9 @@
 //! Android: a thin client. No server, no updater, no single-instance: the window just opens the bundled
 //! Connect page (android-app/), which then sends the WebView to the PC's own page.
 
+#[cfg(any(mobile, test))]
+mod pc_check;
+
 #[cfg(desktop)]
 use std::sync::Mutex;
 use tauri::WebviewWindowBuilder;
@@ -335,6 +338,13 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.manage(Server(Mutex::new(None)));
+    }
+    // Android: the Connect page scans the PC's QR code and checks the PC is there before opening its page.
+    #[cfg(mobile)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_barcode_scanner::init())
+            .invoke_handler(tauri::generate_handler![pc_check::check_pc]);
     }
     let app = builder
         .setup(|app| {

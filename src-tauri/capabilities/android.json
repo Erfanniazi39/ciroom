@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "android",
-  "description": "The Android app's bundled Connect page. Nothing but the core for now.",
+  "description": "The Android app's bundled Connect page. Core plus the QR scanner.",
   "platforms": ["android"],
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "barcode-scanner:allow-scan", "barcode-scanner:allow-cancel", "barcode-scanner:allow-check-permissions", "barcode-scanner:allow-request-permissions"]
 }

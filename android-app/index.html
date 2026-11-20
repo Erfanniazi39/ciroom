@@ -6,14 +6,48 @@
     <meta name="color-scheme" content="dark" />
     <title>CiRoom</title>
     <style>
-      html, body { margin: 0; height: 100%; background: #0a0a0d; color: #e8e8ee; font: 16px/1.5 system-ui, sans-serif; }
-      main { min-height: 100%; display: grid; place-items: center; text-align: center; padding: 1.5rem; box-sizing: border-box; }
-      h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
-      p { margin: 0; color: #b8b8c4; }
+      /* CiRoom's dark purple look (src/index.css tokens). */
+      :root {
+        --bg: #0a0a0d; --surface-1: #121217; --surface-2: #1a1a21; --surface-3: #24242d;
+        --fg: #f4f4f6; --fg-muted: #a3a3ae; --fg-subtle: #6b6b78;
+        --accent: #8b5cf6; --accent-hover: #9b73f8; --danger: #f26d6d;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+      body { font: 16px/1.5 system-ui, "Noto Sans Arabic", "Noto Naskh Arabic", "Vazirmatn", sans-serif; }
+      /* While the camera is open it shows through the page. */
+      html:has(body.scanning), body.scanning { background: transparent; }
+      #app { min-height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 1.25rem; max-width: 26rem; margin: 0 auto;
+             padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left)); }
+      h1 { margin: 0; font: 600 2.6rem/1 Georgia, serif; letter-spacing: -0.02em; text-align: center; }
+      .tag { margin: 0; text-align: center; color: var(--fg-muted); }
+      button, input { font: inherit; border-radius: 12px; border: 0; min-height: 3.25rem; padding: 0 1rem; width: 100%; }
+      button { background: var(--surface-3); color: var(--fg); font-weight: 600; cursor: pointer; }
+      button:active { background: var(--surface-2); }
+      button.primary { background: var(--accent); color: #fff; }
+      button.primary:active { background: var(--accent-hover); }
+      button.link { background: none; color: var(--fg-muted); font-weight: 500; min-height: 2.5rem; text-decoration: underline; }
+      input { background: var(--surface-1); color: var(--fg); border: 1px solid var(--surface-3); text-align: start; }
+      input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+      label { display: block; color: var(--fg-muted); font-size: .85rem; margin-bottom: .35rem; }
+      .row { display: flex; gap: .6rem; }
+      .row button { width: auto; flex: none; }
+      .or { display: flex; align-items: center; gap: .75rem; color: var(--fg-subtle); font-size: .85rem; }
+      .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--surface-3); }
+      .msg { margin: 0; text-align: center; color: var(--fg-muted); }
+      .err { margin: 0; padding: .8rem 1rem; border-radius: 12px; background: rgb(242 109 109 / .12); color: #ffb3b3; }
+      .spin { width: 2.5rem; height: 2.5rem; margin: 0 auto; border-radius: 50%; border: 3px solid var(--surface-3); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .scan { text-align: center; }
+      .frame { width: min(70vw, 18rem); aspect-ratio: 1; margin: 0 auto 1rem; border: 3px solid var(--accent); border-radius: 20px; box-shadow: 0 0 0 100vmax rgb(10 10 13 / .65); }
+      .scan .msg { background: rgb(10 10 13 / .8); padding: .6rem .8rem; border-radius: 12px; color: var(--fg); }
+      bdi { unicode-bidi: isolate; direction: ltr; }
+      input[dir="ltr"] { text-align: left; }
     </style>
   </head>
   <body>
-    <main><div><h1>CiRoom</h1><p id="msg">Android app: setup page (the Connect screen comes next).</p></div></main>
+    <main id="app"></main>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
