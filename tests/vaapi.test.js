@@ -36,7 +36,7 @@ test("CIROOM_NO_VAAPI=1 and an unusable device: x264, still plays; tools reports
   }
 });
 
-test("GPU present: transcode and low-data use VA-API (High, level 4.0 / 3.1, 8-bit)", { skip: !hasGpu }, async () => {
+test("GPU present: transcode uses VA-API (High 4.0); low data stays x264 with the 900k cap", { skip: !hasGpu }, async () => {
   const s = await startServer();
   try {
     const f = path.join(s.media, "Movies", "ten.mp4"); makeClip(f);
@@ -46,9 +46,11 @@ test("GPU present: transcode and low-data use VA-API (High, level 4.0 / 3.1, 8-b
     const v = probeOut(d.file);
     assert.deepEqual([v.codec_name, v.profile, v.level, v.pix_fmt, v.height], ["h264", "High", 40, "yuv420p", 720]);
     const l = await download(s.port, q(f, "&q=low"), path.join(s.dir, "l.mp4"));
-    assert.equal(l.enc, "vaapi");
+    assert.equal(l.enc, "x264", "low data must keep its bitrate cap, so no VA-API even with a GPU");
     const lv = probeOut(l.file);
     assert.deepEqual([lv.profile, lv.level, lv.height], ["High", 31, 480]);
+    const kbps = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=bit_rate", "-of", "csv=p=0", l.file], { encoding: "utf8" }).trim();
+    assert.ok(Number(kbps) <= 1_300_000, `low-data stream is ~1 Mbps, got ${kbps}`);
   } finally { s.stop(); }
 });
 

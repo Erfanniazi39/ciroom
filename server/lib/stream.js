@@ -138,7 +138,8 @@ const subtitleList = (/** @type {string} */ file, /** @type {any[]} */ embedded 
     ...embedded,
   ].map((s, i) => ({ index: i, ...s }));
 
-/** `&q=low`: a small 480p ~1 Mbps re-encode (the watch party's "low data" choice for guests on a slow connection). */
+/** `&q=low`: a small 480p ~1 Mbps re-encode (the watch party's "low data" choice for guests on a slow connection).
+ *  Always x264 (X-Encoder: x264), never VA-API: it must respect a bitrate cap, and the iHD driver here only offers CQP. */
 const wantsLow = (/** @type {URL} */ u) => u.searchParams.get("q") === "low";
 
 /** The audio stream asked for with `&a=N` (or another parameter name): only a number that exists, otherwise the first one. */
@@ -403,7 +404,8 @@ export function streamRoutes(resolveVideo) {
         const low = wantsLow(u);
         const exact = u.searchParams.get("mode") === "transcode"; // the player's keyframe lookup failed: re-encode this stream so it starts exactly at t
         const copying = !low && info.copyVideo && !exact;
-        const vdev = copying || vaapiBroken ? null : await vaapiDevice();
+        // low data is always x264: it must respect the ~1 Mbps cap (-maxrate), and the iHD driver here only offers CQP
+        const vdev = copying || low || vaapiBroken ? null : await vaapiDevice();
         /** Everything up to the audio options. useVa: encode on the GPU (h264_vaapi, constant quality: same GOP, profile and level as x264). */
         const buildArgs = (/** @type {boolean} */ useVa) => {
           const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
@@ -413,9 +415,9 @@ export function streamRoutes(resolveVideo) {
           const h = low ? 480 : 720;
           if (copying) args.push("-c:v", "copy");
           else if (useVa && vdev) {
-            const scale = `scale_vaapi=w=-2:h='min(${h},ih)':format=nv12`;
+            const scale = `scale_vaapi=w=-2:h='min(${h},ih)':format=nv12`; // h is 720 here (low never gets this far)
             args.push("-vf", VAAPI_DECODE.has(String(info.video)) ? scale : `format=nv12,hwupload,${scale}`,
-              "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-global_quality", low ? "30" : "26", "-profile:v", "high", "-level", low ? "31" : "40", "-g", "48");
+              "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-global_quality", "26", "-profile:v", "high", "-level", "40", "-g", "48");
           }
           else if (low) args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1", "-vf", "scale=-2:'min(480,ih)'", "-g", "48");
           else args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.0", "-vf", "scale=-2:'min(720,ih)'", "-g", "48");
