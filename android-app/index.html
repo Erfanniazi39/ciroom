@@ -45,6 +45,14 @@
       .scan { text-align: center; }
       .frame { width: min(70vw, 18rem); aspect-ratio: 1; margin: 0 auto 1rem; border: 3px solid var(--accent); border-radius: 20px; box-shadow: 0 0 0 100vmax rgb(10 10 13 / .65); }
       .scan .msg { background: rgb(10 10 13 / .8); padding: .6rem .8rem; border-radius: 12px; color: var(--fg); }
+      .update { position: fixed; z-index: 5; top: 0; left: 0; right: 0; display: flex; flex-direction: column; gap: .5rem; align-items: center; text-align: center;
+                background: var(--surface-2); border-bottom: 1px solid var(--surface-3);
+                padding: max(.75rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) .75rem max(1rem, env(safe-area-inset-left)); }
+      .update[hidden], body.scanning .update { display: none; }
+      .update p { margin: 0; }
+      .update .row { width: 100%; max-width: 20rem; justify-content: center; }
+      .update .row button { min-height: 2.5rem; flex: 1; }
+      .update .row button.link { flex: none; }
       .about { margin: 0; direction: ltr; text-align: center; color: var(--fg-subtle); font-size: .8rem; }
       bdi { unicode-bidi: isolate; direction: ltr; }
       input[dir="ltr"] { text-align: left; }

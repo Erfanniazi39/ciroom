@@ -12,7 +12,10 @@
         "backgroundColor": "#0A0A0D",
         "create": false
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.github.com; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
   },
   "bundle": {
     "createUpdaterArtifacts": false,

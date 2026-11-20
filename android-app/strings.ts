@@ -24,6 +24,9 @@ const en = {
   errCamera: "The camera isn't allowed. Allow it in the phone's settings, or type the address.",
   errScan: "Couldn't scan. Try again, or type the address.",
   errUnpaired: "This phone isn't paired with your PC yet. Scan the QR code in CiRoom → Settings → Phone remote.",
+  updateAvailable: "CiRoom {v} is available",
+  download: "Download",
+  later: "Later",
 };
 
 const fa: typeof en = {
@@ -48,6 +51,9 @@ const fa: typeof en = {
   errCamera: "دسترسی به دوربین داده نشده. در تنظیمات گوشی اجازه بده یا نشانی را تایپ کن.",
   errScan: "اسکن نشد. دوباره تلاش کن یا نشانی را تایپ کن.",
   errUnpaired: "این گوشی هنوز به رایانه‌ات وصل (جفت) نشده. کد QR را اسکن کن: CiRoom ← تنظیمات ← ریموت گوشی.",
+  updateAvailable: "نسخهٔ {v} از CiRoom آماده است",
+  download: "دانلود",
+  later: "بعداً",
 };
 
 export type Key = keyof typeof en;

@@ -4,7 +4,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { cancel, checkPermissions, Format, requestPermissions, scan } from "@tauri-apps/plugin-barcode-scanner";
-import { type Pc, parseAddress, parseQr, pcLabel, pcUrl, readSaved } from "./connect-lib";
+import { type Pc, parseAddress, parseQr, pcLabel, pcUrl, readSaved, RELEASES_API, updateFrom } from "./connect-lib";
 import { type Key, pickLang, STRINGS } from "./strings";
 
 type Status = "ok" | "off" | "unreachable" | "other";
@@ -76,6 +76,46 @@ function button(key: Key, onClick: () => void, cls = "", host?: string): HTMLBut
 function show(...nodes: Node[]): void {
   document.body.classList.remove("scanning");
   app.replaceChildren(...nodes);
+}
+
+// ── update notice ──────────────────────────────────────────────────────────────────────────────
+// Once per start: is there a newer release with an Android APK? Any failure (offline, rate limit, odd answer) is silent.
+const LATER_KEY = "ciroom.updateLater";
+const updateBar = el("div", { class: "update", hidden: true });
+document.body.prepend(updateBar);
+
+function showUpdate(version: string, url: string): void {
+  const later = el("button", { type: "button", class: "link" }, T.later);
+  later.onclick = () => {
+    try { localStorage.setItem(LATER_KEY, version); } catch { /* not remembered: it shows again next start */ }
+    updateBar.hidden = true;
+  };
+  const get = el("button", { type: "button", class: "primary" }, T.download);
+  get.onclick = () => {
+    try { (window as unknown as { CiRoomNative?: { openUrl(url: string): boolean } }).CiRoomNative?.openUrl(url); } catch { /* nothing to open it with */ }
+  };
+  const [before, after] = T.updateAvailable.split("{v}");
+  updateBar.replaceChildren(el("p", {}, before, el("bdi", {}, version), after), el("div", { class: "row" }, get, later));
+  updateBar.hidden = false;
+}
+
+async function checkUpdate(): Promise<void> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const current = await getVersion();
+    const res = await fetch(RELEASES_API, { signal: ctrl.signal, headers: { Accept: "application/vnd.github+json" } });
+    if (!res.ok) return;
+    const up = updateFrom(await res.json(), current);
+    if (!up) return;
+    let later: string | null = null;
+    try { later = localStorage.getItem(LATER_KEY); } catch { /* shown */ }
+    if (later !== up.version) showUpdate(up.version, up.url);
+  } catch {
+    /* offline or blocked: say nothing */
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ── screens ────────────────────────────────────────────────────────────────────────────────────
@@ -194,3 +234,4 @@ if (startError) {
   home();
 }
 
+void checkUpdate();

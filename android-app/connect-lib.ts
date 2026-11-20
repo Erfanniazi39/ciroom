@@ -64,3 +64,37 @@ export function readSaved(raw: string | null): Pc | null {
   }
   return null;
 }
+
+// ── "update available" (the Connect screen checks GitHub's latest release once) ─────────────────
+
+/** Where releases live. Only downloads from here are ever opened. */
+export const RELEASES_API = "https://api.github.com/repos/Erfanniazi39/ciroom/releases/latest";
+export const DOWNLOAD_PREFIX = "https://github.com/Erfanniazi39/ciroom/releases/download/";
+
+/** `v1.2.3` or `1.2.3` → [1,2,3]; anything else (pre-release suffixes, words) → null. */
+export function parseVersion(v: unknown): [number, number, number] | null {
+  const m = /^v?(\d{1,5})\.(\d{1,5})\.(\d{1,5})$/.exec(typeof v === "string" ? v.trim() : "");
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** Is `candidate` a higher version than `current`? Unreadable versions are never "newer". */
+export function isNewer(candidate: unknown, current: unknown): boolean {
+  const a = parseVersion(candidate);
+  const b = parseVersion(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+
+/** From GitHub's "latest release" answer: the new version and its APK link, or null (not newer, no APK, odd data). */
+export function updateFrom(release: unknown, current: string): { version: string; url: string } | null {
+  const r = release as { tag_name?: unknown; assets?: unknown } | null;
+  const v = parseVersion(r?.tag_name);
+  if (!r || !v || !isNewer(r.tag_name, current) || !Array.isArray(r.assets)) return null;
+  for (const a of r.assets as { name?: unknown; browser_download_url?: unknown }[]) {
+    if (typeof a?.name === "string" && a.name.endsWith("_android-arm64.apk") && typeof a.browser_download_url === "string" && a.browser_download_url.startsWith(DOWNLOAD_PREFIX)) {
+      return { version: v.join("."), url: a.browser_download_url };
+    }
+  }
+  return null;
+}

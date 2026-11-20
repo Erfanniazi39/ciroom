@@ -1,7 +1,7 @@
 // The Android Connect screen's address and QR rules (android-app/connect-lib.ts) and its language choice.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isPrivateIPv4, parseAddress, parseQr, pcUrl, pcLabel, readSaved } from "../android-app/connect-lib.ts";
+import { isPrivateIPv4, parseAddress, parseQr, pcUrl, pcLabel, readSaved, parseVersion, isNewer, updateFrom } from "../android-app/connect-lib.ts";
 import { pickLang, STRINGS } from "../android-app/strings.ts";
 
 test("only home-network IPv4 addresses are accepted", () => {
@@ -43,4 +43,27 @@ test("language: Persian phones get Persian, everyone else English; both tables h
   assert.equal(pickLang(undefined), "en");
   assert.deepEqual(Object.keys(STRINGS.fa).sort(), Object.keys(STRINGS.en).sort());
   for (const k of Object.keys(STRINGS.en)) assert.ok(STRINGS.fa[k].length > 0 && STRINGS.en[k].length > 0, k);
+});
+
+test("update check: only a higher x.y.z with an Android APK from this repo's releases counts", () => {
+  assert.deepEqual(parseVersion("v1.2.3"), [1, 2, 3]);
+  assert.deepEqual(parseVersion("0.1.5"), [0, 1, 5]);
+  for (const bad of ["v1.2", "1.2.3-beta", "latest", "", null, undefined, 5, "v1.2.3.4"]) assert.equal(parseVersion(bad), null, String(bad));
+  assert.equal(isNewer("v0.1.6", "0.1.5"), true);
+  assert.equal(isNewer("v0.2.0", "0.1.9"), true);
+  assert.equal(isNewer("v1.0.0", "0.99.99"), true);
+  assert.equal(isNewer("v0.10.0", "0.9.0"), true, "numbers, not text");
+  assert.equal(isNewer("v0.1.5", "0.1.5"), false);
+  assert.equal(isNewer("v0.1.4", "0.1.5"), false);
+  assert.equal(isNewer("garbage", "0.1.5"), false);
+  assert.equal(isNewer("v9.9.9", "garbage"), false);
+
+  const base = "https://github.com/Erfanniazi39/ciroom/releases/download/v0.2.0/";
+  const apk = { name: "CiRoom_0.2.0_android-arm64.apk", browser_download_url: base + "CiRoom_0.2.0_android-arm64.apk" };
+  const exe = { name: "CiRoom_0.2.0_x64-setup.exe", browser_download_url: base + "CiRoom_0.2.0_x64-setup.exe" };
+  assert.deepEqual(updateFrom({ tag_name: "v0.2.0", assets: [exe, apk] }, "0.1.5"), { version: "0.2.0", url: apk.browser_download_url });
+  assert.equal(updateFrom({ tag_name: "v0.2.0", assets: [exe] }, "0.1.5"), null, "newer but no APK (CI still building, or a desktop-only release)");
+  assert.equal(updateFrom({ tag_name: "v0.1.5", assets: [apk] }, "0.1.5"), null, "same version");
+  assert.equal(updateFrom({ tag_name: "v0.2.0", assets: [{ name: apk.name, browser_download_url: "https://evil.example/" + apk.name }] }, "0.1.5"), null, "a link outside this repo's downloads is never offered");
+  for (const odd of [null, undefined, {}, "x", { tag_name: "v0.2.0" }, { tag_name: "v0.2.0", assets: "x" }, { tag_name: "v0.2.0", assets: [null, 5] }]) assert.equal(updateFrom(odd, "0.1.5"), null, JSON.stringify(odd));
 });

@@ -1,5 +1,6 @@
 package app.ciroom.media
 
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -107,7 +108,7 @@ class MainActivity : TauriActivity() {
 
     // The Connect page asks "is this phone already paired with that PC?" (the pairing cookie is HttpOnly, so the page
     // can't see it itself). Yes/no only; the cookie never leaves the app. Only private IPv4 addresses are looked up.
-    webView.addJavascriptInterface(PairedCheck(), "CiRoomNative")
+    webView.addJavascriptInterface(PairedCheck(this), "CiRoomNative")
     webView.addJavascriptInterface(ScreenAwake(this), "CiRoomScreen")
 
     // Back: inside the PC's page, the page's own history first. At the top of the PC's page, Back shows the Connect
@@ -167,7 +168,22 @@ private class ConnectFallbackClient(private val inner: WebViewClient, firstUrl: 
   override fun onPageFinished(view: WebView, url: String) = inner.onPageFinished(view, url)
 }
 
-class PairedCheck {
+class PairedCheck(private val activity: MainActivity) {
+  /** The Connect page's "Download" button: opens a CiRoom release file in the phone's browser. Nothing else is ever opened. */
+  @JavascriptInterface
+  fun openUrl(url: String): Boolean {
+    val uri = Uri.parse(url)
+    if (!url.startsWith("https://github.com/Erfanniazi39/ciroom/releases/download/") || uri.host != "github.com") return false
+    activity.runOnUiThread {
+      try {
+        activity.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      } catch (_: Exception) {
+        // no browser to open it with
+      }
+    }
+    return true
+  }
+
   @JavascriptInterface
   fun isPaired(host: String, port: Int): Boolean {
     if (!Regex("""^(10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2})$""").matches(host) || port !in 1..65535) return false
