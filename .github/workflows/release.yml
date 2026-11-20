@@ -1,8 +1,9 @@
 # Builds CiRoom and publishes a signed release when a version tag (v1.2.3) is pushed (npm run release does that).
-# Order: tests → draft release → builds (the Linux one is checked for its media plugins) → publish. A failure anywhere leaves
+# Order: tests → draft release → builds (the Linux one is checked for its media plugins; Android runs next to Linux) → publish. A failure anywhere leaves
 # the release a DRAFT, which the installed apps never see.
 # The installed apps check this repository's latest release for updates (latest.json lists every platform).
-# Needs two repository secrets: TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+# Needs two repository secrets for the desktop updater: TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD,
+# and four for the Android APK: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
 name: Release
 
 on:
@@ -152,9 +153,79 @@ jobs:
           releaseDraft: true
           includeUpdaterJson: true
 
+  # The Android app (an APK for the user's phone), signed with the Android key. It only adds one file to the draft release:
+  # never latest.json (that file is the desktop updater's). A missing secret fails the job, so an unsigned APK is never published.
+  android:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: The signing secrets are all there
+        run: |
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then echo "::error::The repository secret $v is missing (Settings, Secrets and variables, Actions). Not building an unsigned APK."; exit 1; fi
+          done
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-linux-android
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri
+      - name: Android SDK (the exact versions the project builds with)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Build the signed APK
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ciroom-android.jks"
+          export CIROOM_ANDROID_KEYSTORE="$RUNNER_TEMP/ciroom-android.jks"
+          export CIROOM_ANDROID_KEYSTORE_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+          export CIROOM_ANDROID_KEY_ALIAS="$ANDROID_KEY_ALIAS"
+          export CIROOM_ANDROID_KEY_PASSWORD="$ANDROID_KEY_PASSWORD"
+          npx tauri android build --apk --target aarch64
+          version="${GITHUB_REF_NAME#v}"
+          cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk "CiRoom_${version}_android-arm64.apk"
+      - name: The APK is signed
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs CiRoom_*_android-arm64.apk | grep -E "Signer #1 certificate (DN|SHA-256)"
+      # gh can't find a draft release by its tag, so look the id up in the list, then talk to the API directly.
+      - name: Add the APK to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          apk=$(ls CiRoom_*_android-arm64.apk)
+          id=$(gh api "repos/${GH_REPO}/releases" --paginate --jq ".[] | select(.tag_name==\"${GITHUB_REF_NAME}\") | .id" | head -1)
+          if [ -z "$id" ]; then echo "::error::No release found for ${GITHUB_REF_NAME}"; exit 1; fi
+          # a re-run replaces the file instead of failing on the same name
+          for old in $(gh api "repos/${GH_REPO}/releases/${id}/assets" --paginate --jq ".[] | select(.name==\"${apk}\") | .id"); do
+            gh api -X DELETE "repos/${GH_REPO}/releases/assets/${old}"
+          done
+          curl -sS --fail-with-body -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary "@${apk}" "https://uploads.github.com/repos/${GH_REPO}/releases/${id}/assets?name=${apk}" >/dev/null
+      - name: Remove the keystore from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ciroom-android.jks"
+
   # Only reached when the tests, the Linux package check and both builds passed.
   publish:
-    needs: [linux, windows]
+    needs: [linux, windows, android]
     runs-on: ubuntu-latest
     steps:
       - name: Publish the release
