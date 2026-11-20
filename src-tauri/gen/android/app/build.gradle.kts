@@ -14,6 +14,15 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// versionCode grows with every release: major*10000 + minor*100 + patch of the app version (1.1.0 -> 10100).
+// scripts/release.js bumps the version that Tauri writes into tauri.properties, so this follows it.
+val appVersionName = tauriProperties.getProperty("tauri.android.versionName", "1.0.0")
+val appVersionCode = appVersionName.split(".").map { it.toIntOrNull() ?: 0 }.let { (it.getOrElse(0) { 0 } * 10000) + (it.getOrElse(1) { 0 } * 100) + it.getOrElse(2) { 0 } }
+
+// Release signing: the key lives outside the repo and is given by environment variables (a local shell script, or
+// GitHub secrets in CI). Without them the release APK is built unsigned.
+val signingKeystore: String? = System.getenv("CIROOM_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+
 android {
     compileSdk = 36
     namespace = "app.ciroom.media"
@@ -23,8 +32,18 @@ android {
         applicationId = "app.ciroom.media"
         minSdk = 24
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+    signingConfigs {
+        if (signingKeystore != null) {
+            create("release") {
+                storeFile = file(signingKeystore)
+                storePassword = System.getenv("CIROOM_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CIROOM_ANDROID_KEY_ALIAS") ?: "ciroom"
+                keyPassword = System.getenv("CIROOM_ANDROID_KEY_PASSWORD") ?: System.getenv("CIROOM_ANDROID_KEYSTORE_PASSWORD")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -40,6 +59,7 @@ android {
             }
         }
         getByName("release") {
+            if (signingKeystore != null) signingConfig = signingConfigs.getByName("release")
             optimization {
                enable = true
             }
