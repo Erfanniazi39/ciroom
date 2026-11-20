@@ -4,7 +4,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { cancel, checkPermissions, Format, requestPermissions, scan } from "@tauri-apps/plugin-barcode-scanner";
-import { type Pc, parseAddress, parseQr, pcLabel, pcUrl, readSaved, RELEASES_API, updateFrom } from "./connect-lib";
+import { type Pc, parseAddress, parseQr, parseUpdateInfo, pcLabel, pcUrl, pendingUpdate, readSaved, startAction, type UpdateInfo } from "./connect-lib";
 import { type Key, pickLang, STRINGS } from "./strings";
 
 type Status = "ok" | "off" | "unreachable" | "other";
@@ -79,52 +79,71 @@ function show(...nodes: Node[]): void {
 }
 
 // ── update notice ──────────────────────────────────────────────────────────────────────────────
-// Once per start: is there a newer release with an Android APK? Any failure (offline, rate limit, odd answer) is silent.
+// The app's Kotlin side asks GitHub (in the background at every start, at most once an hour) and keeps the newest release
+// that has an Android APK. This page only reads it. It can't ask GitHub itself: the page navigates to the PC a second
+// after start, which would cancel the request.
+type Native = { updateInfo?(): string; checkForUpdate?(): void; openUrl?(url: string): boolean };
+const native = (): Native | undefined => (window as unknown as { CiRoomNative?: Native }).CiRoomNative;
 const LATER_KEY = "ciroom.updateLater";
 const updateBar = el("div", { class: "update", hidden: true });
 document.body.prepend(updateBar);
 
-function showUpdate(version: string, url: string): void {
+function readInfo(): UpdateInfo {
+  try { return parseUpdateInfo(native()?.updateInfo?.()); } catch { return parseUpdateInfo(null); }
+}
+function laterVersion(): string | null {
+  try { return localStorage.getItem(LATER_KEY); } catch { return null; }
+}
+/** The newer version to tell the user about, if any (not the one they put off). */
+function pending(ignoreLater = false) {
+  return pendingUpdate(readInfo(), version, ignoreLater ? null : laterVersion());
+}
+
+function showUpdate(newVersion: string, url: string): void {
   const later = el("button", { type: "button", class: "link" }, T.later);
   later.onclick = () => {
-    try { localStorage.setItem(LATER_KEY, version); } catch { /* not remembered: it shows again next start */ }
+    try { localStorage.setItem(LATER_KEY, newVersion); } catch { /* not remembered: it shows again next start */ }
     updateBar.hidden = true;
   };
   const get = el("button", { type: "button", class: "primary" }, T.download);
   get.onclick = () => {
-    try { (window as unknown as { CiRoomNative?: { openUrl(url: string): boolean } }).CiRoomNative?.openUrl(url); } catch { /* nothing to open it with */ }
+    try { native()?.openUrl?.(url); } catch { /* nothing to open it with */ }
   };
   const [before, after] = T.updateAvailable.split("{v}");
-  updateBar.replaceChildren(el("p", {}, before, el("bdi", {}, version), after), el("div", { class: "row" }, get, later));
+  updateBar.replaceChildren(el("p", {}, before, el("bdi", {}, newVersion), after), el("div", { class: "row" }, get, later));
   updateBar.hidden = false;
 }
+function refreshUpdateBar(): void {
+  const up = pending();
+  if (up) showUpdate(up.version, up.url);
+  else updateBar.hidden = true;
+}
 
-async function checkUpdate(): Promise<void> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5000);
-  try {
-    const current = await getVersion();
-    const res = await fetch(RELEASES_API, { signal: ctrl.signal, headers: { Accept: "application/vnd.github+json" } });
-    if (!res.ok) return;
-    const up = updateFrom(await res.json(), current);
-    if (!up) return;
-    let later: string | null = null;
-    try { later = localStorage.getItem(LATER_KEY); } catch { /* shown */ }
-    if (later !== up.version) showUpdate(up.version, up.url);
-  } catch {
-    /* offline or blocked: say nothing */
-  } finally {
-    clearTimeout(timer);
+/** The "Check for updates" link: asks the Kotlin side to check now, then reads its answer for up to 12 s. */
+async function checkNow(line: HTMLElement): Promise<void> {
+  const say = (key: Key | null) => line.replaceChildren(...(key ? [T[key]] : []));
+  say("checking");
+  line.setAttribute("role", "status");
+  try { native()?.checkForUpdate?.(); } catch { /* answered below as "couldn't check" */ }
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 150 : 300));
+    const info = readInfo();
+    if (info.checking) continue;
+    const up = pending(true); // asked on purpose: shown even if "Later" was pressed for it
+    if (up) { try { localStorage.removeItem(LATER_KEY); } catch { /* ignored */ } showUpdate(up.version, up.url); return say(null); }
+    return say(info.ok === true ? "upToDate" : "checkFailed");
   }
+  say("checkFailed");
 }
 
 // ── screens ────────────────────────────────────────────────────────────────────────────────────
 function home(error?: Key): void {
   const pc = saved();
   const paired = pc ? isPaired(pc) : false;
-  const field = el("input", { type: "text", inputMode: "decimal", autocomplete: "off", placeholder: T.addressPlaceholder, id: "addr", enterKeyHint: "go" });
+  const field = el("input", { type: "text", inputMode: "url", autocomplete: "off", placeholder: T.addressPlaceholder, id: "addr", enterKeyHint: "go" });
   field.setAttribute("dir", "ltr");
   field.setAttribute("autocapitalize", "off");
+  field.setAttribute("autocorrect", "off");
   field.spellcheck = false;
   const go = () => {
     const parsed = parseAddress(field.value);
@@ -142,14 +161,25 @@ function home(error?: Key): void {
     button("scan", () => void scanQr(), paired ? "" : "primary"),
     el("div", { class: "or" }, T.or),
     el("div", {}, label, el("div", { class: "row" }, field, button("connect", go))),
+    checkLine(),
     about(pc),
   );
+  refreshUpdateBar();
+}
+
+/** The small "Check for updates" link, and where its answer appears. */
+function checkLine(): HTMLElement {
+  const line = el("p", { class: "checkline" });
+  const link = button("checkUpdates", () => void checkNow(line), "link");
+  line.append(link);
+  return line;
 }
 
 let attempt = 0; // a newer connect/cancel makes older ones stop quietly
 
 function connecting(pc: Pc): void {
   attempt++;
+  updateBar.hidden = true;
   show(el("div", { class: "spin" }), el("p", { class: "msg", role: "status" }, ...text("connecting", pcLabel(pc))), button("cancel", () => { attempt++; home(); }, "link"));
 }
 
@@ -162,6 +192,7 @@ function failed(pc: Pc | null, status: Status): void {
     button("changePc", () => home(), pc ? "" : "primary"),
     about(pc),
   );
+  refreshUpdateBar();
 }
 
 /** Is CiRoom there? Three tries, one second apart (the server re-listens a moment after the phone remote is switched on). */
@@ -224,14 +255,18 @@ async function scanQr(): Promise<void> {
 // `?error=unreachable` comes from the app's Kotlin side: the PC's page failed to load (PC closed, Wi-Fi lost).
 const startError = params.get("error");
 const savedPc = saved();
-if (startError) {
-  failed(savedPc, startError === "other" ? "other" : "unreachable");
-} else if (savedPc && !params.has("noauto") && isPaired(savedPc)) {
-  void connect(savedPc);
-} else if (savedPc && !params.has("noauto")) {
-  home("errUnpaired"); // saved, but never paired: the PC's PIN page would be a dead end, so offer the QR scan first
-} else {
-  home();
-}
-
-void checkUpdate();
+// `version` arrives a moment after start (getVersion); the decision needs it, so wait for it (it is a local call).
+void (async () => {
+  try { version = await getVersion(); } catch { /* unknown version: nothing counts as newer */ }
+  const action = startAction({
+    error: !!startError,
+    noauto: params.has("noauto"),
+    saved: !!savedPc,
+    paired: savedPc ? isPaired(savedPc) : false,
+    update: pending() !== null,
+  });
+  if (action === "error") failed(savedPc, startError === "other" ? "other" : "unreachable");
+  else if (action === "connect" && savedPc) void connect(savedPc);
+  else if (action === "unpaired") home("errUnpaired"); // saved, but never paired: the PC's PIN page would be a dead end, so offer the QR scan first
+  else home(); // "update": the saved PC's big Open button and the update bar are on this screen
+})();

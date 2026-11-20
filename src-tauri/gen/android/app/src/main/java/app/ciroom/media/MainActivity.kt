@@ -42,7 +42,23 @@ class MainActivity : TauriActivity() {
       statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
       navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
     )
+    UpdateOverride.capture(this, intent)
     super.onCreate(savedInstanceState)
+    updates.startBackground() // for the next start: the answer is kept, the Connect page reads it
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    UpdateOverride.capture(this, intent)
+    super.onNewIntent(intent)
+  }
+
+  val updates by lazy { UpdateChecker(this) }
+
+  // The pairing cookie is written to disk only every ~30 s: a phone that is paired and then swiped away straight
+  // after would forget the pairing. Write it whenever the app leaves the screen.
+  override fun onPause() {
+    CookieManager.getInstance().flush()
+    super.onPause()
   }
 
   private var customView: View? = null
@@ -201,6 +217,14 @@ class PairedCheck(private val activity: MainActivity) {
     }
     return true
   }
+
+  /** The newest release for this phone as JSON (see UpdateChecker.info). Read-only. */
+  @JavascriptInterface
+  fun updateInfo(): String = activity.updates.info()
+
+  /** The "Check for updates" link: starts a check now; the page then reads updateInfo() a few times. */
+  @JavascriptInterface
+  fun checkForUpdate() = activity.updates.checkNow()
 
   @JavascriptInterface
   fun isPaired(host: String, port: Int): Boolean {

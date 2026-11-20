@@ -1,7 +1,7 @@
 // The Android Connect screen's address and QR rules (android-app/connect-lib.ts) and its language choice.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isPrivateIPv4, parseAddress, parseQr, pcUrl, pcLabel, readSaved, parseVersion, isNewer, updateFrom } from "../android-app/connect-lib.ts";
+import { isPrivateIPv4, parseAddress, parseQr, pcUrl, pcLabel, readSaved, parseVersion, isNewer, parseUpdateInfo, pendingUpdate, startAction } from "../android-app/connect-lib.ts";
 import { pickLang, STRINGS } from "../android-app/strings.ts";
 
 test("only home-network IPv4 addresses are accepted", () => {
@@ -58,12 +58,30 @@ test("update check: only a higher x.y.z with an Android APK from this repo's rel
   assert.equal(isNewer("garbage", "0.1.5"), false);
   assert.equal(isNewer("v9.9.9", "garbage"), false);
 
-  const base = "https://github.com/Erfanniazi39/ciroom/releases/download/v0.2.0/";
-  const apk = { name: "CiRoom_0.2.0_android-arm64.apk", browser_download_url: base + "CiRoom_0.2.0_android-arm64.apk" };
-  const exe = { name: "CiRoom_0.2.0_x64-setup.exe", browser_download_url: base + "CiRoom_0.2.0_x64-setup.exe" };
-  assert.deepEqual(updateFrom({ tag_name: "v0.2.0", assets: [exe, apk] }, "0.1.5"), { version: "0.2.0", url: apk.browser_download_url });
-  assert.equal(updateFrom({ tag_name: "v0.2.0", assets: [exe] }, "0.1.5"), null, "newer but no APK (CI still building, or a desktop-only release)");
-  assert.equal(updateFrom({ tag_name: "v0.1.5", assets: [apk] }, "0.1.5"), null, "same version");
-  assert.equal(updateFrom({ tag_name: "v0.2.0", assets: [{ name: apk.name, browser_download_url: "https://evil.example/" + apk.name }] }, "0.1.5"), null, "a link outside this repo's downloads is never offered");
-  for (const odd of [null, undefined, {}, "x", { tag_name: "v0.2.0" }, { tag_name: "v0.2.0", assets: "x" }, { tag_name: "v0.2.0", assets: [null, 5] }]) assert.equal(updateFrom(odd, "0.1.5"), null, JSON.stringify(odd));
+  const url = "https://github.com/Erfanniazi39/ciroom/releases/download/v0.2.0/CiRoom_0.2.0_android-arm64.apk";
+  const info = (extra) => parseUpdateInfo(JSON.stringify({ checking: false, ...extra }));
+  assert.deepEqual(info({ ok: true, version: "0.2.0", apkUrl: url }), { checking: false, ok: true, update: { version: "0.2.0", url } });
+  assert.deepEqual(info({}), { checking: false, ok: null, update: null });
+  assert.equal(parseUpdateInfo(JSON.stringify({ checking: true })).checking, true);
+  for (const odd of [null, undefined, "", "x", "{", "[]", "5", JSON.stringify({ version: 2, apkUrl: url })]) assert.deepEqual(parseUpdateInfo(odd).update, null, String(odd));
+
+  const stored = info({ version: "0.2.0", apkUrl: url });
+  assert.deepEqual(pendingUpdate(stored, "0.1.5", null), { version: "0.2.0", url });
+  assert.equal(pendingUpdate(stored, "0.2.0", null), null, "already installed: ignored");
+  assert.equal(pendingUpdate(stored, "0.3.0", null), null, "stored one is older than the app");
+  assert.equal(pendingUpdate(stored, "0.1.5", "0.2.0"), null, "put off with Later");
+  assert.deepEqual(pendingUpdate(stored, "0.1.5", "0.1.9"), { version: "0.2.0", url }, "Later for another version doesn't count");
+  assert.equal(pendingUpdate(info({ version: "0.2.0", apkUrl: "https://evil.example/a.apk" }), "0.1.5", null), null, "a link outside this repo's downloads is never offered");
+  assert.equal(pendingUpdate(info({}), "0.1.5", null), null);
+});
+
+test("start-up: auto-connect, unless a newer version is waiting", () => {
+  const base = { error: false, noauto: false, saved: true, paired: true, update: false };
+  assert.equal(startAction(base), "connect", "saved + paired, nothing new: straight to the PC");
+  assert.equal(startAction({ ...base, update: true }), "update", "saved + paired + newer version: stay on Connect");
+  assert.equal(startAction({ ...base, noauto: true, update: true }), "home", "came back from the PC page on purpose");
+  assert.equal(startAction({ ...base, error: true, update: true }), "error");
+  assert.equal(startAction({ ...base, paired: false, update: true }), "unpaired");
+  assert.equal(startAction({ ...base, saved: false, paired: false }), "home");
+  assert.equal(startAction({ ...base, saved: false, update: true }), "home");
 });

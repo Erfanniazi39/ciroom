@@ -65,10 +65,9 @@ export function readSaved(raw: string | null): Pc | null {
   return null;
 }
 
-// ── "update available" (the Connect screen checks GitHub's latest release once) ─────────────────
+// ── "update available" (the app's Kotlin side asks GitHub and keeps the answer; the page only reads it) ──────
 
-/** Where releases live. Only downloads from here are ever opened. */
-export const RELEASES_API = "https://api.github.com/repos/Erfanniazi39/ciroom/releases/latest";
+/** Only downloads from this repository's releases are ever opened. */
 export const DOWNLOAD_PREFIX = "https://github.com/Erfanniazi39/ciroom/releases/download/";
 
 /** `v1.2.3` or `1.2.3` → [1,2,3]; anything else (pre-release suffixes, words) → null. */
@@ -86,15 +85,44 @@ export function isNewer(candidate: unknown, current: unknown): boolean {
   return false;
 }
 
-/** From GitHub's "latest release" answer: the new version and its APK link, or null (not newer, no APK, odd data). */
-export function updateFrom(release: unknown, current: string): { version: string; url: string } | null {
-  const r = release as { tag_name?: unknown; assets?: unknown } | null;
-  const v = parseVersion(r?.tag_name);
-  if (!r || !v || !isNewer(r.tag_name, current) || !Array.isArray(r.assets)) return null;
-  for (const a of r.assets as { name?: unknown; browser_download_url?: unknown }[]) {
-    if (typeof a?.name === "string" && a.name.endsWith("_android-arm64.apk") && typeof a.browser_download_url === "string" && a.browser_download_url.startsWith(DOWNLOAD_PREFIX)) {
-      return { version: v.join("."), url: a.browser_download_url };
-    }
+export interface UpdateInfo {
+  /** A check is running right now. */
+  checking: boolean;
+  /** The last check in this run: true = GitHub answered, false = it didn't, null = none yet. */
+  ok: boolean | null;
+  /** The stored newer release with an Android APK, if any. */
+  update: { version: string; url: string } | null;
+}
+
+/** What `CiRoomNative.updateInfo()` returned (JSON text), checked: anything odd reads as "nothing known". */
+export function parseUpdateInfo(raw: unknown): UpdateInfo {
+  const none: UpdateInfo = { checking: false, ok: null, update: null };
+  try {
+    const o = JSON.parse(typeof raw === "string" ? raw : "null");
+    if (!o || typeof o !== "object") return none;
+    const update = typeof o.version === "string" && typeof o.apkUrl === "string" ? { version: o.version, url: o.apkUrl } : null;
+    return { checking: o.checking === true, ok: typeof o.ok === "boolean" ? o.ok : null, update };
+  } catch {
+    return none;
   }
-  return null;
+}
+
+/** The update to tell the user about: newer than this app, a download link of ours, and not the one they put off ("Later"). */
+export function pendingUpdate(info: UpdateInfo, current: string, later: string | null): { version: string; url: string } | null {
+  const u = info.update;
+  if (!u || !isNewer(u.version, current) || !u.url.startsWith(DOWNLOAD_PREFIX)) return null;
+  return parseVersion(later)?.join(".") === parseVersion(u.version)?.join(".") ? null : u;
+}
+
+export type StartAction = "error" | "connect" | "update" | "unpaired" | "home";
+
+/**
+ * What the Connect page does when it opens. `update` = a saved, paired PC would be opened, but there is a newer version
+ * to tell the user about first: stay on the Connect screen (update bar + the big "Open <pc>" button).
+ */
+export function startAction(o: { error: boolean; noauto: boolean; saved: boolean; paired: boolean; update: boolean }): StartAction {
+  if (o.error) return "error";
+  if (!o.saved || o.noauto) return "home";
+  if (!o.paired) return "unpaired";
+  return o.update ? "update" : "connect";
 }

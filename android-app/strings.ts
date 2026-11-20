@@ -27,6 +27,10 @@ const en = {
   updateAvailable: "CiRoom {v} is available",
   download: "Download",
   later: "Later",
+  checkUpdates: "Check for updates",
+  checking: "Checking…",
+  upToDate: "You have the latest version",
+  checkFailed: "Couldn't check (no internet?)",
 };
 
 const fa: typeof en = {
@@ -54,6 +58,10 @@ const fa: typeof en = {
   updateAvailable: "نسخهٔ {v} از CiRoom آماده است",
   download: "دانلود",
   later: "بعداً",
+  checkUpdates: "بررسی نسخهٔ جدید",
+  checking: "در حال بررسی…",
+  upToDate: "آخرین نسخه را داری",
+  checkFailed: "بررسی نشد (اینترنت وصل است؟)",
 };
 
 export type Key = keyof typeof en;
