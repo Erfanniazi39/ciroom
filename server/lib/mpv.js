@@ -214,7 +214,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
             ...subs.map((f) => `--sub-file=${f}`),
             `--start=${Math.max(0, Math.floor(startAt))}`,
             `--sub-delay=${Number(subDelay) || 0}`,
-            `--volume=${Math.max(0, Math.min(130, Number(volume) || 100))}`, "--volume-max=130",
+            `--volume=${Math.max(0, Math.min(130, volume !== null && volume !== "" && Number.isFinite(Number(volume)) ? Number(volume) : 100))}`, "--volume-max=130",
             ...(levelAf ? [`--af=lavfi=[${levelAf}]`] : []),
             file, ...morePartsOf(file), // a multi-part movie (CD1/CD2) is one mpv playlist
           ], { stdio: "ignore" });
