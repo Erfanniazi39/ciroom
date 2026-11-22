@@ -22,10 +22,17 @@ before(async () => {
   const file = path.join(dir, "tiny.mp4");
   execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=24:duration=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-preset", "ultrafast", "-g", "24", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", file]);
   fs.writeFileSync(path.join(dir, "tiny.srt"), "1\n00:00:00,500 --> 00:00:02,000\nHello\n");
+  // ~26 MB (noise barely compresses): a stream of it can't finish into the socket buffers in a few ms, so the slot test's
+  // streams stay open until the test closes them (with tiny.mp4, 372 KB, a stream could end and free its slot first).
+  const bigDir = path.join(s.media, "Movies", "Big");
+  fs.mkdirSync(bigDir, { recursive: true });
+  const bigFile = path.join(bigDir, "big.mp4");
+  execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=4,noise=alls=60:allf=t", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "8", "-g", "24", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", bigFile]);
   const ep = (n) => ({ kind: "episode", id: `show-s1e${n}`, seriesId: "show", season: 1, number: n, title: `Episode ${n}`, file: { path: file, sizeBytes: 1, subtitles: [], status: "present" } });
   const lib = {
     movies: [
       { kind: "movie", id: "tiny", title: "Tiny", year: 2020, file: { path: file, sizeBytes: 1, subtitles: [], status: "present" } },
+      { kind: "movie", id: "big", title: "Big", year: 2020, file: { path: bigFile, sizeBytes: 1, subtitles: [], status: "present" } },
       { kind: "movie", id: "gone", title: "Gone", year: 2020, file: { path: path.join(s.media, "Movies", "Gone", "gone.mp4"), sizeBytes: 1, subtitles: [], status: "missing" } },
       { kind: "movie", id: "lost", title: "Lost", year: 2020, file: { path: path.join(s.media, "Movies", "Lost", "lost.mp4"), sizeBytes: 1, subtitles: [], status: "present" } },
     ],
@@ -106,14 +113,16 @@ test("subtitle.vtt serves the file next to the video", { skip }, async () => {
 });
 
 test("a 3rd parallel stream gets 429; closing one frees a slot", { skip }, async () => {
-  const one = await phone.open(`${W}/stream?id=tiny&t=0`, 2000);
-  const two = await phone.open(`${W}/stream?id=tiny&t=1`, 2000);
+  // Big file + paused readers: the server can't finish these streams, so both slots stay taken until destroy().
+  const hold = async (/** @type {string} */ u) => { const r = await phone.open(u, 2000); r.res.pause(); return r; };
+  const one = await hold(`${W}/stream?id=big&t=0`);
+  const two = await hold(`${W}/stream?id=big&t=1`);
   assert.equal(one.status, 200); assert.equal(two.status, 200);
-  const three = await phone.get(`${W}/stream?id=tiny&t=2`);
+  const three = await phone.get(`${W}/stream?id=big&t=2`);
   assert.equal(three.status, 429);
   one.res.destroy();
   await wait(500);
-  const four = await phone.open(`${W}/stream?id=tiny&t=2`, 2000);
+  const four = await hold(`${W}/stream?id=big&t=2`);
   assert.equal(four.status, 200);
   two.res.destroy(); four.res.destroy();
 });
