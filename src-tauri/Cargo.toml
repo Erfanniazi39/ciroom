@@ -1,6 +1,6 @@
 [package]
 name = "ciroom"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first personal media center"
 edition = "2021"
 
