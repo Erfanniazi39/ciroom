@@ -104,6 +104,7 @@ jobs:
       # Informational for now (never run on Windows before): flip continue-on-error off once it is green there.
       - name: Tests (Windows)
         continue-on-error: true
+        timeout-minutes: 15 # one test hung for 1.5 h on the first Windows run (v0.2.2); never block the build on it
         run: npm test
       - name: Bundle Node (runs CiRoom's server)
         shell: pwsh
