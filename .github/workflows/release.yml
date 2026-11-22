@@ -26,6 +26,8 @@ jobs:
       - name: ffmpeg (some tests make small test videos)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm ci
+      # Some tests load the built main page (dist/), so build it first.
+      - run: npm run build
       - run: npm test
       - name: Lint (errors fail, warnings do not)
         run: npm run lint
