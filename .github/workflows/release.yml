@@ -85,7 +85,7 @@ jobs:
           includeUpdaterJson: true
       # The AppImage is only in the draft so far. Without the GStreamer plugins video freezes (0.1.5): fail here, so it is never published.
       - name: Check the AppImage carries the media plugins
-        run: scripts/check-appimage.sh src-tauri/target/release/bundle/appimage/*.AppImage
+        run: bash scripts/check-appimage.sh src-tauri/target/release/bundle/appimage/*.AppImage
 
   windows:
     needs: [release, linux] # after Linux, so the two never update latest.json at the same moment
