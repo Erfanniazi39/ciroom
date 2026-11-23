@@ -28,6 +28,7 @@ import Settings from "@/pages/Settings";
 import Stats from "@/pages/Stats";
 import Watch from "@/pages/Watch";
 import { startUpdateChecks } from "@/lib/updates";
+import { useWindowFullscreen } from "@/lib/windowFullscreen";
 
 export default function App() {
   const { load, error } = useLibrary();
@@ -45,6 +46,7 @@ export default function App() {
   useHotkey("mod+k", openSearch);
   useHotkey("/", openSearch);
   useTvMode();
+  useWindowFullscreen();
   useRemoteLink();
   usePartyLink();
   useEffect(() => {

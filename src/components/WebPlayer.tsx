@@ -21,6 +21,7 @@ import { usePlaybackEngine } from "@/player/usePlaybackEngine";
 import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
+import { inDesktopShell } from "@/lib/windowFullscreen";
 
 const SUB_SCALE = { S: 0.8, M: 1, L: 1.3, XL: 1.7 } as const;
 const HIDE_MS = 2500;
@@ -294,8 +295,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   const fullscreen = realFs || cover;
   const toggleFullscreen = useCallback(() => {
     const on = !(usePlayback.getState().cover || document.fullscreenElement);
-    usePlayback.getState().setCover(on); // always works (also from the phone)
-    if (on) hostEl()?.requestFullscreen().catch(() => {}); // real screen fullscreen too, when the browser allows it (needs a real click/key)
+    usePlayback.getState().setCover(on); // always works (also from the phone); in the desktop app the window follows it (useWindowFullscreen)
+    if (on && !inDesktopShell()) hostEl()?.requestFullscreen().catch(() => {}); // browsers: real screen fullscreen too (needs a real click/key). Never in the desktop app: crashes the AppImage's WebKit
     else if (document.fullscreenElement) document.exitFullscreen();
   }, [hostEl]);
 

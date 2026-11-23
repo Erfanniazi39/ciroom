@@ -234,7 +234,23 @@ mod installed {
             .env("CIROOM_SHARE_DATA", "1") // Linux: move the data next to the library once, for the Windows app
             // The server quits when this pipe closes, i.e. whenever CiRoom ends (even if it is killed or crashes).
             .env("CIROOM_EXIT_WITH_STDIN", "1")
-            .stdin(Stdio::piped())
+            .stdin(Stdio::piped());
+        // The AppImage launcher points the library path (and GTK/GIO/GStreamer/Python/Qt lookups) at its own bundled
+        // copies, built on an older Ubuntu. The server and everything it starts (mpv, ffmpeg, ffprobe, xdg-open) are
+        // system programs: with the bundled libraries mpv crashed in its video thread on start (0.2.4). The bundled
+        // node only needs libc/libstdc++, so it runs fine without them.
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("APPIMAGE").is_some() {
+            for (k, _) in std::env::vars_os() {
+                let k = k.to_string_lossy().to_string();
+                if ["LD_LIBRARY_PATH", "GIO_MODULE_DIR", "GSETTINGS_SCHEMA_DIR", "GDK_PIXBUF_MODULE_FILE", "GI_TYPELIB_PATH",
+                    "PYTHONHOME", "PYTHONPATH", "PERLLIB", "QT_PLUGIN_PATH", "GTK_THEME"].contains(&k.as_str())
+                    || k.starts_with("GTK_") || k.starts_with("GST_") {
+                    cmd.env_remove(&k);
+                }
+            }
+        }
+        cmd
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
             .stderr(log);
         #[cfg(windows)]

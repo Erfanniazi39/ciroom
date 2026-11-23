@@ -1,10 +1,12 @@
 import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useSettings } from "@/store/settings";
+import { inDesktopShell } from "@/lib/windowFullscreen";
 
 /** Turn TV mode on/off. Fullscreen needs a user gesture, so this is called from a click or a shortcut. */
 export function setTvMode(on: boolean) {
   useSettings.getState().set({ tvMode: on });
+  if (inDesktopShell()) return; // the desktop window goes fullscreen itself (useWindowFullscreen); the web API crashes the AppImage's WebKit
   try {
     if (on && !document.fullscreenElement) void document.documentElement.requestFullscreen().catch(() => {});
     if (!on && document.fullscreenElement) void document.exitFullscreen().catch(() => {});
