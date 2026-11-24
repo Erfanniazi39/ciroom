@@ -8,13 +8,16 @@
  *  - jumps inside what's loaded (±10 s, scrubbing back) are instant: no reload, no audio gap;
  *  - jumps elsewhere load from there and land on the exact second (the decoder starts at the keyframe
  *    before it and skips ahead by itself);
- *  - we keep ~2 min loaded ahead and drop what's far behind, so memory stays bounded.
+ *  - we keep ~2 min loaded ahead and drop what's far behind, so memory stays bounded. With 2 min loaded the
+ *    stream is CLOSED (not just left unread: WebKitGTK keeps downloading a response the page stops reading, so
+ *    ffmpeg made the whole rest of the movie at full speed); a new one continues from the loaded end later.
  * Verified in WebKitGTK 2.52 (the desktop window): +10 s seek in ~90 ms while playing.
  */
 import { streamApi, type ProbeInfo, type SeekPoint, type StreamMode } from "@/api/stream";
 
 const AHEAD_MAX = 120; // seconds to keep loaded ahead of the playhead
 const KEEP_BEHIND = 45; // seconds to keep behind it (instant back-jumps)
+const RESUME_AHEAD = 60; // stream closed with AHEAD_MAX loaded: open the next one when less than this is left
 const SEEKPOINT_TIMEOUT = 12_000; // ms: after this, the requested time is used as the stream's origin
 const FIRST_BYTE_TIMEOUT = 15_000; // ms to wait for the first chunk of a stream
 const CHUNK_GAP_TIMEOUT = 20_000; // ms without a new chunk (while not held back by back-pressure)
@@ -55,6 +58,7 @@ export class MseStream {
   private ctrl: AbortController | null = null;
   private head = 0; // absolute time where the active fetch is appending
   private loading = false;
+  private parked = false; // the stream was closed because enough is loaded; maybeResume() continues it
   private starting = false; // a load is waiting for /api/seekpoint or its first chunk: those have their own timeouts
   private noRange = 0; // appends in a row without a buffered range at the origin
   private opened!: Promise<void>;
@@ -83,7 +87,7 @@ export class MseStream {
     this.lastMove = Date.now();
     this.open();
     for (const ev of WATCH_EVENTS) video.addEventListener(ev, this.onVideoEvent);
-    this.watchdog = setInterval(() => this.checkStall(), 1000);
+    this.watchdog = setInterval(() => { this.checkStall(); this.maybeResume(); }, 1000);
   }
 
   /** Attach a fresh MediaSource to the <video> and open a SourceBuffer on it (constructor and rebuild() share this). */
@@ -187,6 +191,15 @@ export class MseStream {
     void this.reloadFrom(t);
   }
 
+  /** Parked: once the playhead is within RESUME_AHEAD of the end of its loaded range, stream on from there. */
+  private maybeResume() {
+    if (!this.parked || this.loading || this.dead) return;
+    const t = this.video.currentTime;
+    const r = this.rangeAt(t);
+    if (!r) { this.parked = false; this.ensureLoading(); return; } // the playhead left what's loaded
+    if (r[1] - t < RESUME_AHEAD) void this.load(r[1]);
+  }
+
   private fail(message: string) {
     if (!this.dead) this.onError(message);
   }
@@ -282,6 +295,7 @@ export class MseStream {
   private async load(t: number) {
     if (this.dead) return;
     const gen = ++this.gen;
+    this.parked = false;
     this.ctrl?.abort();
     const ctrl = (this.ctrl = new AbortController());
     await this.opened;
@@ -319,9 +333,15 @@ export class MseStream {
       const reader = r.body.getReader();
       let appended = 0;
       for (;;) {
-        // Back-pressure: don't read further ahead than AHEAD_MAX (ffmpeg pauses with us).
-        while (gen === this.gen && this.head - this.video.currentTime > AHEAD_MAX) await sleep(400);
+        // Enough loaded ahead: close this stream (just not reading isn't enough in WebKitGTK, see the top);
+        // maybeResume() opens the next one from the loaded end.
         if (gen !== this.gen) { void reader.cancel(); return; }
+        if (this.head - this.video.currentTime > AHEAD_MAX) {
+          reader.cancel().catch(() => { /* closing */ });
+          ctrl.abort();
+          this.parked = true;
+          return;
+        }
         arm(appended === 0 ? FIRST_BYTE_TIMEOUT : CHUNK_GAP_TIMEOUT);
         const { done, value } = await reader.read();
         clearTimeout(timer);

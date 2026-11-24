@@ -246,6 +246,25 @@ async function detectVaapi() {
 const vaapiDevice = () => (vaapiDev ??= detectVaapi().catch(() => null));
 /** "vaapi" when transcodes run on the GPU, else "cpu". */
 export async function encoderStatus() { return (await vaapiDevice()) && !vaapiBroken ? "vaapi" : "cpu"; }
+// ── Pacing (safety net for /api/stream) ───────────────────────────────────────────────────────────
+// A player that keeps downloading after it stops reading (WebKitGTK's fetch ignores back-pressure) made ffmpeg produce the
+// whole rest of a movie at full speed: one core at 100 % for minutes, and the window holding it all in memory. The player
+// now closes its stream when it has enough (mse.ts); on top of that, after a head start ffmpeg reads at most PACE_RATE×
+// real time (the fastest player speed is 2×). Needs ffmpeg 6.1+ (-readrate_initial_burst): checked once, skipped if missing.
+const PACE_RATE = 3;
+const PACE_BURST = 150; // seconds at full speed: the player's 120 s look-ahead, or one resume of it
+/** @type {Promise<string[]> | null} */ let paceArgs = null;
+const pacing = () => (paceArgs ??= (async () => {
+  const args = ["-readrate", String(PACE_RATE), "-readrate_initial_burst", String(PACE_BURST)];
+  try {
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", ...args, "-f", "lavfi", "-i", "anullsrc", "-t", "0.1", "-f", "null", "-"], { timeout: 10_000 });
+    return args;
+  } catch {
+    console.warn("[stream] this ffmpeg can't pace its output (needs 6.1+); streams run at full speed");
+    return [];
+  }
+})());
+
 /** Source codecs the GPU can decode too (others are decoded in software, then uploaded). */
 const VAAPI_DECODE = new Set(["h264", "hevc", "vp9", "mpeg2video", "vc1"]);
 
@@ -406,12 +425,13 @@ export function streamRoutes(resolveVideo) {
         const copying = !low && info.copyVideo && !exact;
         // low data is always x264: it must respect the ~1 Mbps cap (-maxrate), and the iHD driver here only offers CQP
         const vdev = copying || low || vaapiBroken ? null : await vaapiDevice();
+        const pace = await pacing();
         /** Everything up to the audio options. useVa: encode on the GPU (h264_vaapi, constant quality: same GOP, profile and level as x264). */
         const buildArgs = (/** @type {boolean} */ useVa) => {
           const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
           if (useVa && vdev) args.push("-vaapi_device", vdev, ...(VAAPI_DECODE.has(String(info.video)) ? ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"] : []));
           if (t > 0) args.push("-ss", t.toFixed(3)); // same string /api/seekpoint measured
-          args.push("-i", file, "-map", `0:v:${info.videoIndex ?? 0}`, "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
+          args.push(...pace, "-i", file, "-map", `0:v:${info.videoIndex ?? 0}`, "-map", `0:a:${audioIndex(info, u)}?`, "-sn", "-dn", "-map_chapters", "-1");
           const h = low ? 480 : 720;
           if (copying) args.push("-c:v", "copy");
           else if (useVa && vdev) {
