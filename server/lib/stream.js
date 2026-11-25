@@ -246,24 +246,29 @@ async function detectVaapi() {
 const vaapiDevice = () => (vaapiDev ??= detectVaapi().catch(() => null));
 /** "vaapi" when transcodes run on the GPU, else "cpu". */
 export async function encoderStatus() { return (await vaapiDevice()) && !vaapiBroken ? "vaapi" : "cpu"; }
-// ── Pacing (safety net for /api/stream) ───────────────────────────────────────────────────────────
-// A player that keeps downloading after it stops reading (WebKitGTK's fetch ignores back-pressure) made ffmpeg produce the
-// whole rest of a movie at full speed: one core at 100 % for minutes, and the window holding it all in memory. The player
-// now closes its stream when it has enough (mse.ts); on top of that, after a head start ffmpeg reads at most PACE_RATE×
-// real time (the fastest player speed is 2×). Needs ffmpeg 6.1+ (-readrate_initial_burst): checked once, skipped if missing.
-const PACE_RATE = 3;
-const PACE_BURST = 150; // seconds at full speed: the player's 120 s look-ahead, or one resume of it
-/** @type {Promise<string[]> | null} */ let paceArgs = null;
-const pacing = () => (paceArgs ??= (async () => {
-  const args = ["-readrate", String(PACE_RATE), "-readrate_initial_burst", String(PACE_BURST)];
+// ── Pacing ────────────────────────────────────────────────────────────────────────────────────────
+// WebKitGTK's fetch keeps downloading a response the page stopped reading (no back-pressure), so ffmpeg made the
+// whole rest of a movie at full speed: one core at 100 % for minutes, and the window holding it all in memory.
+// So after a head start (the player's 120 s look-ahead) ffmpeg reads only a little faster than the player plays
+// (`speed` = its playback rate, sent by the page). Needs ffmpeg 6.1+ (-readrate_initial_burst): checked once.
+// (0.2.6 also closed and reopened the stream every 2 minutes instead: the joins cut the sound in the installed app.)
+const PACE_MARGIN = 1.25; // × the playback speed: enough to refill after a stall, little extra memory in the window
+const PACE_BURST = 150; // seconds at full speed at the start of every stream (start, seek)
+/** @type {Promise<boolean> | null} */ let paceOk = null;
+const canPace = () => (paceOk ??= (async () => {
   try {
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", ...args, "-f", "lavfi", "-i", "anullsrc", "-t", "0.1", "-f", "null", "-"], { timeout: 10_000 });
-    return args;
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-readrate", "1.25", "-readrate_initial_burst", "150", "-f", "lavfi", "-i", "anullsrc", "-t", "0.1", "-f", "null", "-"], { timeout: 10_000 });
+    return true;
   } catch {
     console.warn("[stream] this ffmpeg can't pace its output (needs 6.1+); streams run at full speed");
-    return [];
+    return false;
   }
 })());
+/** ffmpeg input options that pace a stream for a player at this speed ([] when this ffmpeg can't). */
+async function pacing(/** @type {number} */ speed) {
+  const s = Math.min(2, Math.max(1, Number.isFinite(speed) ? speed : 1));
+  return (await canPace()) ? ["-readrate", (PACE_MARGIN * s).toFixed(2), "-readrate_initial_burst", String(PACE_BURST)] : [];
+}
 
 /** Source codecs the GPU can decode too (others are decoded in software, then uploaded). */
 const VAAPI_DECODE = new Set(["h264", "hevc", "vp9", "mpeg2video", "vc1"]);
@@ -425,7 +430,7 @@ export function streamRoutes(resolveVideo) {
         const copying = !low && info.copyVideo && !exact;
         // low data is always x264: it must respect the ~1 Mbps cap (-maxrate), and the iHD driver here only offers CQP
         const vdev = copying || low || vaapiBroken ? null : await vaapiDevice();
-        const pace = await pacing();
+        const pace = await pacing(Number(u.searchParams.get("speed")) || 1);
         /** Everything up to the audio options. useVa: encode on the GPU (h264_vaapi, constant quality: same GOP, profile and level as x264). */
         const buildArgs = (/** @type {boolean} */ useVa) => {
           const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];

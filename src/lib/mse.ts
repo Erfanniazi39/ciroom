@@ -8,16 +8,13 @@
  *  - jumps inside what's loaded (±10 s, scrubbing back) are instant: no reload, no audio gap;
  *  - jumps elsewhere load from there and land on the exact second (the decoder starts at the keyframe
  *    before it and skips ahead by itself);
- *  - we keep ~2 min loaded ahead and drop what's far behind, so memory stays bounded. With 2 min loaded the
- *    stream is CLOSED (not just left unread: WebKitGTK keeps downloading a response the page stops reading, so
- *    ffmpeg made the whole rest of the movie at full speed); a new one continues from the loaded end later.
+ *  - we keep ~2 min loaded ahead and drop what's far behind, so memory stays bounded.
  * Verified in WebKitGTK 2.52 (the desktop window): +10 s seek in ~90 ms while playing.
  */
 import { streamApi, type ProbeInfo, type SeekPoint, type StreamMode } from "@/api/stream";
 
 const AHEAD_MAX = 120; // seconds to keep loaded ahead of the playhead
 const KEEP_BEHIND = 45; // seconds to keep behind it (instant back-jumps)
-const RESUME_AHEAD = 60; // stream closed with AHEAD_MAX loaded: open the next one when less than this is left
 const SEEKPOINT_TIMEOUT = 12_000; // ms: after this, the requested time is used as the stream's origin
 const FIRST_BYTE_TIMEOUT = 15_000; // ms to wait for the first chunk of a stream
 const CHUNK_GAP_TIMEOUT = 20_000; // ms without a new chunk (while not held back by back-pressure)
@@ -58,7 +55,6 @@ export class MseStream {
   private ctrl: AbortController | null = null;
   private head = 0; // absolute time where the active fetch is appending
   private loading = false;
-  private parked = false; // the stream was closed because enough is loaded; maybeResume() continues it
   private starting = false; // a load is waiting for /api/seekpoint or its first chunk: those have their own timeouts
   private noRange = 0; // appends in a row without a buffered range at the origin
   private opened!: Promise<void>;
@@ -67,6 +63,8 @@ export class MseStream {
   private recovered = false; // an append failure already triggered a recovery reload since the playhead last moved on
   private netRetries = 0; // timeouts retried since the playhead last moved on
   private stallReloads = 0; // watchdog reloads since the playhead last moved on
+  private paceSpeed = 1; // playback speed the server paces the current stream for
+  private speedRebuilt = 0; // when the stream was last restarted for a faster speed (at most every 30 s)
   private lastT = 0; // watchdog: playhead at the last check
   private lastMove = 0; // watchdog: when the playhead last moved (or the user acted)
   private progressBase = 0; // watchdog: playhead where the retry counters were last reset
@@ -87,7 +85,7 @@ export class MseStream {
     this.lastMove = Date.now();
     this.open();
     for (const ev of WATCH_EVENTS) video.addEventListener(ev, this.onVideoEvent);
-    this.watchdog = setInterval(() => { this.checkStall(); this.maybeResume(); }, 1000);
+    this.watchdog = setInterval(() => this.checkStall(), 1000);
   }
 
   /** Attach a fresh MediaSource to the <video> and open a SourceBuffer on it (constructor and rebuild() share this). */
@@ -95,7 +93,9 @@ export class MseStream {
     const ms = (this.ms = new MediaSource());
     this.sb = null;
     this.url = URL.createObjectURL(ms);
+    const rate = this.video.playbackRate; // a new src resets the speed to defaultPlaybackRate: keep the chosen one
     this.video.src = this.url;
+    this.video.defaultPlaybackRate = this.video.playbackRate = rate;
     this.opened = new Promise((resolve) => {
       ms.addEventListener("sourceopen", () => {
         try {
@@ -119,8 +119,10 @@ export class MseStream {
 
   /** Jump to `t`: instant if it's loaded, otherwise load from there. */
   seek(t: number) {
-    this.video.currentTime = t;
-    if (!this.isBuffered(t) && !(this.loading && t >= this.head - 1 && t <= this.head + 8)) void this.load(t);
+    if (this.isBuffered(t) || (this.loading && t >= this.head - 1 && t <= this.head + 8)) { this.video.currentTime = t; return; }
+    // Not loaded: start over on a fresh MediaSource. Reusing the old one froze the picture for good after a jump back
+    // in the installed app (its bundled WebKitGTK 2.50 + GStreamer 1.20: data loaded, playhead never moved again).
+    void this.rebuild(t);
   }
 
   /** Volume levelling changed: the audio comes from the server, so reload from the current position. */
@@ -173,6 +175,11 @@ export class MseStream {
   private checkStall() {
     if (this.dead) return;
     const v = this.video;
+    // Sped up past what the stream is paced for, and running low: restart the stream from here at the new pace.
+    if (!this.starting && !v.paused && v.playbackRate > this.paceSpeed + 0.01 && Date.now() - this.speedRebuilt > 30_000) {
+      const r = this.rangeAt(v.currentTime);
+      if (!r || r[1] - v.currentTime < 40) { this.speedRebuilt = Date.now(); void this.rebuild(v.currentTime); return; }
+    }
     const t = v.currentTime;
     if (this.starting || v.paused || v.ended || v.seeking || v.readyState >= 3) {
       if (v.paused || v.seeking) this.lastMove = Date.now();
@@ -189,15 +196,6 @@ export class MseStream {
     }
     this.stallReloads++;
     void this.reloadFrom(t);
-  }
-
-  /** Parked: once the playhead is within RESUME_AHEAD of the end of its loaded range, stream on from there. */
-  private maybeResume() {
-    if (!this.parked || this.loading || this.dead) return;
-    const t = this.video.currentTime;
-    const r = this.rangeAt(t);
-    if (!r) { this.parked = false; this.ensureLoading(); return; } // the playhead left what's loaded
-    if (r[1] - t < RESUME_AHEAD) void this.load(r[1]);
   }
 
   private fail(message: string) {
@@ -280,11 +278,14 @@ export class MseStream {
       }
     }
     if (found) { this.noRange = 0; return; }
-    // No range matches (shifted start, odd merge): after 3 appends take the last range's end, so `head`
-    // keeps up with the data and back-pressure still works.
-    if (++this.noRange >= 3 && b.length) {
-      if (this.noRange === 3) console.warn("[mse] no buffered range at the stream origin; using the last range");
-      this.head = Math.max(this.head, b.end(b.length - 1));
+    // No range matches yet. Normal at a stream's start: a fragment (one keyframe interval, often 1 MB+) arrives in
+    // many chunks and shows up in `buffered` only when complete. After many appends, take the end of a range that
+    // starts a little after the origin (shifted start, odd merge), never one far away: after a jump BACK, the old
+    // range far ahead made `head` look 20+ min ahead, so back-pressure stopped reading for good (endless loading).
+    if (++this.noRange >= 40) {
+      for (let i = 0; i < b.length; i++) {
+        if (b.end(i) > origin && b.start(i) <= origin + 30) this.head = Math.max(this.head, b.end(i));
+      }
     }
   }
 
@@ -295,7 +296,6 @@ export class MseStream {
   private async load(t: number) {
     if (this.dead) return;
     const gen = ++this.gen;
-    this.parked = false;
     this.ctrl?.abort();
     const ctrl = (this.ctrl = new AbortController());
     await this.opened;
@@ -328,20 +328,19 @@ export class MseStream {
     const arm = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, ms); };
     try {
       arm(FIRST_BYTE_TIMEOUT);
-      const r = await fetch(this.api.streamUrl(this.path, t, this.level, this.audio, mode), { signal: ctrl.signal });
+      // The server paces ffmpeg to the playback speed (WebKitGTK ignores back-pressure, see stream.js).
+      this.paceSpeed = Math.max(1, this.video.playbackRate || 1);
+      const url = `${this.api.streamUrl(this.path, t, this.level, this.audio, mode)}&speed=${this.paceSpeed}`;
+      const r = await fetch(url, { signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
       const reader = r.body.getReader();
       let appended = 0;
       for (;;) {
-        // Enough loaded ahead: close this stream (just not reading isn't enough in WebKitGTK, see the top);
-        // maybeResume() opens the next one from the loaded end.
+        // Back-pressure: don't read further ahead than AHEAD_MAX. Chrome/Android pause the download (and ffmpeg) with
+        // us; WebKitGTK keeps downloading regardless, so there the server's pacing (stream.js) is what limits ffmpeg.
+        // (0.2.6 closed the stream here and opened a new one later: the joins cut the sound for ~3 s in the installed app.)
+        while (gen === this.gen && this.head - this.video.currentTime > AHEAD_MAX) await sleep(400);
         if (gen !== this.gen) { void reader.cancel(); return; }
-        if (this.head - this.video.currentTime > AHEAD_MAX) {
-          reader.cancel().catch(() => { /* closing */ });
-          ctrl.abort();
-          this.parked = true;
-          return;
-        }
         arm(appended === 0 ? FIRST_BYTE_TIMEOUT : CHUNK_GAP_TIMEOUT);
         const { done, value } = await reader.read();
         clearTimeout(timer);

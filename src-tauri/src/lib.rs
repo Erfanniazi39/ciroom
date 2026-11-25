@@ -312,6 +312,36 @@ code{{display:block;margin-top:.5rem;padding:.6rem .8rem;background:#1a1a22;bord
         tauri::Url::from_file_path(file).ok()
     }
 
+    /// AppImage: keep GStreamer's plugin list between launches. Each launch mounts the AppImage at a new
+    /// `/tmp/.mount_CiRoom…` path, so GStreamer saw 244 "new" plugins every time and rescanned them all the first
+    /// time a video played: the whole window hung ~7 s (the scan wakes the graphics card too), and the shared registry
+    /// in ~/.cache/gstreamer-1.0 was rewritten for system apps and CiRoom in turn. Instead the plugins are reached
+    /// through a link with a fixed path (pointed at this launch's mount) and listed in CiRoom's own registry, so only
+    /// the first launch of a version scans. Must run before the window (its web process inherits the environment);
+    /// the single-instance plugin has already ended a second copy by then, so a running CiRoom's link is never moved.
+    #[cfg(target_os = "linux")]
+    pub fn stable_gstreamer_plugins() {
+        let (Some(_), Some(appdir)) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR")) else { return };
+        let plugins = PathBuf::from(appdir).join("usr/lib/gstreamer-1.0");
+        let cache = match std::env::var_os("XDG_CACHE_HOME") {
+            Some(c) if !c.is_empty() => PathBuf::from(c),
+            _ => match std::env::var_os("HOME") { Some(h) => PathBuf::from(h).join(".cache"), None => return },
+        }
+        .join("ciroom/gstreamer");
+        if !plugins.is_dir() || std::fs::create_dir_all(&cache).is_err() { return; }
+        let link = cache.join("plugins");
+        let tmp = cache.join(format!("plugins.{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        // Replace the link in one step (rename), so it never points nowhere.
+        if std::os::unix::fs::symlink(&plugins, &tmp).is_err() || std::fs::rename(&tmp, &link).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return; // keep the launcher's settings: a scan per launch, as before
+        }
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &link);
+        std::env::set_var("GST_PLUGIN_PATH_1_0", &link);
+        std::env::set_var("GST_REGISTRY_1_0", cache.join("registry.bin"));
+    }
+
     /// AppImage: add CiRoom to the app menu (and keep the entry pointing at the current file).
     pub fn menu_entry() {
         let (Ok(appimage), Some(home)) = (std::env::var("APPIMAGE"), std::env::var_os("HOME")) else { return };
@@ -369,6 +399,8 @@ pub fn run() {
             #[cfg(all(desktop, not(debug_assertions)))]
             {
                 installed::menu_entry();
+                #[cfg(target_os = "linux")]
+                installed::stable_gstreamer_plugins();
                 let url = match installed::start_server(app.handle()) {
                     Ok(started) => {
                         *app.state::<Server>().0.lock().unwrap() = started.child;
