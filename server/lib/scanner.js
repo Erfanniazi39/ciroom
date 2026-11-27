@@ -22,6 +22,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { DATA_DIR } from "./artwork-store.js";
 import { LIBRARY_FILE } from "./paths.js";
@@ -43,7 +44,19 @@ const LEGACY_IDS = /** @type {Record<string,string>} */ (ID_DATA.legacyIds);
 
 const readJson = (/** @type {string} */ f, /** @type {any} */ dflt) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return dflt; } };
 const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAtomic(f, v);
-const slug = (/** @type {string} */ s) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "title";
+const fold = (/** @type {string} */ s) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+const slug = (/** @type {string} */ s) => fold(s).replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+/**
+ * The id part for a title. Ids stay ASCII (artwork file names, the phone and mpv checks rely on it), so a title
+ * that is mostly non-Latin (Persian, Cyrillic, CJK…) would lose its letters: "درباره الی" → "", "Брат 2" → "2".
+ * Those get "t-" + a short hash of the exact title instead, so every such title has its own id.
+ */
+const titleKey = (/** @type {string} */ s) => {
+  const id = slug(s), f = fold(s);
+  const latin = (f.match(/[a-z]/g) ?? []).length, other = (f.match(/\p{L}/gu) ?? []).length - latin;
+  if (id && other <= latin) return id; // Latin titles (and "1917", "11.22.63") keep the slug they always had
+  return `t-${createHash("sha256").update(s.normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim()).digest("hex").slice(0, 8)}`;
+};
 const hueOf = (/** @type {string} */ id) => { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; };
 const SMALL = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "vs"]);
 const titleCase = (/** @type {string} */ s) => s.split(" ").map((w, i) => (i > 0 && SMALL.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ");
@@ -184,11 +197,18 @@ export function scanLibrary(mediaRoot) {
     /** @type {Map<string, string>} "file name|size" → id, from the previous scan */
     const prevByFile = new Map();
     const fileKey = (/** @type {string} */ p, /** @type {number} */ size) => `${path.basename(p)}|${size}`;
+    /** @type {Map<string, number>} id → year, from the previous scan */
+    const prevYear = new Map();
     if (goneById.size) {
       const prev = readJson(LIB_FILE, null);
-      for (const m of prev?.movies ?? []) if (m.file?.path) prevByFile.set(fileKey(m.file.path, m.file.sizeBytes), m.id);
-      for (const s of prev?.series ?? []) for (const se of s.seasons ?? []) for (const e of se.episodes ?? []) if (e.file?.path) prevByFile.set(fileKey(e.file.path, e.file.sizeBytes), s.id);
+      for (const m of prev?.movies ?? []) { if (m.file?.path) prevByFile.set(fileKey(m.file.path, m.file.sizeBytes), m.id); if (m.year) prevYear.set(m.id, m.year); }
+      for (const s of prev?.series ?? []) {
+        if (s.year) prevYear.set(s.id, s.year);
+        for (const se of s.seasons ?? []) for (const e of se.episodes ?? []) if (e.file?.path) prevByFile.set(fileKey(e.file.path, e.file.sizeBytes), s.id);
+      }
     }
+    /** Year of a vanished folder's title: from the previous scan, else from its folder name. */
+    const goneYear = (/** @type {string} */ id) => prevYear.get(id) ?? parseFolder(path.basename(goneById.get(id) ?? "")).year;
     const reclaim = (/** @type {string} */ rel, /** @type {string | undefined} */ id) => {
       const old = id && goneById.get(id);
       if (!id || !old) return null;
@@ -197,16 +217,27 @@ export function scanLibrary(mediaRoot) {
       return id;
     };
     /**
-     * Stable id per folder: saved → same video as a vanished folder → legacy → slug(title) → slug(title-year) → numbered.
-     * @param {string} rel @param {string} base @param {string=} alt @param {{abs:string,size:number}[]=} files
+     * Stable id per folder: saved → same video as a vanished folder → legacy → title → title-year → numbered.
+     * Only folders without a saved id get here, so these rules never change an existing id.
+     * A vanished folder's id goes to a new folder by name, unless both have a year and the years differ
+     * (deleting "Dune 2021" and adding "Dune 1984" gives the remake its own id).
+     * @param {string} rel @param {string} title
+     * @param {{ year?: number, withYear?: boolean, suffix?: string, files?: {abs:string,size:number}[] }} [o]
+     *   withYear: "title-year" is the next choice when "title" is taken (movies); suffix: e.g. "collection"
      */
-    const idFor = (rel, base, alt, files) => {
+    const idFor = (rel, title, { year, withYear, suffix, files } = {}) => {
       if (ids[rel]) return ids[rel];
       for (const f of files ?? []) { const got = reclaim(rel, prevByFile.get(fileKey(f.abs, f.size))); if (got) return got; }
-      if (!LEGACY_IDS[rel]) for (const c of [slug(base), alt && slug(alt)]) { const got = reclaim(rel, c || undefined); if (got) return got; }
-      let id = LEGACY_IDS[rel] ?? slug(base);
-      if (!LEGACY_IDS[rel] && used.has(id) && alt) id = slug(alt);
-      for (let n = 2; used.has(id) && !LEGACY_IDS[rel]; n++) id = `${slug(alt ?? base)}-${n}`;
+      const legacy = LEGACY_IDS[rel];
+      if (legacy) { ids[rel] = legacy; used.add(legacy); return legacy; }
+      const key = titleKey(title);
+      const base = suffix ? `${key}-${suffix}` : key;
+      const alt = withYear && year ? `${key}-${year}` : undefined;
+      const yearsDiffer = (/** @type {string} */ id) => { const y = year && goneById.has(id) ? goneYear(id) : undefined; return !!y && y !== year; };
+      for (const c of [base, alt]) if (c && !yearsDiffer(c)) { const got = reclaim(rel, c); if (got) return got; }
+      let id = base;
+      if (used.has(id) && alt) id = alt;
+      for (let n = 2; used.has(id); n++) id = `${alt ?? base}-${n}`;
       ids[rel] = id; used.add(id);
       return id;
     };
@@ -234,7 +265,7 @@ export function scanLibrary(mediaRoot) {
       const partSize = parts ? parts.reduce((a, p) => a + p.size, 0) : main.size;
       for (const d of vids) if (d !== main && !parts?.includes(d) && d.size > partSize * 0.5) note("duplicate", `${rel}/${d.name}`, `Another copy of this movie. CiRoom plays “${main.name}”.`);
       const { title, year } = parseFolder(folder);
-      const id = idFor(rel, title, year ? `${title} ${year}` : undefined, [main]);
+      const id = idFor(rel, title, { year, withYear: true, files: [main] });
       return {
         kind: "movie", id, title, year, genres: [], ratings: {}, cast: [], addedAt: new Date(main.mtime).toISOString(), collectionId,
         art: { hue: hueOf(id) }, file: { path: main.abs, sizeBytes: main.size, subtitles: [], status: "present" },
@@ -261,7 +292,7 @@ export function scanLibrary(mediaRoot) {
         if (m) movies.push(m);
         continue;
       }
-      const collectionId = idFor(`${rel}#collection`, `${name} collection`);
+      const collectionId = idFor(`${rel}#collection`, name, { suffix: "collection" });
       const members = subs.map((s) => makeMovie(path.join(abs, s), `${rel}/${s}`, s, collectionId)).filter(Boolean);
       if (!members.length) continue;
       movies.push(...members);
@@ -277,7 +308,7 @@ export function scanLibrary(mediaRoot) {
       const vids = listVideos(abs, 4);
       if (!vids.length) { note("empty", rel, "No video files in this series folder yet."); continue; }
       const { title, year } = parseFolder(name);
-      const id = idFor(rel, title, undefined, vids);
+      const id = idFor(rel, title, { year, files: vids });
       /** @type {Map<number, Map<number, any>>} */ const seasons = new Map();
       // Absolute numbering ("Show - 012.mkv"): only when NO video in the folder parses today and (nearly) all
       // of them end in a number, so a stray file can't create fake episodes.

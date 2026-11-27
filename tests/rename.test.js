@@ -48,6 +48,32 @@ test("renamed folders keep their ids", () => {
   assert.ok(!Object.keys(ids).some((k) => k.includes(":")), "old folder names removed");
 });
 
+test("non-Latin titles and remakes get their own ids; a real rename still keeps its id (D-01, D-02)", () => {
+  put("Movies/Брат 2 2000/brat.mkv", 31);
+  put("Movies/درباره الی 2009/elly.mkv", 32);
+  put("Movies/Solaris 1972/s.mkv", 33);
+  const a = scan();
+  const brat = idOf(a, "Брат 2"), elly = idOf(a, "درباره الی");
+  assert.match(brat, /^t-[0-9a-f]{8}$/, "not the bare '2' left over from the slug");
+  assert.match(elly, /^t-[0-9a-f]{8}$/);
+  assert.notEqual(brat, elly);
+  assert.equal(idOf(a, "Solaris"), "solaris");
+
+  // Same Persian title in a renamed folder with a new file: same id. A remake with another year: its own id.
+  fs.rmSync(path.join(lib, "Movies/درباره الی 2009"), { recursive: true });
+  put("Movies/درباره الی (2009) 1080p/elly.1080p.mkv", 34);
+  fs.rmSync(path.join(lib, "Movies/Solaris 1972"), { recursive: true });
+  put("Movies/Solaris 2002/solaris.mkv", 35);
+  const b = scan();
+  assert.equal(idOf(b, "درباره الی"), elly);
+  assert.equal(idOf(b, "Solaris"), "solaris-2002");
+
+  // The 1972 film comes back under another name and file: it gets "solaris" (and its progress) back.
+  put("Movies/Solaris (1972) remastered/solaris.1972.mkv", 36);
+  const c = scan();
+  assert.deepEqual(c.movies.filter((m) => m.title === "Solaris").map((m) => `${m.year}:${m.id}`).sort(), ["1972:solaris", "2002:solaris-2002"]);
+});
+
 test("an id still in use by an existing folder is never taken", () => {
   put("Movies/Twin 2001/a.mkv", 21);
   const a = scan();

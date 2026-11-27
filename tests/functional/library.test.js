@@ -206,7 +206,7 @@ describe("rescan: add, remove, rename, new episode (scenario 6)", { skip: !HAS_F
     } finally { await s.stop(); }
   });
 
-  test("D-01: a non-Latin title that vanished must not hand its id to a different non-Latin title", { todo: "D-01 (Persian/non-Latin titles all share the id 'title')" }, async () => {
+  test("D-01: a non-Latin title that vanished must not hand its id to a different non-Latin title", async () => {
     const s = await startCiRoom({ layout: { "Movies/درباره الی 2009/a.mkv": "short.mkv" } });
     try {
       const a = (await scan(s)).movies[0];
@@ -220,7 +220,7 @@ describe("rescan: add, remove, rename, new episode (scenario 6)", { skip: !HAS_F
     } finally { await s.stop(); }
   });
 
-  test("D-01: Persian titles get readable, distinct ids (not 'title', 'title-2', a bare year)", { todo: "D-01" }, async () => {
+  test("D-01: Persian titles get readable, distinct ids (not 'title', 'title-2', a bare year)", async () => {
     const s = await startCiRoom({ layout: { "Movies/درباره الی 2009/a.mkv": "short.mkv", "Movies/جدایی 2011/b.mkv": "short20.mkv", "Movies/گذشته 2011/c.mkv": "short30.mkv" } });
     try {
       const ids = (await scan(s)).movies.map((m) => m.id).sort();
@@ -229,7 +229,7 @@ describe("rescan: add, remove, rename, new episode (scenario 6)", { skip: !HAS_F
     } finally { await s.stop(); }
   });
 
-  test("D-02: a remake with the same name must not inherit the old film's id when both have different years", { todo: "D-02" }, async () => {
+  test("D-02: a remake with the same name must not inherit the old film's id when both have different years", async () => {
     const s = await startCiRoom({ layout: { "Movies/Dune 2021/dune.mkv": "short.mkv" } });
     try {
       const a = (await scan(s)).movies[0];
