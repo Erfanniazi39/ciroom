@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { SearchContext } from "@/api/subsearch";
-import { buildRequest } from "@/hooks/usePlay";
+import { openInFullPlayer } from "@/hooks/usePlay";
 import { episodeCode } from "@/lib/format";
 import { durationOf, findEpisode, nextEpisode } from "@/lib/library";
 import { useLibrary } from "@/store/library";
@@ -156,10 +156,7 @@ export function PlayerHost() {
       }
     : undefined;
 
-  const openFull = (pos: number) => {
-    usePlayback.getState().handOff(session.id);
-    usePlayer.getState().play(buildRequest(playable, pos));
-  };
+  const openFull = (pos: number, duration: number) => openInFullPlayer(session.id, playable, pos, duration);
 
   return (
     <div

@@ -96,7 +96,7 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     await b.key(" ", "Space", 32);
     await b.waitFor(`document.querySelector("video").paused`);
     const at = (await b.video()).t;
-    await b.click("Open in full player (mpv)"); // the player's own button (the page's "Full player" button: see D-18)
+    await b.click("Open in full player (mpv)"); // the player's own button (the page's "Full player" button: the D-18 tests)
     const p = await until(async () => { const x = (await s.get("/api/player")).json; return x.running && x.duration > 0 && x; }, 20000);
     assert.ok(Math.abs(p.position - at) < 3, `mpv started at ${p.position}, the page was at ${at}`);
     await s.post("/api/player/cmd", { cmd: "seek", value: 400 });
@@ -126,7 +126,7 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     assert.match(buttons, /Resume/, `buttons: ${buttons}`);
   });
 
-  test("D-18: the watch page's Full player button starts mpv where the page player is (after Start over: near 0:00, not the old spot)", { skip: !HAS_MPV, todo: "D-18" }, async () => {
+  test("D-18: the watch page's Full player button starts mpv where the page player is (after Start over: near 0:00, not the old spot)", { skip: !HAS_MPV }, async () => {
     const old = (await progressOf(s, "alpha-movie"))?.position ?? 0;
     assert.ok(old > 60, `alpha has saved progress (${old})`);
     await b.goto(base + "/#/movies/alpha-movie");
@@ -139,7 +139,7 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     assert.ok(p.position < 15, `mpv started at ${p.position.toFixed(0)} s (the saved spot was ${old.toFixed(0)} s, the page was at ~0)`);
   });
 
-  test("D-18: on a movie marked watched, the page's Full player button doesn't open mpv at the very end (it would close at once)", { skip: !HAS_MPV, todo: "D-18" }, async () => {
+  test("D-18: on a movie marked watched, the page's Full player button doesn't open mpv at the very end (it would close at once)", { skip: !HAS_MPV }, async () => {
     await b.goto(base + "/#/movies/zeta-twin");
     await b.click("Mark as watched");
     await until(async () => (await progressOf(s, "zeta-twin"))?.watched === true);

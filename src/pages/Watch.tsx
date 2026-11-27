@@ -9,11 +9,12 @@ import { WATCH_SLOT_ID } from "@/components/PlayerHost";
 import { isRemoteClient } from "@/components/MobileNav";
 import { streamApi } from "@/api/stream";
 import { usePlayback } from "@/store/playback";
-import { buildRequest } from "@/hooks/usePlay";
+import { openInFullPlayer } from "@/hooks/usePlay";
 import { episodeCode, remaining, runtime } from "@/lib/format";
 import { durationOf, findEpisode, similarTo } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
+import { getWebController } from "@/store/webControl";
 import { useUser } from "@/store/user";
 import type { Episode, Movie, Series, Title } from "@/types/media";
 
@@ -29,7 +30,6 @@ export default function Watch() {
   const { progress, favorites, watchlist, toggleFavorite, toggleWatchlist, setWatched } = useUser(
     useShallow((s) => ({ progress: s.progress, favorites: s.favorites, watchlist: s.watchlist, toggleFavorite: s.toggleFavorite, toggleWatchlist: s.toggleWatchlist, setWatched: s.setWatched })),
   ); // not the whole store: watch-time saves every 15 s shouldn't re-render this page
-  const playFull = usePlayer((s) => s.play);
   const fullCurrent = usePlayer((s) => s.current);
   const stopFull = usePlayer((s) => s.stop);
   const handedOff = usePlayback((s) => s.handedOff === id);
@@ -84,9 +84,11 @@ export default function Watch() {
   const fav = favorites.includes(title.id);
   const listed = watchlist.includes(title.id);
 
-  const openFull = (pos: number) => {
-    usePlayback.getState().handOff(id);
-    playFull(buildRequest(playable as Movie | { series: Series; episode: Episode }, pos));
+  // Where the page player is now, not the last saved spot. The path check: the player may still hold the previous video.
+  const openFull = () => {
+    const player = getWebController();
+    if (player && player.getState().path === file?.path) player.openFull();
+    else openInFullPlayer(id, playable as Movie | { series: Series; episode: Episode }, startRef.current ?? 0, durationFallback);
   };
 
   return (
@@ -137,7 +139,7 @@ export default function Watch() {
               <IconButton label={listed ? "Remove from watchlist" : "Add to watchlist"} active={listed} onClick={() => toggleWatchlist(title.id)}>{listed ? <Check size={18} /> : <Plus size={19} />}</IconButton>
               <IconButton label={p?.watched ? "Mark as unwatched" : "Mark as watched"} active={!!p?.watched} onClick={() => setWatched([id], !p?.watched, { [id]: durationFallback })}><Check size={18} strokeWidth={p?.watched ? 3 : 2} /></IconButton>
               {file && !handedOff && !remote && (
-                <Button icon={<MonitorPlay size={17} />} onClick={() => openFull(useUser.getState().progress[id]?.position ?? startRef.current ?? 0)}>Full player</Button>
+                <Button icon={<MonitorPlay size={17} />} onClick={openFull}>Full player</Button>
               )}
               {file && !handedOff && (
                 <Button icon={<Captions size={17} />} onClick={() => { document.querySelector("main")?.scrollTo({ top: 0, behavior: "smooth" }); usePlayback.getState().requestFinder(); }}>Find subtitles</Button>

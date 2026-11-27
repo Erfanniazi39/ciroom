@@ -1,7 +1,8 @@
 import { useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useLibrary } from "@/store/library";
-import type { PlayRequest } from "@/store/player";
+import { usePlayer, type PlayRequest } from "@/store/player";
+import { usePlayback } from "@/store/playback";
 import { durationOf, findEpisode, nextEpisode } from "@/lib/library";
 import { episodeCode } from "@/lib/format";
 import type { Episode, Movie, Series } from "@/types/media";
@@ -26,6 +27,16 @@ export function buildRequest(item: Movie | { series: Series; episode: Episode },
     path: episode.file?.path,
     nextId: next?.id,
   };
+}
+
+/**
+ * Hand the page player's video over to the full player (mpv) at `position`. A spot in the last 5 s
+ * (a finished title) starts from 0: mpv would otherwise close at once.
+ */
+export function openInFullPlayer(id: string, item: Movie | { series: Series; episode: Episode }, position: number, duration: number) {
+  const startAt = duration > 0 && position >= duration - 5 ? 0 : Math.max(0, position);
+  usePlayback.getState().handOff(id);
+  usePlayer.getState().play(buildRequest(item, startAt));
 }
 
 /**

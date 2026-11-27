@@ -39,7 +39,7 @@ export interface WebPlayerProps {
   startAt: number;
   fallbackDuration: number; // seconds, from metadata (until the probe answers)
   next?: { label: string; onPlay: () => void };
-  onOpenFull?: (position: number) => void; // omitted on phones (mpv runs on the PC)
+  onOpenFull?: (position: number, duration: number) => void; // omitted on phones (mpv runs on the PC)
 }
 
 /**
@@ -315,6 +315,14 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
 
   const setVolume = (v: number) => { setVolumePref(v); if (v > 0) setMuted(false); };
 
+  // The one way to the full player (control-bar button, error screen, watch page): save, then start mpv where we are.
+  const openFull = () => {
+    if (!onOpenFull) return;
+    videoRef.current?.pause();
+    save();
+    onOpenFull(timeRef.current, duration);
+  };
+
   // Phone remote: expose this player's state and controls (latest closures through a ref; registered once).
   const remoteRef = useRef<ReturnType<typeof makeRemote>>();
   const makeRemote = () => ({
@@ -338,6 +346,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     toggleFullscreen,
     setSubDelay: (v: number) => setSubDelay(id, Math.round(v * 10) / 10),
     skip: doSkip,
+    openFull,
   });
   remoteRef.current = makeRemote();
   useEffect(() => {
@@ -354,6 +363,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       toggleFullscreen: () => remoteRef.current!.toggleFullscreen(),
       setSubDelay: (v) => remoteRef.current!.setSubDelay(v),
       skip: () => remoteRef.current!.skip(),
+      openFull: () => remoteRef.current!.openFull(),
     });
     return () => registerWebController(null);
   }, []);
@@ -465,7 +475,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/70 p-6 text-center">
           <p className="max-w-md text-white/90">{error}</p>
-          {onOpenFull && <button onClick={() => onOpenFull(timeRef.current)} className="rounded-full bg-violet-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-400">Open in full player</button>}
+          {onOpenFull && <button onClick={openFull} className="rounded-full bg-violet-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-400">Open in full player</button>}
         </div>
       )}
       {!playing && !waiting && !error && !ended && !mini && (
@@ -550,7 +560,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
                 <Captions size={21} />
               </CtrlButton>
               <CtrlButton label="Settings (right-click)" active={!!menu} onClick={() => setMenu((m) => (m ? null : "main"))}><Settings size={20} className={cx("transition-transform duration-300", menu && "rotate-45")} /></CtrlButton>
-              {onOpenFull && <CtrlButton label={info?.hdr ? "HDR video: looks best in the full player (mpv)" : "Open in full player (mpv)"} active={!!info?.hdr} onClick={() => { videoRef.current?.pause(); save(); onOpenFull(timeRef.current); }}><MonitorPlay size={20} /></CtrlButton>}
+              {onOpenFull && <CtrlButton label={info?.hdr ? "HDR video: looks best in the full player (mpv)" : "Open in full player (mpv)"} active={!!info?.hdr} onClick={openFull}><MonitorPlay size={20} /></CtrlButton>}
               <CtrlButton label={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"} onClick={toggleFullscreen}>{fullscreen ? <Minimize size={20} /> : <Maximize size={20} />}</CtrlButton>
             </div>
           </div>

@@ -36,6 +36,8 @@ export interface WebController {
   toggleFullscreen: () => void;
   setSubDelay: (seconds: number) => void;
   skip: () => void;
+  /** Save and continue in the full player (mpv). Does nothing where there is none (phones). */
+  openFull: () => void;
 }
 
 let current: WebController | null = null;
