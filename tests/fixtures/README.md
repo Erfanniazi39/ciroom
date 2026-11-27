@@ -5,6 +5,11 @@ series or third-party file is used. The clips are made once per `FIXTURE_VERSION
 (`ciroom-fixture-clips-v<N>`, ~28 MB, ~20 s) and shared by every run; each test builds its own library folder of hard
 links to them (`makeLibrary`), so a test can rename and delete folders freely.
 
+Test files run as parallel processes and each may find the cache missing. Each one then builds the clips in its own
+folder (`ciroom-fixture-clips-v<N>.build-<pid>-<time>`) and renames it into place in one step; the first rename wins and
+the others delete their copy. Never write into the cache folder directly: on a fresh machine (every GitHub run) that
+corrupted clips and failed a random test. Bump `FIXTURE_VERSION` whenever a clip changes.
+
 ## Clips
 
 | Clip | What it is | Used to test |
