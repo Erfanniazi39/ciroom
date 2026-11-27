@@ -138,6 +138,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     let buf = "";
     sock.setEncoding("utf8"); // a file name (Persian…) must not be cut in the middle of a character
     sock.on("data", (d) => {
+      if (st.sock !== sock) return; // a socket of an mpv that went away: its last messages must not land on the next one
       buf += d;
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -284,7 +285,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
             file, ...morePartsOf(file), // a multi-part movie (CD1/CD2) is one mpv playlist
           ], { stdio: "ignore" });
           st.proc = proc;
-          proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock = null; st.ready = false; st.queue = []; } });
+          proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock?.destroy(); st.sock = null; st.ready = false; st.queue = []; } });
           proc.on("error", () => { st.running = false; });
           setTimeout(() => connect(), 200);
           return json(200, { ok: true, file });

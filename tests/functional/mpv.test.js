@@ -86,7 +86,7 @@ describe("full player (real mpv, no window)", { skip }, () => {
 
   test("stop closes mpv; with no window open the server keeps mpv's last position for the next start", async () => {
     await cmd({ cmd: "seek", value: 250 });
-    await until(async () => { const p = await snap(); return p.position >= 249; });
+    await until(async () => { const p = await snap(); return p.position >= 249 && p.position < 260; }); // not the spot the test before left
     await cmd({ cmd: "stop" });
     await until(async () => !(await snap()).running);
     await until(() => !mpvPid(), 5000);

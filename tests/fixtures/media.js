@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const FIXTURE_VERSION = 4;
+export const FIXTURE_VERSION = 5; // 5: built in a private folder, then moved into place (v4 caches could be corrupt)
 const CACHE = path.join(os.tmpdir(), `ciroom-fixture-clips-v${FIXTURE_VERSION}`);
 
 export const hasTool = (/** @type {string} */ t) => { try { execFileSync(t, ["-version"], { stdio: "ignore" }); return true; } catch { return false; } };
@@ -47,8 +47,11 @@ export async function buildClips() {
   const out = Object.fromEntries(names.map((n) => [n, path.join(CACHE, n)]));
   if (fs.existsSync(done)) return out;
   if (!HAS_FFMPEG) throw new Error("ffmpeg/ffprobe are needed to build the test media");
-  fs.mkdirSync(CACHE, { recursive: true });
-  const tmp = (/** @type {string} */ n) => path.join(CACHE, n);
+  // Test files run in parallel processes and all call this. Each builds in its own folder and moves it into place in
+  // one step, so two builds never write the same file (that made corrupt clips and random failures on a fresh cache).
+  const build = `${CACHE}.build-${process.pid}-${Date.now()}`;
+  fs.mkdirSync(build, { recursive: true });
+  const tmp = (/** @type {string} */ n) => path.join(build, n);
   fs.writeFileSync(tmp("en.srt"), srt(EN_LINES, 140));
   fs.writeFileSync(tmp("fa-utf8.srt"), srt(FA_LINES, 140));
   fs.writeFileSync(tmp("fa-utf16.srt"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(srt(FA_LINES, 140), "utf16le")]));
@@ -78,7 +81,12 @@ export async function buildClips() {
   ff([...V(10), "-f", "lavfi", "-i", "sine=frequency=500:sample_rate=48000:duration=10", "-filter_complex", "[1:a]pan=5.1|FL=c0|FR=c0|FC=c0|LFE=c0|BL=c0|BR=c0[a]", "-map", "0:v", "-map", "[a]", ...X264(20), "-c:a", "ac3", "-b:a", "192k", tmp("ac3_51.mkv")]);
   // A file with a video extension that is not a video (corrupted download).
   fs.writeFileSync(tmp("broken.mkv"), Buffer.alloc(256 * 1024, 0x5a));
-  fs.writeFileSync(done, new Date().toISOString());
+  fs.writeFileSync(path.join(build, ".done"), new Date().toISOString());
+  try { fs.renameSync(build, CACHE); } // atomic: CACHE appears complete or not at all
+  catch (e) {
+    fs.rmSync(build, { recursive: true, force: true });
+    if (!fs.existsSync(done)) throw e; // not "another process was first": a real error
+  }
   return out;
 }
 
