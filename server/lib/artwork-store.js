@@ -59,7 +59,7 @@ export async function tmdb(/** @type {string} */ pathAndQuery) {
 
 export { norm, similarity };
 
-/** TMDB search → [{ tmdbId, title, year, overview, poster, hasBackdrop }], with the year dropped if it finds nothing. */
+/** TMDB search → [{ tmdbId, title, originalTitle, year, overview, poster, hasBackdrop }], with the year dropped if it finds nothing. */
 export async function searchTmdb(/** @type {"movie"|"tv"} */ type, /** @type {string} */ query, /** @type {number=} */ year) {
   const q = new URLSearchParams({ query, include_adult: "false" });
   if (year) q.set(type === "movie" ? "year" : "first_air_date_year", String(year));
@@ -68,6 +68,7 @@ export async function searchTmdb(/** @type {"movie"|"tv"} */ type, /** @type {st
   return (data.results || []).slice(0, 12).map((/** @type {any} */ r) => ({
     tmdbId: r.id,
     title: r.title ?? r.name,
+    originalTitle: r.original_title ?? r.original_name,
     year: Number((r.release_date ?? r.first_air_date ?? "").slice(0, 4)) || null,
     overview: r.overview,
     poster: r.poster_path ? `${IMG}/w185${r.poster_path}` : null,

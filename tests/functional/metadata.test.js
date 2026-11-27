@@ -137,7 +137,7 @@ describe("metadata and artwork with a mocked TMDB", { skip: !HAS_FFMPEG }, () =>
     assert.ok(r.json.seasons[9].error);
   });
 
-  test("D-07: a Persian folder name is matched automatically (TMDB knows the film by its original title)", { todo: "D-07" }, async () => {
+  test("D-07: a Persian folder name is matched automatically (TMDB knows the film by its original title)", async () => {
     const r = await s.post("/api/meta/fetch", { id: "title", type: "movie", query: "درباره الی", year: 2009 });
     assert.notEqual(r.json.matched, false, `not matched: ${r.json.reason}`);
     assert.equal(r.json.tmdbId, 1010);

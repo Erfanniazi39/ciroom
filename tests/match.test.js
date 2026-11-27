@@ -53,3 +53,14 @@ test("similarity basics", () => {
   assert.equal(similarity("The Office", "office"), 1);
   assert.ok(similarity("Bad Boys", "Bad Boys II") > 0.7 && similarity("Bad Boys", "Bad Boys II") < 1);
 });
+
+test("non-Latin titles: original title counts, Persian spelling variants match, empty never matches (D-07)", async () => {
+  const m = await bestMatch(canned([{ ...R(7, "About Elly", 2009), originalTitle: "درباره الی" }]), "movie", "درباره الی", 2009);
+  assert.equal(m.matched, true);
+  assert.equal(similarity("\u064A\u0643", "\u06CC\u06A9"), 1, "Arabic yeh/kaf = Persian");
+  assert.equal(similarity("می\u200Cشود", "میشود"), 1, "zero-width non-joiner");
+  assert.equal(similarity("جـدایی", "جدایی"), 1, "tatweel");
+  assert.equal(similarity("درباره الی", "جدایی نادر از سیمین"), 0);
+  assert.equal(similarity("...", "!!!"), 0);
+  assert.equal(similarity("Amélie", "Amelie"), 1);
+});
