@@ -268,7 +268,7 @@ describe("unusual names and structures", { skip: !HAS_FFMPEG }, () => {
     } finally { await s.stop(); }
   });
 
-  test("D-06: a movie folder whose name starts with $ (\"$9.99 2008\") is shown, or at least reported", { todo: "D-06" }, async () => {
+  test("D-06: a movie folder whose name starts with $ (\"$9.99 2008\") is shown, or at least reported", async () => {
     const s = await startCiRoom({ layout: { "Movies/$9.99 2008/nine.mkv": "short.mkv", "Movies/$RECYCLE.BIN/x.mkv": "short20.mkv" } });
     try {
       const lib = await scan(s);

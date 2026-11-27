@@ -43,15 +43,16 @@ const settings = () => readJson(SETTINGS, {});
 // The API keys in settings.json are for this user only (no effect on NTFS/Windows, where file modes aren't enforced).
 try { fs.chmodSync(SETTINGS, 0o600); } catch { /* no file yet, or a drive without modes */ }
 
+const REJECTED = "TMDB rejected the API key";
+
 /** GET a TMDB v3 endpoint with the user's saved key (v3 key → api_key, v4 token → Bearer). */
-export async function tmdb(/** @type {string} */ pathAndQuery) {
-  const key = settings().tmdbKey;
+export async function tmdb(/** @type {string} */ pathAndQuery, /** @type {string=} */ key = settings().tmdbKey) {
   if (!key) throw new Error("Add your TMDB API key in Library → Artwork first");
   const bearer = key.startsWith("eyJ"); // v4 read access token vs v3 api key
   const url = new URL(`https://api.themoviedb.org/3${pathAndQuery}`);
   if (!bearer) url.searchParams.set("api_key", key);
   const r = await fetch(url, { headers: bearer ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(20000) });
-  if (r.status === 401) throw new Error("TMDB rejected the API key");
+  if (r.status === 401) throw new Error(REJECTED);
   if (r.status === 404) throw new Error("TMDB doesn't know this title (404)");
   if (!r.ok) throw new Error(`TMDB error (HTTP ${r.status})`);
   return r.json();
@@ -176,11 +177,17 @@ export function artworkRoutes() {
       } },
       { method: "POST", path: "/api/settings", audience: "pc", handler: async ({ req, json, body }) => {
         const { tmdbKey } = await body(req);
-        const s = settings();
-        if (tmdbKey) s.tmdbKey = String(tmdbKey).trim(); else delete s.tmdbKey;
+        const key = tmdbKey ? String(tmdbKey).trim() : "";
+        // Validate now, for immediate feedback. A rejected key is never saved (the old one stays); when TMDB can't
+        // be reached the key is saved anyway, so an offline user can still enter it.
+        let failed;
+        if (key) try { await tmdb("/configuration", key); } catch (e) { failed = e; }
+        if (failed instanceof Error && failed.message === REJECTED) throw failed;
+        const s = settings(); // read after the check, so nothing saved meanwhile is lost
+        if (key) s.tmdbKey = key; else delete s.tmdbKey;
         writeJsonAtomic(SETTINGS, s, { space: 2, mode: 0o600 });
-        if (s.tmdbKey) await tmdb("/configuration"); // validate now, so the user gets immediate feedback
-        json(200, { hasTmdbKey: !!s.tmdbKey }); return true;
+        if (failed) throw failed;
+        json(200, { hasTmdbKey: !!key }); return true;
       } },
 
       { method: "POST", path: "/api/tmdb/search", audience: "pc", handler: async ({ req, json, body }) => {

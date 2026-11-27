@@ -192,7 +192,7 @@ describe("page player: server side", { skip: !HAS_FFMPEG }, () => {
     assert.equal(r.status, 422);
   });
 
-  test("D-10: a broken (binary) subtitle file is not labelled with a language", { todo: "D-10" }, async () => {
+  test("D-10: a broken (binary) subtitle file is not labelled with a language", async () => {
     const p = (await s.get("/api/probe" + q(file("Alpha Movie")))).json;
     const b = p.subtitles.find((x) => x.name === "Alpha.Movie.2001.broken.srt");
     assert.equal(b.language, null, `labelled "${b.label}"`);

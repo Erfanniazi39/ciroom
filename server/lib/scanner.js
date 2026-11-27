@@ -32,7 +32,8 @@ import { defineRoutes } from "./routes.js";
 const LIB_FILE = LIBRARY_FILE; // per system (full paths differ between Linux and Windows)
 const IDS_FILE = path.join(DATA_DIR, "ids.json");
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
-export const SKIP_DIR = /^(\.|@|\$|sample$|samples$|extras?$|featurettes?$|behind the scenes$|trailers?$)/i;
+// Windows' own folders are listed by name: a title may start with "$" ("$9.99").
+export const SKIP_DIR = /^(\.|@|(\$RECYCLE\.BIN|System Volume Information|\$WinREAgent|\$SysReset|found\.000)$|sample$|samples$|extras?$|featurettes?$|behind the scenes$|trailers?$)/i;
 
 /**
  * Folder abbreviations (ALIASES) and the ids the library used before the scanner existed (LEGACY_IDS) live in
@@ -87,7 +88,7 @@ export function parseFolder(/** @type {string} */ name) {
   title = title.replace(/\s*[([][^)\]]*[)\]]/g, (g) => (KEEP_BRACKET.test(g.trim()) ? g : ""));
   title = title.replace(/[\s._-]+$/, "").replace(/^[\s._-]+/, "");
   if (!title) { title = name.trim(); year = undefined; }
-  if (!/\s/.test(title) && /[._]/.test(title) && !/^[\d.]+$/.test(title)) title = title.replace(/[._]+/g, " "); // "The.Office" → "The Office"; keep "11.22.63"
+  if (!/\s/.test(title) && /[._]/.test(title) && !/^\$?[\d.]+$/.test(title)) title = title.replace(/[._]+/g, " "); // "The.Office" → "The Office"; keep "11.22.63", "$9.99"
   title = title.replace(/\s+/g, " ").trim();
   const alias = ALIASES[title.toLowerCase()];
   if (alias) title = alias;

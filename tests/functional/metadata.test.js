@@ -46,7 +46,11 @@ describe("metadata and artwork with a mocked TMDB", { skip: !HAS_FFMPEG }, () =>
     if (process.platform !== "win32") assert.equal(fs.statSync(path.join(s.data, "settings.json")).mode & 0o777, 0o600);
   });
 
-  test("D-08: a key TMDB rejected is not kept (Settings must not say a key is saved)", { todo: "D-08" }, async () => {
+  test("D-08: a key TMDB rejected is not kept (Settings must not say a key is saved)", async () => {
+    await s.post("/api/settings", { tmdbKey: "bad" });
+    assert.deepEqual((await s.get("/api/settings")).json, { hasTmdbKey: true }, "the good key from before is kept");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(s.data, "settings.json"), "utf8")).tmdbKey, "good-key");
+    await s.post("/api/settings", { tmdbKey: "" }); // start from no key
     const bad = await s.post("/api/settings", { tmdbKey: "bad" });
     assert.equal(bad.status, 400);
     const after = (await s.get("/api/settings")).json;

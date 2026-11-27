@@ -119,6 +119,9 @@ export function subtitleLanguage(file) {
     else if (buf[0] === 0xfe && buf[1] === 0xff) text = new TextDecoder("utf-16be").decode(buf);
     else try { text = new TextDecoder("utf-8", { fatal: true }).decode(buf.subarray(0, cutUtf8(buf))); }
     catch { text = new TextDecoder("windows-1256").decode(buf); }
+    // Binary junk decodes to "Arabic" letters in Windows-1256: only guess for text that has subtitle structure.
+    const cues = text.match(/\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}|^Dialogue:/gm)?.length ?? 0;
+    if (cues < 3) text = "";
     text = text.replace(/^\s*\d+\s*$/gm, " ").replace(/\d{1,2}:\d{2}:\d{2}[,.]\d+/g, " ").replace(/<[^>]*>|\{[^}]*\}/g, " ");
     const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
     const latin = (text.match(/[A-Za-z]/g) || []).length;
