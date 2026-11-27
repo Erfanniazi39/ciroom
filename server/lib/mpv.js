@@ -6,6 +6,8 @@
  *   POST /api/play          { path, startAt, subDelay?, dryRun? }
  *   GET  /api/player        → full snapshot (position, duration, pause, volume, speed, sub-delay, tracks…)
  *   POST /api/player/cmd    { cmd, value? }  cmd ∈ pause | seek | seek-rel | set | stop
+ *     Commands sent while mpv is still starting are held and sent once the file is open; the answer is then
+ *     { ok: true, queued: true }. They are thrown away if mpv exits or can't be reached.
  *
  * All three are for this PC only (mpv opens a window here). Safety: read-only on media; only paths inside the media root.
  */
@@ -67,6 +69,8 @@ const MPV_CONFIG = fileURLToPath(new URL("../../mpv", import.meta.url));
 const OBSERVED = ["time-pos", "duration", "pause", "eof-reached", "volume", "mute", "speed", "sub-delay", "sid", "aid", "track-list"];
 const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid", "aid"]);
 const NUMERIC = new Set(["volume", "speed", "sub-delay"]);
+/** How many commands are held while mpv is starting (the oldest go first when it's full). */
+const MAX_QUEUED = 50;
 
 /**
  * @param {{ rootAbs: string, resolveVideo: (p: string) => string, markersFor: (file: string) => { intro: {start:number,end:number}|null, credits: number|null } | null, finalSave: () => void }} deps
@@ -84,15 +88,29 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
   const socketPath = MPV_SOCKET;
 
   /** @type {any} */ const st = { proc: null, sock: null, running: false, file: "", props: {}, ended: false, hasNext: false, itemId: null };
-  const resetProps = () => { st.subPick = null; st.nextRequested = false; st.props = { "time-pos": 0, duration: 0, pause: false, volume: 100, mute: false, speed: 1, "sub-delay": 0, sid: false, aid: false, "track-list": [] }; st.ended = false; };
+  const resetProps = () => { st.subPick = null; st.nextRequested = false; st.ready = false; st.queue = []; st.props = { "time-pos": 0, duration: 0, pause: false, volume: 100, mute: false, speed: 1, "sub-delay": 0, sid: false, aid: false, "track-list": [] }; st.ended = false; };
   resetProps();
 
 
-  const send = (/** @type {unknown[]} */ command) => st.sock?.write(JSON.stringify({ command }) + "\n");
+  /** Straight to the socket (or Windows pipe): nothing happens if it isn't connected. */
+  const write = (/** @type {unknown[]} */ command, /** @type {number | undefined} */ request_id) =>
+    st.sock?.write(JSON.stringify({ command, request_id }) + "\n");
+  /** A player command. Until mpv has the file open it is held: before the connection it would vanish, and a seek would fail. */
+  function send(/** @type {unknown[]} */ command) {
+    if (st.ready) write(command);
+    else if (st.running && st.queue) { st.queue.push(command); if (st.queue.length > MAX_QUEUED) st.queue.shift(); }
+  }
+  function flushQueue() {
+    st.ready = true;
+    for (const command of st.queue ?? []) write(command);
+    st.queue = [];
+  }
 
   function stop() {
     if (st.running) finalSave();
-    send(["quit"]);
+    write(["quit"]);
+    st.queue = [];
+    st.ready = false;
     st.proc?.kill("SIGTERM");
     st.sock?.destroy();
     st.proc = null;
@@ -107,15 +125,15 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     const t = msg.request_id === 1 && tracks ? pickSubTrack(tracks, st.subPick.want) : null;
     if (!t || t.selected) { st.subPick = null; return; }
     st.props.sid = t.id;
-    send(["set_property", "sid", t.id]);
-    st.sock?.write(JSON.stringify({ command: ["get_property", "track-list"], request_id: 2 }) + "\n"); // mpv answers in order
+    write(["set_property", "sid", t.id]);
+    write(["get_property", "track-list"], 2); // mpv answers in order
   }
 
   function connect(attempt = 0) {
     const sock = net.connect(socketPath);
     sock.on("connect", () => {
       st.sock = sock;
-      OBSERVED.forEach((p, i) => send(["observe_property", i + 1, p]));
+      OBSERVED.forEach((p, i) => write(["observe_property", i + 1, p]));
     });
     let buf = "";
     sock.setEncoding("utf8"); // a file name (Persian…) must not be cut in the middle of a character
@@ -130,9 +148,9 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
           if (msg.event === "client-message" && msg.args?.[0] === "marquee-next") { st.nextRequested = true; continue; }
           if (st.subPick && (msg.request_id === 1 || msg.request_id === 2)) { subPickReply(msg); continue; }
           // A real playback time means the file is open and every subtitle file has been added (or skipped).
-          if (st.subPick && !st.subPick.asked && msg.name === "time-pos" && typeof msg.data === "number") {
-            st.subPick.asked = true;
-            st.sock?.write(JSON.stringify({ command: ["get_property", "track-list"], request_id: 1 }) + "\n");
+          if (msg.name === "time-pos" && typeof msg.data === "number") {
+            if (st.subPick && !st.subPick.asked) { st.subPick.asked = true; write(["get_property", "track-list"], 1); }
+            if (!st.ready) flushQueue();
           }
           if (msg.event !== "property-change" || msg.data === undefined) continue;
           if (msg.name === "eof-reached") { if (msg.data) st.ended = true; continue; }
@@ -142,6 +160,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     });
     sock.on("error", () => {
       if (attempt < 200 && st.running) setTimeout(() => connect(attempt + 1), 150); // mpv still starting (~30 s: a slow drive or a cold start)
+      else if (!st.sock) st.queue = null; // gave up: drop what was held and hold nothing more
     });
   }
 
@@ -208,7 +227,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     if (!st.running) return;
     try { beforeQuit(); } catch { /* best effort */ }
     const proc = st.proc;
-    send(["quit"]);
+    write(["quit"]);
     if (proc && proc.exitCode === null) {
       await Promise.race([new Promise((r) => proc.once("exit", r)), new Promise((r) => setTimeout(r, 1000))]);
       if (proc.exitCode === null) proc.kill("SIGTERM");
@@ -265,14 +284,14 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
             file, ...morePartsOf(file), // a multi-part movie (CD1/CD2) is one mpv playlist
           ], { stdio: "ignore" });
           st.proc = proc;
-          proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock = null; } });
+          proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock = null; st.ready = false; st.queue = []; } });
           proc.on("error", () => { st.running = false; });
           setTimeout(() => connect(), 200);
           return json(200, { ok: true, file });
       } },
       { method: "POST", path: "/api/player/cmd", audience: "pc", handler: async ({ req, json, body }) => {
         if (!playerCmd(await body(req))) return json(400, { error: "Unknown command or bad value" });
-        json(200, { ok: true });
+        json(200, st.running && !st.ready ? { ok: true, queued: true } : { ok: true });
       } },
     ]),
   };

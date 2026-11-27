@@ -155,7 +155,7 @@ describe("full player (real mpv, no window)", { skip }, () => {
     assert.equal((await snap()).running, false);
   });
 
-  test("D-17: a command sent right after the full player starts is not lost", { todo: "D-17" }, async () => {
+  test("D-17: a command sent right after the full player starts is not lost", async () => {
     await s.post("/api/play", { path: file("Alpha Movie"), startAt: 30, volume: 0 });
     const r = await cmd({ cmd: "pause" }); // e.g. the phone's pause pressed at once
     assert.equal(r.status, 200);
@@ -165,6 +165,18 @@ describe("full player (real mpv, no window)", { skip }, () => {
     await cmd({ cmd: "stop" });
     await until(async () => !(await snap()).running);
     assert.equal(now.paused, true, `answered ok but mpv kept playing (position ${p.position.toFixed(1)} → ${now.position.toFixed(1)})`);
+  });
+
+  test("D-17: a seek and a volume change sent while mpv is starting are applied in order", async () => {
+    await s.post("/api/play", { path: file("Alpha Movie"), startAt: 30, volume: 0 });
+    for (const c of [{ cmd: "seek", value: 200 }, { cmd: "seek-rel", value: 100 }, { cmd: "set", name: "volume", value: 40 }])
+      assert.deepEqual((await cmd(c)).json, { ok: true, queued: true });
+    const p = await playing(300);
+    assert.ok(p.position < 310, `position ${p.position}`);
+    await until(async () => (await snap()).volume === 40);
+    assert.deepEqual((await cmd({ cmd: "pause" })).json, { ok: true });
+    await cmd({ cmd: "stop" });
+    await until(async () => !(await snap()).running);
   });
 
   test("starting a second title replaces the first (one mpv at a time)", async () => {
