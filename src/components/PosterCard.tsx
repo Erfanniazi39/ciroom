@@ -1,6 +1,7 @@
 import { Check, Play } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useUser } from "@/store/user";
+import { showsProgress } from "@/lib/progress";
 import { newEpisodes, seriesProgress, titleHref } from "@/lib/library";
 import type { Collection, Title } from "@/types/media";
 import { BackdropArt, PosterArt } from "./Artwork";
@@ -19,7 +20,7 @@ export function PosterCard({ title, className, fluid }: { title: Title; classNam
   if (title.kind === "movie") {
     const p = progress[title.id];
     watched = !!p?.watched;
-    ratio = p && !p.watched ? p.position / p.duration : 0;
+    ratio = showsProgress(p) ? p.position / p.duration : 0;
   } else {
     const sp = seriesProgress(title, progress);
     watched = sp.total > 0 && sp.watched === sp.total;

@@ -70,7 +70,7 @@ describe("next up, next episode, continue watching", () => {
     assert.equal(items[0].progress.position, 0, "the next episode starts at 0");
   });
 
-  test("D-13: a finished movie watched again and stopped half way shows up in Continue Watching", { todo: "D-13" }, () => {
+  test("D-13: a finished movie watched again and stopped half way shows up in Continue Watching", () => {
     U.useUser.setState({ progress: {} });
     U.useUser.getState().savePosition("m1", 5800, 6000); // finished it once (≥ 90 %)
     U.useUser.getState().savePosition("m1", 1200, 6000); // watched again, stopped at 20:00

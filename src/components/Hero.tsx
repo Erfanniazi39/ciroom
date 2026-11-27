@@ -5,6 +5,7 @@ import { usePlay } from "@/hooks/usePlay";
 import { episodeCode, remaining, runtime, years } from "@/lib/format";
 import { nextUp, titleHref } from "@/lib/library";
 import { useUser } from "@/store/user";
+import { canResume } from "@/lib/progress";
 import type { Title } from "@/types/media";
 import { BackdropArt } from "./Artwork";
 import { Badge, Button, IconButton, MetaLine, cx, ratingItems } from "./ui";
@@ -99,7 +100,7 @@ function HeroActions({ item }: { item: Title }) {
   let onPlay = () => {};
   if (item.kind === "movie") {
     const p = progress[item.id];
-    if (p && !p.watched && p.position > 60) { label = "Resume"; sub = remaining(p.position, p.duration); }
+    if (canResume(p)) { label = "Resume"; sub = remaining(p.position, p.duration); }
     onPlay = () => play(item);
   } else {
     const up = nextUp(item, progress);

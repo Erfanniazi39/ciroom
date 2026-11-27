@@ -13,6 +13,7 @@ import { bytes, remaining, runtime, timecode } from "@/lib/format";
 import { durationOf, similarTo } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import { useUser } from "@/store/user";
+import { canResume } from "@/lib/progress";
 
 export default function MovieDetail() {
   const { id } = useParams();
@@ -29,7 +30,7 @@ export default function MovieDetail() {
   }
 
   const p = progress[movie.id];
-  const inProgress = p && !p.watched && p.position > 60;
+  const inProgress = canResume(p);
   const fav = favorites.includes(movie.id);
   const listed = watchlist.includes(movie.id);
   const collection = movie.collectionId ? lib.collections.find((c) => c.id === movie.collectionId) : undefined;

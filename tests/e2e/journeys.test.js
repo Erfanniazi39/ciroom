@@ -110,7 +110,7 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     assert.ok(saved.position < 412);
   });
 
-  test("D-13 (in the app): a movie marked watched, watched again to 1:40 and left — the detail page offers Resume", { todo: "D-13" }, async () => {
+  test("D-13 (in the app): a movie marked watched, watched again to 1:40 and left — the detail page offers Resume", async () => {
     await b.goto(base + "/#/movies/beta-film");
     await b.click("Mark as watched");
     await until(async () => (await progressOf(s, "beta-film"))?.watched === true);

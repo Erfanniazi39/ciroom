@@ -11,6 +11,7 @@ import { episodeCode, timecode, runtime as fmtRuntime } from "@/lib/format";
 import { continueWatching, findEpisode, nextUp } from "@/lib/library";
 import { useLibrary } from "@/store/library";
 import type { Episode, Movie, Progress, Series } from "@/types/media";
+import { canResume } from "@/lib/progress";
 import { PhonePlayer, type PhoneUser } from "./PhonePlayer";
 import { useBackLayer } from "./useBackLayer";
 
@@ -159,7 +160,7 @@ function Remote({ onLost }: { onLost: () => void }) {
   const [watching, setWatching] = useState<{ id: string; startAt: number; user: Live["user"] } | null>(null);
   const watchOnPhone = useCallback((id: string, fromStart = false, at?: number) => {
     const p = live.user?.progress[id];
-    const resume = at ?? (!fromStart && p && !p.watched && p.position > 30 ? p.position : 0);
+    const resume = at ?? (!fromStart && canResume(p, 30) ? p.position : 0);
     setWatching({ id, startAt: resume, user: live.user });
   }, [live.user]);
 
@@ -454,7 +455,7 @@ function Detail({ title, progress, play, watch, online, onBack }: { title: Movie
   const up = !isMovie ? nextUp(title as Series, progress) : null;
   const [season, setSeason] = useState(up?.episode.season ?? seasons[0]?.number ?? 1);
   const p = isMovie ? progress[title.id] : undefined;
-  const resume = !!p && !p.watched && p.position > 30;
+  const resume = canResume(p, 30);
 
   return (
     <div className="pt-1">

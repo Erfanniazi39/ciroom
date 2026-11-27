@@ -2,6 +2,7 @@ import { Check, Play } from "lucide-react";
 import { remaining } from "@/lib/format";
 import { daysAgo, daysUntil } from "@/lib/library";
 import type { Episode, Progress, Series } from "@/types/media";
+import { showsProgress } from "@/lib/progress";
 import { streamApi } from "@/api/stream";
 import { StillArt } from "./Artwork";
 import { MetaLine, ProgressBar, cx } from "./ui";
@@ -18,7 +19,7 @@ interface Props {
 export function EpisodeRow({ series, episode, progress, isNext, onPlay, onToggleWatched }: Props) {
   const missing = !episode.file;
   const watched = !!progress?.watched;
-  const ratio = progress && !watched ? progress.position / progress.duration : 0;
+  const ratio = showsProgress(progress) ? progress.position / progress.duration : 0;
   // A missing episode that hasn't aired yet isn't "missing"; one that aired in the last 30 days is "new".
   const t = episode.airDate ? new Date(`${episode.airDate}T12:00:00`).getTime() : NaN;
   const upcoming = missing && t > Date.now();

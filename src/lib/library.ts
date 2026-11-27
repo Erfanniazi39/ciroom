@@ -4,6 +4,7 @@
  */
 import type { Library } from "@/api";
 import type { Episode, Movie, Progress, Series, Title } from "@/types/media";
+import { canResume } from "@/lib/progress";
 
 export type ProgressMap = Record<string, Progress>;
 
@@ -41,7 +42,7 @@ export function nextUp(s: Series, progress: ProgressMap): { episode: Episode; mo
   });
   if (latestIdx === -1) return { episode: eps[0], mode: "start" };
   const latest = eps[latestIdx];
-  if (!progress[latest.id].watched) return { episode: latest, mode: "resume" };
+  if (!progress[latest.id].watched || canResume(progress[latest.id])) return { episode: latest, mode: "resume" };
   // A double-episode file is one video: its other half was just watched too.
   const after = eps.slice(latestIdx + 1).find((e) => !progress[e.id]?.watched && e.file!.path !== latest.file!.path);
   return after ? { episode: after, mode: "next" } : { episode: eps[0], mode: "start" };
@@ -67,7 +68,7 @@ export function continueWatching(lib: Library, progress: ProgressMap): ContinueI
   const items: ContinueItem[] = [];
   for (const m of lib.movies) {
     const p = progress[m.id];
-    if (p && !p.watched && p.position > 60) items.push({ key: m.id, title: m, progress: p });
+    if (canResume(p)) items.push({ key: m.id, title: m, progress: p });
   }
   for (const s of lib.series) {
     const up = nextUp(s, progress);

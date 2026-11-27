@@ -16,6 +16,7 @@ import { useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
 import { getWebController } from "@/store/webControl";
 import { useUser } from "@/store/user";
+import { canResume, showsProgress } from "@/lib/progress";
 import type { Episode, Movie, Series, Title } from "@/types/media";
 
 /**
@@ -45,7 +46,7 @@ export default function Watch() {
   if (startRef.current === null && (movie || ep)) {
     const t = params.get("t");
     const p = useUser.getState().progress[id];
-    startRef.current = t !== null ? Number(t) || 0 : p && !p.watched && p.position > 30 ? p.position : 0;
+    startRef.current = t !== null ? Number(t) || 0 : canResume(p, 30) ? p.position : 0;
   }
 
   // Arriving at the page with a stale handoff (mpv was closed while we were elsewhere): start fresh.
@@ -211,7 +212,7 @@ function EpisodeList({ series, currentId }: { series: Series; currentId: string 
         {eps.map((e) => {
           const isCur = e.id === currentId;
           const pr = progress[e.id];
-          const ratio = pr && !pr.watched ? pr.position / pr.duration : 0;
+          const ratio = showsProgress(pr) ? pr.position / pr.duration : 0;
           const body = (
             <>
               <div className="relative w-[132px] shrink-0 overflow-hidden rounded-lg ring-1 ring-white/[.06]">

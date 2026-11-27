@@ -6,12 +6,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { serverStorage } from "@/lib/serverStorage";
+import { isCompleted } from "@/lib/progress";
 import type { Progress } from "@/types/media";
 
-/** Watched at ≥ 90%, or < 3 min remaining. The 3-min rule only applies to videos long enough for it to mean something:
- *  a 2-minute clip would otherwise count as watched the moment it starts. */
-export const isCompleted = (position: number, duration: number) =>
-  duration > 0 && (position / duration >= 0.9 || (duration > 600 && duration - position < 180));
+export { isCompleted };
 
 /** A remembered subtitle choice for a series (or movie): off, or a language (+ the file picked, as a fallback). */
 export type SubPref = { off: true } | { off?: false; language: string | null; name: string };
@@ -94,6 +92,7 @@ export const useUser = create<UserState>()(
       savePosition: (id, position, duration) =>
         set((s) => {
           const prev = s.progress[id];
+          // Once finished, `watched` stays true (history). A rewatch left half way still resumes: see canResume (D-13).
           const watched = isCompleted(position, duration) || (prev?.watched ?? false);
           return {
             progress: { ...s.progress, [id]: { position, duration, watched, updatedAt: Date.now() } },
