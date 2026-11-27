@@ -97,13 +97,15 @@ export function artworkRoutes() {
     writeJson(INDEX, idx);
   }
 
-  async function download(/** @type {string} */ url) {
+  async function download(/** @type {string} */ url, /** @type {string=} */ trusted) {
     // Public addresses only, checked for the link AND for every redirect (max 3): a picture link must not reach the home network.
+    // `trusted` is an origin CiRoom chose itself (TMDB's picture server): some networks answer its name with a private
+    // address to block it, although it is reachable through the proxy. HTTPS still checks who is on the other end.
     let u = new URL(url);
     /** @type {Response | undefined} */ let r;
     for (let hop = 0; hop <= 3; hop++) {
       if (!/^https?:$/.test(u.protocol)) throw new Error("Only http(s) links are supported");
-      await assertPublicHost(u.hostname);
+      if (u.origin !== trusted) await assertPublicHost(u.hostname);
       r = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(30000) });
       const loc = r.status >= 300 && r.status < 400 ? r.headers.get("location") : null;
       if (!loc) break;
@@ -120,8 +122,9 @@ export function artworkRoutes() {
     const d = await tmdb(`/${type}/${tmdbId}`);
     if (!d.poster_path && !d.backdrop_path) throw new Error("TMDB has no images for this title");
     const meta = { source: "tmdb", tmdbId };
-    if (d.poster_path) { const { buf, mime } = await download(`${IMG}/w500${d.poster_path}`); store(id, "poster", buf, mime, meta); }
-    if (d.backdrop_path) { const { buf, mime } = await download(`${IMG}/w1280${d.backdrop_path}`); store(id, "backdrop", buf, mime, meta); }
+    const trusted = new URL(IMG).origin;
+    if (d.poster_path) { const { buf, mime } = await download(`${IMG}/w500${d.poster_path}`, trusted); store(id, "poster", buf, mime, meta); }
+    if (d.backdrop_path) { const { buf, mime } = await download(`${IMG}/w1280${d.backdrop_path}`, trusted); store(id, "backdrop", buf, mime, meta); }
   }
 
   const publicIndex = () => {

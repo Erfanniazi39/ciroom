@@ -62,26 +62,42 @@ export default function LibraryPage() {
       api.listRoots().then(setRoots);
       api.listReviewItems().then(setReview);
       await reload();
-      // New titles: fetch their real details + poster/background right away (TMDB), so they show up complete.
+      // New titles get their real details + poster/background right away (TMDB), so they show up complete. Titles whose
+      // pictures failed to download earlier are tried again.
       const st = useLibrary.getState();
       const base = await api.getLibrary();
-      const fresh = [...base.movies, ...base.series].filter((t) => !st.meta[t.id]);
-      for (const [i, t] of fresh.entries()) {
-        setLastResult({ ok: true, text: `${summary} · fetching details ${i + 1}/${fresh.length}: ${t.title}…` });
+      const titles = [...base.movies, ...base.series];
+      const shown = (id: string) => {
+        const lib = useLibrary.getState().data;
+        return lib && [...lib.movies, ...lib.series].find((x) => x.id === id);
+      };
+      const noArt = (id: string) => { const t = shown(id); return !!t && !t.art.poster && !t.art.backdrop; };
+      const fresh = titles.filter((t) => !st.meta[t.id]);
+      const todo = titles.filter((t) => !st.meta[t.id] || (st.meta[t.id].tmdbId && noArt(t.id)));
+      const noPicture: string[] = [];
+      for (const [i, t] of todo.entries()) {
+        setLastResult({ ok: true, text: `${summary} · fetching details ${i + 1}/${todo.length}: ${t.title}…` });
+        const type = t.kind === "movie" ? "movie" : "tv";
+        let m = st.meta[t.id];
+        if (!m) {
+          try {
+            m = await metaApi.fetch({ id: t.id, type, query: t.title, year: t.year, seasons: t.kind === "series" ? t.seasons.map((x) => x.number) : undefined });
+            st.setMeta(t.id, m);
+          } catch { continue; /* listed in Metadata → Fetch details; the user can retry or fix the match there */ }
+        }
         try {
-          const type = t.kind === "movie" ? "movie" : "tv";
-          const m = await metaApi.fetch({ id: t.id, type, query: t.title, year: t.year, seasons: t.kind === "series" ? t.seasons.map((x) => x.number) : undefined });
-          st.setMeta(t.id, m);
-          const lib = useLibrary.getState().data;
-          const shown = lib && [...lib.movies, ...lib.series].find((x) => x.id === t.id);
-          if (shown && !shown.art.poster) st.setArt(t.id, await artApi.apply(t.id, type, m.tmdbId));
-        } catch { /* listed in Metadata → Fetch details; the user can retry or fix the match there */ }
+          if (m.tmdbId && noArt(t.id)) st.setArt(t.id, await artApi.apply(t.id, type, m.tmdbId));
+        } catch (e) {
+          noPicture.push(`${t.title} (${e instanceof Error ? e.message : "download failed"})`);
+        }
       }
       if (fresh.length) {
         setLastResult({ ok: true, text: `${summary} · adding IMDb ratings…` });
         try { await metaApi.imdb(); await useLibrary.getState().reloadMeta(); } catch { /* ratings can be updated from Metadata later */ }
         setLastResult({ ok: true, text: `${summary} · details, ratings and artwork fetched` });
       }
+      if (noPicture.length) setLastResult({ ok: false, text: `${summary} · no picture for ${noPicture.join(", ")}` });
+      else if (todo.length && !fresh.length) setLastResult({ ok: true, text: `${summary} · missing pictures fetched` });
     } catch (e) {
       setLastResult({ ok: false, text: e instanceof Error ? e.message : "Scan failed" });
     } finally {
