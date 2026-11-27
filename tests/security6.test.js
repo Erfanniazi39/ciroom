@@ -6,6 +6,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { startServer, request, postJson, pairedPhone, lanIp } from "./helpers.js";
 import { isPrivateAddress } from "../server/lib/netguard.js";
@@ -98,12 +99,12 @@ test("d: /api/ping proves the shell's secret only when asked with a nonce, never
 });
 
 test("e: settings.json is written readable by the owner only", { skip: process.platform === "win32" }, async () => {
-  const s = await startServer();
+  // TMDB is mocked: a made-up key is rejected (and not saved) by the real service, which GitHub can reach.
+  const s = await startServer({ env: { NODE_OPTIONS: `--import ${pathToFileURL(path.resolve(import.meta.dirname, "functional/tmdb-mock.js")).href}` } });
   try {
     const f = path.join(s.data, "settings.json");
     fs.writeFileSync(f, JSON.stringify({ subdlKey: "k" }), { mode: 0o644 });
-    // saving the TMDB key rewrites the file (validation against TMDB then fails offline, the file is written first)
-    await postJson(s.port, "/api/settings", { tmdbKey: "abc" });
+    assert.equal((await postJson(s.port, "/api/settings", { tmdbKey: "abc" })).status, 200); // saving the key rewrites the file
     assert.equal((fs.statSync(f).mode & 0o777).toString(8), "600");
   } finally { s.stop(); }
 });
