@@ -28,13 +28,13 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
   /** @type {string[]} */ const profiles = [];
   const restart = async () => {
     await b?.close(); await s.stop({ keep: true });
-    s = await startCiRoom({ dir, media: s.media, data: s.data, cache: s.cache, mpv: HAS_MPV });
+    s = await startCiRoom({ dir, media: s.media, data: s.data, cache: s.cache, mpv: HAS_MPV, tmdb: true });
     base = `http://127.0.0.1:${s.port}`;
     profiles.push(scratch("e2e-profile"));
     b = await launch({ dir: profiles.at(-1) }); // a new window (fresh browser storage: only the server's data counts)
   };
   before(async () => {
-    s = await startCiRoom({ dir, layout: LAYOUT_FULL, mpv: HAS_MPV });
+    s = await startCiRoom({ dir, layout: LAYOUT_FULL, mpv: HAS_MPV, tmdb: true });
     base = `http://127.0.0.1:${s.port}`;
     b = await launch({ dir });
   });

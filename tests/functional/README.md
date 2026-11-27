@@ -20,8 +20,8 @@ One file: `node --test tests/functional/library.test.js`. One test or scenario: 
 - Chrome runs headless with a fresh profile in a scratch folder, muted, without a proxy.
 - Nothing goes online. TMDB, TMDB images and the IMDb dataset are answered inside the test server by
   `tmdb-mock.js` (loaded with `node --import`); that is the only mocked dependency.
-- Known defects are tests marked `{ todo: "D-xx" }`: they assert the expected behaviour, are reported as failing
-  "todo" tests, and don't fail the run. When a defect is fixed, its test passes; remove the `todo` then.
+- Tests named `D-xx` guard defects found and fixed in testing round 1. None is open. For a newly found defect, add a
+  test that asserts the expected behaviour and mark it `{ todo: "D-xx" }` until it is fixed.
 
 ## Files
 

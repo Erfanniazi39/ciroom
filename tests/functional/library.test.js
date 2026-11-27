@@ -1,7 +1,6 @@
 // Functional: media library management (area B) and series/episode detection (area D) through the real server and a
 // real synthetic library on disk. Rescans, renames, removals, stable ids, preserved user data, unavailable drive,
-// changing the library folder. Tests marked { todo: "D-xx" } assert the expected behaviour of a confirmed defect
-// (docs: the round-1 defect report); they report but don't fail the run.
+// changing the library folder. Tests named D-xx guard defects found and fixed in testing round 1.
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

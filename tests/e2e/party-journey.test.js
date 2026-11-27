@@ -20,7 +20,7 @@ describe("watch party in two browsers", { skip }, () => {
   /** @type {any} */ let s, host, guest;
   const dir = scratch("e2e-party");
   before(async () => {
-    s = await startCiRoom({ dir, layout: { "Movies/Alpha Movie 2001/alpha.mkv": "long.mkv" } });
+    s = await startCiRoom({ dir, layout: { "Movies/Alpha Movie 2001/alpha.mkv": "long.mkv" }, tmdb: true });
     host = await launch({ dir: path.join(dir, "host") });
     guest = await launch({ dir: path.join(dir, "guest") });
   });
