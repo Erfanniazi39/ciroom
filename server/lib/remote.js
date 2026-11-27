@@ -60,8 +60,8 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   /** Last report from the PC window: what the page player is doing + what the phone may browse by. */
   /** @type {{ at: number, now: any, user: any }} */
   let report = { at: 0, now: null, user: null };
-  /** @type {Set<import("node:http").ServerResponse>} */
-  const phones = new Set();
+  /** Open phone event streams → the device each belongs to. @type {Map<import("node:http").ServerResponse, string>} */
+  const phones = new Map();
   /** @type {Set<import("node:http").ServerResponse>} */
   const windows = new Set();
   let lastSent = "";
@@ -85,7 +85,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     const a = isActive();
     if (a === wasActive) return;
     wasActive = a;
-    if (!a) { pairing = null; phoneNow.clear(); eventStreams.clear(); for (const r of phones) r.destroy(); phones.clear(); ensureTick(); for (const c of [...phoneStreams]) c(); }
+    if (!a) { pairing = null; phoneNow.clear(); eventStreams.clear(); for (const r of phones.keys()) r.destroy(); phones.clear(); ensureTick(); for (const c of [...phoneStreams.keys()]) c(); }
     onToggle();
   }
   async function refreshNet(fresh = false) {
@@ -103,8 +103,8 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     }
     if (!cfg.enabled && netTimer) { clearInterval(netTimer); netTimer = null; }
   }
-  /** Phone media streams (watching): closers called when phones are switched off. @type {Set<() => void>} */
-  const phoneStreams = new Set();
+  /** Phone media streams (watching): closer → device. Called when phones are switched off or that phone is removed. @type {Map<() => void, string>} */
+  const phoneStreams = new Map();
 
   /** @type {Record<string, { id: string, position: number, duration: number, watched: number, at: number }>} */
   let pending = {};
@@ -145,7 +145,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
   const watch = media ? phoneWatchRoutes({
     resolveVideo: media.resolveVideo, stream: media.stream,
     streamsOf: (id) => { let c = streamCounts.get(id); if (!c) streamCounts.set(id, (c = { n: 0 })); return c; },
-    onStream: (close) => { phoneStreams.add(close); return () => phoneStreams.delete(close); },
+    onStream: (close, deviceId) => { phoneStreams.set(close, deviceId); return () => phoneStreams.delete(close); },
   }) : null;
 
   const cookieOf = (/** @type {import("node:http").IncomingMessage} */ req) => {
@@ -193,11 +193,19 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     const s = JSON.stringify(publicState());
     if (!force && s === lastSent) return;
     lastSent = s;
-    for (const r of phones) r.write(`data: ${s}\n\n`);
+    for (const r of phones.keys()) r.write(`data: ${s}\n\n`);
   }
   function ensureTick() {
     if (phones.size && !tick) tick = setInterval(() => pushPhones(), 700);
     if (!phones.size && tick) { clearInterval(tick); tick = null; }
+  }
+  /** A removed phone is cut off at once: its open connections would otherwise outlive its pairing. */
+  function dropDevice(/** @type {string} */ id) {
+    for (const [r, dev] of [...phones]) if (dev === id) { phones.delete(r); r.destroy(); }
+    for (const [close, dev] of [...phoneStreams]) if (dev === id) close();
+    phoneNow.delete(id);
+    ensureTick();
+    announcePhones();
   }
 
   const sse = (/** @type {import("node:http").ServerResponse} */ res) => {
@@ -306,10 +314,10 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
       })) : []),
 
       { method: "GET", path: "/api/remote/events", audience: "phone", handler: async ({ req, res }) => {
-        sse(res);
-        phones.add(res);
-        announcePhones();
         const evDev = deviceOf(req)?.id;
+        sse(res);
+        phones.set(res, evDev ?? "");
+        announcePhones();
         if (evDev) eventStreams.set(evDev, (eventStreams.get(evDev) ?? 0) + 1);
         res.on("close", () => {
           phones.delete(res); ensureTick(); announcePhones();
@@ -367,6 +375,7 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
         const c = await body(req);
         const cmd = String(c.cmd ?? "");
         const value = Number(c.value);
+        if (["seekBy", "seekTo", "volume", "subtitle", "subDelay"].includes(cmd) && !Number.isFinite(c.value)) { json(400, { error: "That command needs a number." }); return true; }
         if (!windowOnline()) { json(409, { error: "CiRoom isn't open on the PC." }); return true; }
         if (mpv.running() && cmd === "skip") { const ok = !!mpv.skip?.(); json(ok ? 200 : 409, ok ? { ok: true } : { error: "Nothing to skip right now" }); pushPhones(); return true; }
         const usesMpv = mpv.running() && ["toggle", "seekBy", "seekTo", "volume", "mute", "stop", "subtitle", "subDelay"].includes(cmd);
@@ -459,8 +468,8 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
       { method: "POST", path: "/api/remote/revoke", audience: "pc", handler: async ({ req, json, body }) => {
         const { id } = await body(req);
         cfg.devices = cfg.devices.filter((d) => d.id !== id);
-        phoneNow.delete(id);
         save();
+        dropDevice(String(id));
         json(200, { ok: true });
         return true;
       } },

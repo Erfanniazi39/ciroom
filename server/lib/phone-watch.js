@@ -69,7 +69,7 @@ export function libraryItems() {
 export const itemFor = (/** @type {unknown} */ id) => (typeof id === "string" && ID.test(id) ? libraryItems().get(id) ?? null : null);
 
 /**
- * @param {{ resolveVideo: (p: string) => string, stream: any, streamsOf: (deviceId: string) => { n: number }, onStream: (close: () => void) => () => void }} deps
+ * @param {{ resolveVideo: (p: string) => string, stream: any, streamsOf: (deviceId: string) => { n: number }, onStream: (close: () => void, deviceId: string) => () => void }} deps
  */
 export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) {
   const fail = (/** @type {import("node:http").ServerResponse} */ res, /** @type {number} */ code, /** @type {string} */ error) => {
@@ -112,7 +112,7 @@ export function phoneWatchRoutes({ resolveVideo, stream, streamsOf, onStream }) 
         s.n++;
         let done = false;
         const release = () => { if (!done) { done = true; s.n--; off(); } };
-        const off = onStream(() => { try { res.destroy(); } catch { /* gone */ } });
+        const off = onStream(() => { try { res.destroy(); } catch { /* gone */ } }, deviceId);
         res.on("close", release);
       }
       req.url = `/api/${what}?${q}`;

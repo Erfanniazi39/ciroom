@@ -66,6 +66,7 @@ const MPV_CONFIG = fileURLToPath(new URL("../../mpv", import.meta.url));
 /** mpv properties we mirror, and which ones the UI may set. */
 const OBSERVED = ["time-pos", "duration", "pause", "eof-reached", "volume", "mute", "speed", "sub-delay", "sid", "aid", "track-list"];
 const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid", "aid"]);
+const NUMERIC = new Set(["volume", "speed", "sub-delay"]);
 
 /**
  * @param {{ rootAbs: string, resolveVideo: (p: string) => string, markersFor: (file: string) => { intro: {start:number,end:number}|null, credits: number|null } | null, finalSave: () => void }} deps
@@ -168,11 +169,13 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     };
   }
 
-  /** Apply a player command (shared by /api/player/cmd and the phone remote). @returns {boolean} false if unknown */
+  /** Apply a player command (shared by /api/player/cmd and the phone remote). @returns {boolean} false if unknown, or if a number is missing or broken */
   function playerCmd(/** @type {{cmd:string,name?:string,value?:any}} */ { cmd, name, value }) {
+    const needsNumber = cmd === "seek" || cmd === "seek-rel" || (cmd === "set" && NUMERIC.has(name ?? ""));
+    if (needsNumber && !Number.isFinite(value)) return false; // NaN would reach mpv and the mirrored state
     if (cmd === "pause") send(["cycle", "pause"]);
-    else if (cmd === "seek") send(["seek", Number(value), "absolute"]);
-    else if (cmd === "seek-rel") send(["seek", Number(value), "relative"]);
+    else if (cmd === "seek") send(["seek", value, "absolute"]);
+    else if (cmd === "seek-rel") send(["seek", value, "relative"]);
     else if (cmd === "set" && name && SETTABLE.has(name)) {
       send(["set_property", name, value]);
       st.props[name] = value; // optimistic; mpv confirms via property-change
@@ -268,7 +271,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
           return json(200, { ok: true, file });
       } },
       { method: "POST", path: "/api/player/cmd", audience: "pc", handler: async ({ req, json, body }) => {
-        if (!playerCmd(await body(req))) return json(400, { error: "Unknown command" });
+        if (!playerCmd(await body(req))) return json(400, { error: "Unknown command or bad value" });
         json(200, { ok: true });
       } },
     ]),

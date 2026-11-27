@@ -109,18 +109,30 @@ describe("phone remote", { skip: !HAS_FFMPEG || !ip }, () => {
     await until(async () => !(await s.get("/api/player")).json.running);
   });
 
-  test("D-15: a phone command with a missing or broken number changes nothing (no NaN reaches mpv)", { skip: !HAS_MPV, todo: "D-15" }, async () => {
+  test("D-15: a phone command with a missing or broken number changes nothing (no NaN reaches mpv)", { skip: !HAS_MPV }, async () => {
     const f = lib.movies[0].file.path;
     await s.post("/api/play", { path: f, startAt: 100, volume: 40, itemId: "alpha-movie" });
     await until(async () => { const p = (await s.get("/api/player")).json; return p.running && p.duration > 0 && p.volume === 40; }, 20000);
     const r = await phone.post("/api/remote/cmd", { cmd: "volume", value: "loud" });
+    for (const cmd of ["seekBy", "seekTo", "volume", "subtitle", "subDelay"]) {
+      for (const value of [undefined, null, "12"]) assert.equal((await phone.post("/api/remote/cmd", { cmd, value })).status, 400, `${cmd} ${JSON.stringify(value)}`);
+    }
+    for (const c of [{ cmd: "seek", value: "x" }, { cmd: "seek-rel" }, { cmd: "set", name: "volume", value: "loud" }, { cmd: "set", name: "speed", value: null }]) {
+      assert.equal((await s.post("/api/player/cmd", c)).status, 400, `PC ${JSON.stringify(c)}`);
+    }
     await sleep(500);
     const p = (await s.get("/api/player")).json;
     await phone.post("/api/remote/cmd", { cmd: "stop" });
-    assert.ok(r.status === 400 || p.volume === 40, `answered ${r.status}, mpv volume is now ${JSON.stringify(p.volume)}`);
+    assert.ok(r.status === 400 && p.volume === 40, `answered ${r.status}, mpv volume is now ${JSON.stringify(p.volume)}`);
   });
 
-  test("D-16: removing a phone on the PC cuts it off at once, including its open live connection", { todo: "D-16" }, async () => {
+  test("D-16: removing a phone on the PC cuts it off at once, including its open live connection", async () => {
+    const other = await pairedPhone(s, "Kept phone");
+    const kept = sse({ host: ip, port: s.port, path: "/api/remote/events", headers: { Host: other.host, Cookie: other.cookie } });
+    await kept.ready;
+    // A video stream the phone is watching: left unread, so it is still open when the phone is removed.
+    const media = await new Promise((resolve, reject) => { http.get({ host: ip, port: s.port, path: "/api/remote/watch/stream?id=alpha-movie&t=0", agent: false, headers: { Host: phone.host, Cookie: phone.cookie } }, (r) => { r.pause(); r.on("error", () => {}); resolve(r); }).on("error", reject); });
+    assert.equal(media.statusCode, 200);
     const ev = sse({ host: ip, port: s.port, path: "/api/remote/events", headers: { Host: phone.host, Cookie: phone.cookie } });
     await ev.ready;
     const dev = (await s.get("/api/remote/info")).json.devices.find((d) => d.name === "Note 10+");
@@ -131,8 +143,13 @@ describe("phone remote", { skip: !HAS_FFMPEG || !ip }, () => {
     await s.post("/api/remote/report", { now: { page: { position: 1, duration: 600, paused: false }, meta: { id: "alpha-movie", title: "SECRET after revoke" } } });
     await sleep(500);
     const leaked = ev.msgs.slice(before).some((m) => JSON.stringify(m).includes("SECRET after revoke"));
-    ev.close();
-    assert.ok(ev.ended() || !leaked, "the removed phone's open event stream still receives what the PC plays");
+    media.resume();
+    await until(() => media.complete || media.destroyed, 6000, 50);
+    const keptGot = kept.msgs.some((m) => JSON.stringify(m).includes("SECRET after revoke"));
+    ev.close(); kept.close();
+    assert.ok(ev.ended() && !leaked, "the removed phone's open event stream still receives what the PC plays");
+    assert.equal(media.complete, false, "the removed phone's video stream was cut, not finished");
+    assert.ok(keptGot && !kept.ended(), "another phone stays connected");
   });
 
   test("switching the remote off: phones get nothing at all", async () => {
