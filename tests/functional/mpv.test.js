@@ -207,3 +207,22 @@ describe("full player: remembered subtitle choice", { skip }, () => {
     } finally { await s.post("/api/player/cmd", { cmd: "stop" }).catch(() => {}); await s.stop(); }
   });
 });
+
+describe("full player: mpv dies before the first progress save", { skip }, () => {
+  // The periodic save never runs here (1 h), so only the save made when mpv goes away can keep the position. On a slow
+  // machine (GitHub's runners) the first tick can land just before the crash and used to make that save skip.
+  test("the position is kept even when no periodic save ran yet", async () => {
+    const s = await startCiRoom({ layout: LAYOUT_FULL, mpv: true, env: { CIROOM_MPV_SAVE_MS: "3600000" } });
+    try {
+      const lib = await scan(s);
+      const file = lib.movies.find((/** @type {any} */ m) => m.title === "Beta Film").file.path;
+      await s.post("/api/play", { path: file, startAt: 200, volume: 0, itemId: "beta-film" });
+      await until(async () => { const p = (await s.get("/api/player")).json; return p.running && p.duration > 0 && p.position >= 201 && p; }, 20000);
+      const pid = await until(() => { for (const x of fs.readdirSync("/proc").filter((d) => /^\d+$/.test(d))) { try { if (fs.readFileSync(`/proc/${x}/cmdline`, "utf8").includes(`--input-ipc-server=${path.join(s.dir, "run")}`)) return Number(x); } catch { /* gone */ } } return null; });
+      process.kill(pid, "SIGKILL");
+      await until(async () => !(await s.get("/api/player")).json.running, 5000);
+      const pending = JSON.parse(fs.readFileSync(path.join(s.data, "phone-pending.json"), "utf8"));
+      assert.ok(pending["beta-film"]?.position >= 200, JSON.stringify(pending));
+    } finally { await s.stop(); }
+  });
+});

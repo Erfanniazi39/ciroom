@@ -240,7 +240,9 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     if (!Number.isFinite(position) || position < 0 || !duration || position > duration + 1) return;
     if (windows.size && !force) { mpvTrack.pos = position; return; } // a window is open: it saves (unchanged behaviour)
     if (freshPhones().some((p) => p.id === id && p.playing)) { mpvTrack.pos = position; return; } // a phone holds this title: its position wins
-    if (!snap.ended && Math.abs(movedBy) < 1) return; // not moved since the last save
+    // Not moved since the last save. On the final save (mpv went away) that's only true when this exact spot is
+    // already saved: a tick that just started tracking saves nothing, so mpv dying right after it lost the position.
+    if (!snap.ended && Math.abs(movedBy) < 1 && (!final || Math.abs((pending[id]?.position ?? -9) - position) < 1)) return;
     const old = pending[id];
     pending[id] = { id, position: Math.min(position, duration), duration, watched: Math.min(43200, (old?.watched ?? 0) + (playing ? Math.min(movedBy, sinceLast) : 0)), at: now, source: "mpv" };
     mpvTrack.pos = position;
