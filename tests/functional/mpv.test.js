@@ -96,12 +96,19 @@ describe("full player (real mpv, no window)", { skip }, () => {
     assert.ok(e.position >= 249 && e.position < 260, JSON.stringify(e));
   });
 
-  test("D-11: remembered subtitle choice picks the chosen file even when another subtitle file in the folder can't be read", { todo: "D-11" }, async () => {
+  test("D-11: remembered subtitle choice picks the chosen file even when another subtitle file in the folder can't be read", async () => {
     const name = "Alpha.Movie.2001.fa.srt";
     await s.post("/api/play", { path: file("Alpha Movie"), startAt: 10, volume: 0, subPref: { language: "Persian", name } });
     await playing(10);
     const sel = await until(async () => (await snap()).subtitles.find((t) => t.selected));
     assert.equal(sel.label, name, `selected: ${sel.label ?? sel.title ?? sel.lang}`);
+  });
+
+  test("a remembered built-in subtitle is picked among the built-in tracks, even with a file of the same language", async () => {
+    await s.post("/api/play", { path: file("Alpha Movie"), startAt: 10, volume: 0, subPref: { language: "Persian", name: "embedded:1:per" } });
+    await playing(10);
+    const sel = await until(async () => (await snap()).subtitles.find((t) => t.selected));
+    assert.deepEqual([sel.external, sel.lang], [false, "per"], JSON.stringify(sel));
   });
 
   test("remembered 'subtitles off' starts with no subtitle; remembered audio language picks that track", async () => {

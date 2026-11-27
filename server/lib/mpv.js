@@ -9,7 +9,7 @@
  *
  * All three are for this PC only (mpv opens a window here). Safety: read-only on media; only paths inside the media root.
  */
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -28,11 +28,32 @@ const LANG_CODES = /** @type {Record<string, string[]>} */ ({
 const langFromCode = (/** @type {string | null | undefined} */ code) =>
   code ? Object.keys(LANG_CODES).find((k) => LANG_CODES[k].includes(code.toLowerCase())) ?? null : null;
 
-/** Number of subtitle streams inside the video file (mpv numbers external subtitle files after them). */
-const embeddedSubCount = (/** @type {string} */ file) => new Promise((resolve) => {
-  execFile("ffprobe", ["-v", "error", "-select_streams", "s", "-show_entries", "stream=index", "-of", "csv=p=0", file], { timeout: 30_000, killSignal: "SIGKILL" }, (err, out) =>
-    resolve(err ? 0 : String(out).trim().split("\n").filter(Boolean).length));
-});
+/**
+ * The remembered subtitle: `files` = subtitle files that would do, best first; `name` / `language` as saved
+ * ({language, name}: a file's base name, "embedded:<N>:<tag>" from the page player, or a built-in track's title from mpv).
+ * @typedef {{ name: string, language: string | null, files: string[], exact: boolean }} SubWant
+ */
+
+/** The remembered subtitle in mpv's own track list (never by counting: mpv skips files it can't read).
+ *  @param {any[]} tracks @param {SubWant} want @returns {any} the track, or null to leave mpv's own choice */
+function pickSubTrack(tracks, { name, language, files, exact }) {
+  const subs = tracks.filter((t) => t.type === "sub");
+  const builtIn = subs.filter((t) => !t.external);
+  const sameLang = (/** @type {any} */ t) => !language || langFromCode(t.lang) === language;
+  const fileTrack = (/** @type {string} */ f) =>
+    subs.find((t) => t.external && t["external-filename"] && path.resolve(t["external-filename"]) === path.resolve(f));
+  const embedded = /^embedded:(\d+):(.*)$/.exec(name);
+  if (embedded) { // the N-th built-in subtitle, if it's still the same language (another episode may differ)
+    const t = builtIn[Number(embedded[1])];
+    if (t && ((t.lang ?? "und").toLowerCase() === embedded[2] || (language && sameLang(t)))) return t;
+  }
+  const [first, ...rest] = files;
+  return (exact && fileTrack(first))
+    || (name && builtIn.find((t) => t.title === name && sameLang(t)))
+    || (exact ? rest : files).map(fileTrack).find(Boolean)
+    || (language && builtIn.find(sameLang))
+    || null;
+}
 
 /** Skip-intro markers → the controller's script options. @param {{ intro: {start:number,end:number}|null, credits: number|null } | null} m */
 const markerOpts = (m) => [
@@ -62,7 +83,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
   const socketPath = MPV_SOCKET;
 
   /** @type {any} */ const st = { proc: null, sock: null, running: false, file: "", props: {}, ended: false, hasNext: false, itemId: null };
-  const resetProps = () => { st.nextRequested = false; st.props = { "time-pos": 0, duration: 0, pause: false, volume: 100, mute: false, speed: 1, "sub-delay": 0, sid: false, aid: false, "track-list": [] }; st.ended = false; };
+  const resetProps = () => { st.subPick = null; st.nextRequested = false; st.props = { "time-pos": 0, duration: 0, pause: false, volume: 100, mute: false, speed: 1, "sub-delay": 0, sid: false, aid: false, "track-list": [] }; st.ended = false; };
   resetProps();
 
 
@@ -78,6 +99,17 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     st.running = false;
   }
 
+  /** Applies the remembered subtitle once the file is loaded. Request ids: 1 = list the tracks, 2 = list them again after the change. */
+  function subPickReply(/** @type {any} */ msg) {
+    const tracks = Array.isArray(msg.data) ? msg.data : null;
+    if (tracks) st.props["track-list"] = tracks;
+    const t = msg.request_id === 1 && tracks ? pickSubTrack(tracks, st.subPick.want) : null;
+    if (!t || t.selected) { st.subPick = null; return; }
+    st.props.sid = t.id;
+    send(["set_property", "sid", t.id]);
+    st.sock?.write(JSON.stringify({ command: ["get_property", "track-list"], request_id: 2 }) + "\n"); // mpv answers in order
+  }
+
   function connect(attempt = 0) {
     const sock = net.connect(socketPath);
     sock.on("connect", () => {
@@ -85,8 +117,9 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
       OBSERVED.forEach((p, i) => send(["observe_property", i + 1, p]));
     });
     let buf = "";
+    sock.setEncoding("utf8"); // a file name (Persian…) must not be cut in the middle of a character
     sock.on("data", (d) => {
-      buf += d.toString();
+      buf += d;
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl);
@@ -94,6 +127,12 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
         try {
           const msg = JSON.parse(line);
           if (msg.event === "client-message" && msg.args?.[0] === "marquee-next") { st.nextRequested = true; continue; }
+          if (st.subPick && (msg.request_id === 1 || msg.request_id === 2)) { subPickReply(msg); continue; }
+          // A real playback time means the file is open and every subtitle file has been added (or skipped).
+          if (st.subPick && !st.subPick.asked && msg.name === "time-pos" && typeof msg.data === "number") {
+            st.subPick.asked = true;
+            st.sock?.write(JSON.stringify({ command: ["get_property", "track-list"], request_id: 1 }) + "\n");
+          }
           if (msg.event !== "property-change" || msg.data === undefined) continue;
           if (msg.name === "eof-reached") { if (msg.data) st.ended = true; continue; }
           if (msg.data !== null) st.props[msg.name] = msg.data;
@@ -108,7 +147,8 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
   function snapshot(peek = false) {
     const p = st.props;
     /** @type {any[]} */
-    const tracks = Array.isArray(p["track-list"]) ? p["track-list"] : [];
+    // No tracks until the remembered subtitle is on: the window must not take mpv's first pick for a user's change.
+    const tracks = !st.subPick && Array.isArray(p["track-list"]) ? p["track-list"] : [];
     const pick = (/** @type {string} */ type) =>
       tracks.filter((t) => t.type === type).map((t) => ({
         id: t.id, title: t.title ?? null, lang: t.lang ?? null, codec: t.codec ?? null,
@@ -186,12 +226,14 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
           const subs = subtitlesFor(file);
           let slang = ["en", "eng"];
           /** @type {string[]} */ const sidArg = [];
+          /** @type {SubWant | null} */ let subWant = null;
           if (subPref && subPref.off) sidArg.push("--sid=no");
           else if (subPref && (subPref.language || subPref.name)) {
-            const k = subs.findIndex((f) => path.basename(f) === subPref.name && (!subPref.language || subtitleLanguage(f) === subPref.language));
-            const k2 = k >= 0 ? k : subPref.language ? subs.findIndex((f) => subtitleLanguage(f) === subPref.language) : -1;
-            if (k2 >= 0) sidArg.push(`--sid=${(await embeddedSubCount(file)) + k2 + 1}`);
-            else if (subPref.language && LANG_CODES[subPref.language]) slang = [...LANG_CODES[subPref.language], ...slang]; // maybe a built-in track
+            const name = String(subPref.name ?? ""), language = subPref.language ? String(subPref.language) : null;
+            const named = subs.find((f) => path.basename(f) === name && (!language || subtitleLanguage(f) === language));
+            const others = language ? subs.filter((f) => f !== named && subtitleLanguage(f) === language) : [];
+            subWant = { name, language, exact: !!named, files: named ? [named, ...others] : others };
+            if (language && LANG_CODES[language]) slang = [...LANG_CODES[language], ...slang]; // mpv's own start, before the pick
           }
           const alang = [...(typeof audioLang === "string" && /^[a-z]{2,3}$/i.test(audioLang) ? [audioLang] : []), "en", "eng"];
           const track = level ? await audioTrackFor(file, alang) : 0; // the gain of the track mpv will play
@@ -204,6 +246,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
           resetProps();
           Object.assign(st, { running: true, file, hasNext: !!hasNext, itemId: typeof itemId === "string" && /^[a-z0-9-]{1,200}$/.test(itemId) ? itemId : null });
           st.props["time-pos"] = startAt;
+          if (subWant) st.subPick = { want: subWant, asked: false };
           const proc = spawn("mpv", [
             `--config-dir=${MPV_CONFIG}`, // Marquee's own look + shortcuts (mpv/), not the user's ~/.config/mpv
             `--input-ipc-server=${socketPath}`,
