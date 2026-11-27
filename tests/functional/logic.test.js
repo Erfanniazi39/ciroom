@@ -50,11 +50,14 @@ describe("next up, next episode, continue watching", () => {
     assert.equal(L.nextEpisode(show, "nope"), null);
   });
 
-  test("D-12: after a double episode (one file for E1+E2) Up Next goes to E3, not the same file again", { todo: "D-12" }, () => {
+  test("D-12: after a double episode (one file for E1+E2) Up Next goes to E3, not the same file again", () => {
     const dbl = file("/lib/d/D.S01E01E02.mkv");
     const d = series("d", [[ep("d", 1, 1, dbl), ep("d", 1, 2, dbl), ep("d", 1, 3)]]);
     const next = L.nextEpisode(d, "d-s1e1");
     assert.notEqual(next.file.path, dbl.path, `next after E1 is ${next.id}, the same video file`);
+    assert.equal(next.id, "d-s1e3");
+    const up = L.nextUp(d, { "d-s1e1": prog(2700, 2700, true, 5) });
+    assert.deepEqual([up.episode.id, up.mode], ["d-s1e3", "next"], "Continue Watching doesn't offer the other half");
   });
 
   test("continueWatching: started movies (> 1 min, not finished) and started series, newest first", () => {

@@ -42,14 +42,17 @@ export function nextUp(s: Series, progress: ProgressMap): { episode: Episode; mo
   if (latestIdx === -1) return { episode: eps[0], mode: "start" };
   const latest = eps[latestIdx];
   if (!progress[latest.id].watched) return { episode: latest, mode: "resume" };
-  const after = eps.slice(latestIdx + 1).find((e) => !progress[e.id]?.watched);
+  // A double-episode file is one video: its other half was just watched too.
+  const after = eps.slice(latestIdx + 1).find((e) => !progress[e.id]?.watched && e.file!.path !== latest.file!.path);
   return after ? { episode: after, mode: "next" } : { episode: eps[0], mode: "start" };
 }
 
 export function nextEpisode(s: Series, episodeId: string): Episode | null {
   const eps = allEpisodes(s).filter((e) => e.file);
   const i = eps.findIndex((e) => e.id === episodeId);
-  return i >= 0 && i < eps.length - 1 ? eps[i + 1] : null;
+  if (i < 0) return null;
+  // Skip the other half of a double-episode file (S01E01E02), or the same video would play again.
+  return eps.slice(i + 1).find((e) => e.file!.path !== eps[i].file!.path) ?? null;
 }
 
 export interface ContinueItem {
