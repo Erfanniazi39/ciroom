@@ -320,7 +320,7 @@ describe("unusual names and structures", { skip: !HAS_FFMPEG }, () => {
 });
 
 describe("library folder unavailable or changed", { skip: !HAS_FFMPEG }, () => {
-  test("D-03: a scan while the drive is unplugged must not replace the library with an empty one", { todo: "D-03" }, async () => {
+  test("D-03: a scan while the drive is unplugged must not replace the library with an empty one", async () => {
     const dir = scratch("unplug");
     const s = await startCiRoom({ dir, layout: { "Movies/Keep 2010/k.mkv": "short.mkv", "Series/Keep S/S01/EP01/e.mkv": "ep60.mkv" } });
     try {
@@ -349,6 +349,34 @@ describe("library folder unavailable or changed", { skip: !HAS_FFMPEG }, () => {
     } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  test("with no saved scan and the drive unplugged: nothing is saved, and the library appears once it is back", async () => {
+    const dir = scratch("unplug3");
+    const s = await startCiRoom({ dir, layout: { "Movies/Keep 2010/k.mkv": "short.mkv" } });
+    const moved = s.media + "-unplugged";
+    try {
+      fs.renameSync(s.media, moved);
+      const offline = await s.get("/api/library");
+      assert.equal(offline.status, 200);
+      assert.deepEqual([offline.json.movies.length, offline.json.roots.map((x) => x.online)], [0, [false, false]]);
+      const r = await s.post("/api/library/scan");
+      assert.equal(r.status, 409);
+      assert.match(r.json.error, /Library folder not found/);
+      assert.ok(!fs.readdirSync(s.data).some((f) => /^(library(-windows)?|ids)\.json$/.test(f)), "nothing saved from a missing folder");
+      fs.renameSync(moved, s.media);
+      assert.deepEqual((await s.get("/api/library")).json.movies.map((m) => m.title), ["Keep"]);
+    } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a library with only one of Movies/Series still scans", async () => {
+    const s = await startCiRoom({ layout: { "Movies/Keep 2010/k.mkv": "short.mkv" } });
+    try {
+      fs.rmSync(path.join(s.media, "Series"), { recursive: true, force: true });
+      const r = await s.post("/api/library/scan");
+      assert.equal(r.status, 200);
+      assert.deepEqual([r.json.movies.length, r.json.roots.map((x) => x.online)], [1, [true, false]]);
+    } finally { await s.stop(); }
+  });
+
   test("Settings → Library folder: a folder without Movies/Series is refused; a good one is saved for the next start", async () => {
     const dir = scratch("root");
     const s = await startCiRoom({ dir, layout: { "Movies/A 2010/a.mkv": "short.mkv" } });
@@ -365,7 +393,7 @@ describe("library folder unavailable or changed", { skip: !HAS_FFMPEG }, () => {
     } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test("D-05: Settings shows the newly saved library folder when reopened (before the restart)", { todo: "D-05" }, async () => {
+  test("D-05: Settings shows the newly saved library folder when reopened (before the restart)", async () => {
     const dir = scratch("root2");
     const s = await startCiRoom({ dir, layout: { "Movies/A 2010/a.mkv": "short.mkv" } });
     try {
@@ -375,7 +403,7 @@ describe("library folder unavailable or changed", { skip: !HAS_FFMPEG }, () => {
     } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test("D-04: after switching the library folder and restarting, the library shows the NEW folder's titles", { todo: "D-04" }, async () => {
+  test("D-04: after switching the library folder and restarting, the library shows the NEW folder's titles", async () => {
     const dir = scratch("switch");
     const clips = await buildClips();
     const a = makeLibrary(path.join(dir, "libA"), { "Movies/Only In A 2010/a.mkv": "short.mkv" }, clips);

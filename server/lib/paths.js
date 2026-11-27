@@ -58,9 +58,13 @@ function chooseMediaRoot() {
   return null;
 }
 
-/** The library folder chosen in Settings (or found), or null. */
+/** The library folder at start-up (chosen in Settings, or found), or null. */
 const MEDIA_ROOT = chooseMediaRoot();
-export const savedMediaRoot = () => MEDIA_ROOT;
+/** The folder saved now: a new choice in Settings shows at once, though it is only used after a restart. */
+export const savedMediaRoot = () => {
+  const now = readJson(LOCAL_FILE)?.mediaRoot;
+  return typeof now === "string" && now ? now : MEDIA_ROOT;
+};
 export function saveMediaRoot(/** @type {string} */ p) {
   writeJsonAtomic(LOCAL_FILE, { ...(readJson(LOCAL_FILE) ?? {}), mediaRoot: p }, { mode: 0o600, space: 2 });
 }

@@ -178,12 +178,34 @@ export function absoluteNumber(file) {
   return v > 0 && !(v >= 1900 && v <= 2099) ? v : undefined;
 }
 
+const NOT_FOUND = "Library folder not found. Is the drive connected?";
+const readable = (/** @type {string} */ dir) => { try { fs.readdirSync(dir); return true; } catch { return false; } };
+/**
+ * Throws when neither Movies nor Series can be read (drive unplugged, folder gone): an empty result from that must
+ * never be saved. One of the two missing is a normal library.
+ */
+function requireLibrary(/** @type {string} */ root) {
+  if (!["Movies", "Series"].some((d) => readable(path.join(root, d)))) throw Object.assign(new Error(NOT_FOUND), { code: "NO_LIBRARY" });
+}
+
+/** The answer while the library folder can't be read and there is no saved scan of it. Never saved. */
+function offlineLibrary(/** @type {string} */ root) {
+  const now = new Date().toISOString();
+  const entry = (/** @type {string} */ id, /** @type {string} */ name) => ({ id, path: path.join(root, name), kindHint: id, online: false, itemCount: 0, lastScanAt: now });
+  return { movies: [], series: [], collections: [], roots: [entry("movies", "Movies"), entry("series", "Series")], review: [], scannedAt: now };
+}
+
+/** True when the saved scan was made from this library folder (not from the one chosen before). */
+const isScanOf = (/** @type {any} */ lib, /** @type {string} */ root) =>
+  (lib.roots ?? []).every((/** @type {any} */ r) => !r.path || path.resolve(r.path) === root || path.dirname(path.resolve(r.path)) === root);
+
 /**
  * One full scan of <mediaRoot>/Movies and /Series (synchronous, so it runs in a worker thread: see scan-worker.js).
  * @param {string} mediaRoot
  */
 export function scanLibrary(mediaRoot) {
   const root = path.resolve(mediaRoot);
+  requireLibrary(root);
   {
     const ids = readJson(IDS_FILE, {});
     const used = new Set(Object.values(ids));
@@ -380,6 +402,7 @@ export function scanLibrary(mediaRoot) {
       series.push({ kind: "series", id, title, year, genres: [], ratings: {}, cast: [], addedAt: new Date(newest).toISOString(), art: { hue: hueOf(id) }, seasons: seasonList });
     }
 
+    requireLibrary(root); // the drive may have gone while reading
     writeJson(IDS_FILE, ids);
     const now = new Date().toISOString();
     const roots = [
@@ -392,6 +415,7 @@ export function scanLibrary(mediaRoot) {
 
 /** @param {string} mediaRoot */
 export function scannerRoutes(mediaRoot) {
+  const rootAbs = path.resolve(mediaRoot);
   /** The scan runs in a worker thread so the server keeps answering while a big library is read. One at a time. */
   /** @type {Promise<any> | null} */ let running = null;
   function scan() {
@@ -399,7 +423,7 @@ export function scannerRoutes(mediaRoot) {
       const w = new Worker(new URL("./scan-worker.js", import.meta.url), { workerData: { root: mediaRoot } });
       let done = false;
       const end = (/** @type {Error | null} */ err, /** @type {any=} */ lib) => { if (done) return; done = true; running = null; err ? reject(err) : resolve(lib); };
-      w.once("message", (m) => (m.error ? end(new Error(m.error)) : end(null, m.library)));
+      w.once("message", (m) => (m.error ? end(Object.assign(new Error(m.error), { status: m.code === "NO_LIBRARY" ? 409 : 500 })) : end(null, m.library)));
       w.once("error", (e) => end(e));
       w.once("exit", (code) => end(new Error(`scan worker exited (${code})`)));
     });
@@ -432,7 +456,14 @@ export function scannerRoutes(mediaRoot) {
     routes: defineRoutes("scanner", [
       { method: "GET", path: "/api/library", audience: "phone", handler: async ({ json, local }) => {
         let lib = readJson(LIB_FILE, null);
-        if (!lib) { try { lib = await scan(); } catch (e) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; } writeJson(LIB_FILE, lib); }
+        // No saved scan, or it belongs to the previous library folder: scan now.
+        if (!lib || !isScanOf(lib, rootAbs)) {
+          try { lib = await scan(); writeJson(LIB_FILE, lib); }
+          catch (e) {
+            if (/** @type {any} */ (e).status !== 409) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; }
+            lib = offlineLibrary(rootAbs);
+          }
+        }
         json(200, local ? lib : forPhone(lib)); // other devices never get file locations
         return true;
       } },
@@ -440,7 +471,7 @@ export function scannerRoutes(mediaRoot) {
         const prev = readJson(LIB_FILE, null);
         const t0 = Date.now();
         let lib;
-        try { lib = await scan(); } catch (e) { json(500, { error: String(/** @type {Error} */ (e).message) }); return true; }
+        try { lib = await scan(); } catch (e) { json(/** @type {any} */ (e).status ?? 500, { error: String(/** @type {Error} */ (e).message) }); return true; }
         writeJson(LIB_FILE, lib);
         json(200, { ...lib, changes: { ...diff(prev, lib), ms: Date.now() - t0 } });
         return true;
