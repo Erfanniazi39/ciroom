@@ -31,7 +31,7 @@ import { defineRoutes } from "./routes.js";
 const LIB_FILE = LIBRARY_FILE; // per system (full paths differ between Linux and Windows)
 const IDS_FILE = path.join(DATA_DIR, "ids.json");
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
-const SKIP_DIR = /^(\.|@|\$|sample$|samples$|extras?$|featurettes?$|behind the scenes$|trailers?$)/i;
+export const SKIP_DIR = /^(\.|@|\$|sample$|samples$|extras?$|featurettes?$|behind the scenes$|trailers?$)/i;
 
 /**
  * Folder abbreviations (ALIASES) and the ids the library used before the scanner existed (LEGACY_IDS) live in
@@ -133,7 +133,7 @@ const subdirs = (/** @type {string} */ dir) => { try { return fs.readdirSync(dir
 const bestFirst = (/** @type {any} */ a, /** @type {any} */ b) => b.size - a.size || Number(/\.\w{3}\.\w{3}$/.test(a.name)) - Number(/\.\w{3}\.\w{3}$/.test(b.name)) || a.name.length - b.name.length;
 
 /** "cd1", "part 2", "pt3", "disc1" (any separator, optional brackets) right before the extension. */
-const PART_TOKEN = /[\s._-]*[([]?(?:cd|part|pt|dis[ck])[\s._-]*0*([1-9])[)\]]?(?=\.[a-z0-9]{2,4}$)/i;
+export const PART_TOKEN = /[\s._-]*[([]?(?:cd|part|pt|dis[ck])[\s._-]*0*([1-9])[)\]]?(?=\.[a-z0-9]{2,4}$)/i;
 /**
  * Files of one movie folder that differ only by cd1/cd2, part1/part2… → one movie in order, else null.
  * @param {{ name: string }[]} vids

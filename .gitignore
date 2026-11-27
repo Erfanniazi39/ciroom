@@ -41,6 +41,8 @@ docs/*.png
 docs/CiRoom-Audit.md
 docs/to-sonnet/
 docs/to-opus/
+docs/reports/
+docs/project-information/
 graphify-out/
 src-tauri/.cargo/
 

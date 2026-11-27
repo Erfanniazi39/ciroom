@@ -262,7 +262,7 @@ describe("page player: server side", { skip: !HAS_FFMPEG }, () => {
     } finally { fs.renameSync(dir + ".gone", dir); }
   });
 
-  test("D-09: an episode deleted since the last scan must not play a different episode", { todo: "D-09" }, async () => {
+  test("D-09: an episode deleted since the last scan must not play a different episode", async () => {
     const one = lib.series.find((x) => x.title === "Show One");
     const e1 = one.seasons[0].episodes.find((e) => e.number === 1).file.path; // .../S01/EP01/show.one.e1.mkv (no SxxEyy in the name)
     const dir = path.dirname(e1);
@@ -273,7 +273,7 @@ describe("page player: server side", { skip: !HAS_FFMPEG }, () => {
     } finally { fs.renameSync(dir + ".gone", dir); }
   });
 
-  test("D-09: a collection film deleted since the last scan must not play the other film of the collection", { todo: "D-09" }, async () => {
+  test("D-09: a collection film deleted since the last scan must not play the other film of the collection", async () => {
     const f = file("Gamma One"); // Movies/Gamma Saga/Gamma One 2010/gamma1.mkv (20 s); Gamma Two is 30 s
     const dir = path.dirname(f);
     fs.renameSync(dir, dir + ".gone");
@@ -283,7 +283,7 @@ describe("page player: server side", { skip: !HAS_FFMPEG }, () => {
     } finally { fs.renameSync(dir + ".gone", dir); }
   });
 
-  test("D-09: a path directly in Movies/ that doesn't exist must not play some other movie", { todo: "D-09" }, async () => {
+  test("D-09: a path directly in Movies/ that doesn't exist must not play some other movie", async () => {
     const p = await s.get("/api/probe" + q(path.join(s.media, "Movies", "does-not-exist.mkv")));
     assert.equal(p.status, 400, `answered ${p.status} with a ${Math.round(p.json?.duration)} s video`);
   });
