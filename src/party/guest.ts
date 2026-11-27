@@ -410,7 +410,7 @@ function start(me: { id: string; name: string }, hostName: string, gestured: boo
     // header status
     if (host) {
       const late = Date.now() - receivedAt > 6000;
-      statusEl.textContent = late ? "Reconnecting…" : !host.hostOnline ? `${host.hostName} is offline` : !host.media ? `With ${host.hostName}` : !ready ? "Loading…" : host.paused ? "Paused" : "In sync";
+      statusEl.textContent = late ? "Reconnecting…" : !host.hostOnline ? `${host.hostName} is offline` : !host.media ? `With ${host.hostName}` : needsClick && !host.paused ? "Click Start watching to join" : !ready ? "Loading…" : host.paused ? "Paused" : video.paused ? "Loading…" : "In sync";
     }
     // controls
     const dur = probe?.duration || host?.media?.duration || 0;

@@ -81,7 +81,7 @@ describe("watch party in two browsers", { skip }, () => {
     assert.ok(Math.abs(h2.t - g2.t) < 3, `after reconnect: host ${h2.t.toFixed(1)} guest ${g2.t.toFixed(1)}`);
   });
 
-  test("D-20: before the guest clicks Start watching, the status doesn't say \"In sync\" (the video isn't playing)", { todo: "D-20" }, async () => {
+  test("D-20: before the guest clicks Start watching, the status doesn't say \"In sync\" (the video isn't playing)", async () => {
     await guest.goto(`http://${ip}:${s.port}/party`);
     await guest.waitFor(`document.body.innerText.includes("Start watching")`, 15000);
     await sleep(2500);

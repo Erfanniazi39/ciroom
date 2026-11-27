@@ -184,7 +184,7 @@ describe("subtitle choice", () => {
     assert.equal(S.subPrefFor(subs, 9), null);
   });
 
-  test("D-14: a short word in the language order (\"en\") does not pick a French subtitle", { todo: "D-14" }, () => {
+  test("D-14: a short word in the language order (\"en\") does not pick a French subtitle", () => {
     const list = [{ index: 0, label: "French · movie.fr", name: "movie.fr.srt", language: "French" }, { index: 1, label: "English · movie.en", name: "movie.en.srt", language: "English" }];
     assert.equal(S.pickSubtitle(list, "en", true), 1, "\"en\" matched inside \"French\"");
   });

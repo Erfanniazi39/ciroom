@@ -210,7 +210,7 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     await b.waitFor(`[...document.querySelectorAll("button")].some((x) => x.innerText.trim() === "Open in full player")`, 25000);
   });
 
-  test("D-19: that message is written for people (no raw ffprobe command line or file path)", { todo: "D-19" }, async () => {
+  test("D-19: that message is written for people (no raw ffprobe command line or file path)", async () => {
     await b.goto(base + "/#/watch/broken-download");
     await b.waitFor(`[...document.querySelectorAll("button")].some((x) => x.innerText.trim() === "Open in full player")`, 25000);
     const text = await b.text();

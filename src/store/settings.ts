@@ -4,6 +4,7 @@
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { SUBTITLE_LANGUAGES } from "@/lib/languages";
 import { serverStorage } from "@/lib/serverStorage";
 import type { SubPref } from "./user";
 
@@ -63,7 +64,15 @@ type SubLike = { index: number; label: string; name?: string; language?: string 
 export function pickSubtitle(subs: SubLike[], prefs: string, enabled: boolean): number {
   if (!enabled || !subs.length) return -1;
   for (const want of prefs.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
-    const hit = subs.find((s) => s.language?.toLowerCase().startsWith(want) || s.label.toLowerCase().includes(want));
+    // The detected language first (a code like "en", a name, or the start of one), then whole words in the label:
+    // never a fragment, so "en" doesn't pick "French".
+    const name = SUBTITLE_LANGUAGES.find((l) => l.code.toLowerCase() === want)?.name.toLowerCase();
+    const word = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{M}\\p{N}])`, "iu");
+    const hit =
+      subs.find((s) => {
+        const lang = s.language?.toLowerCase();
+        return !!lang && (lang === (name ?? want) || (want.length > 2 && lang.startsWith(want)));
+      }) ?? subs.find((s) => word.test(s.label));
     if (hit) return hit.index;
   }
   return subs[0].index;

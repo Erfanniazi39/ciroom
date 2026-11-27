@@ -165,8 +165,17 @@ async function probe(/** @type {string} */ file) {
   let key = file;
   try { const st = fs.statSync(file); key = `${file}|${st.size}|${st.mtimeMs}`; } catch { /* ffprobe below reports it */ }
   if (probeCache.has(key)) { const c = probeCache.get(key); return { ...c, subtitles: subtitleList(file, c.embedded) }; }
-  const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file], { maxBuffer: 8 << 20 });
-  const info = JSON.parse(stdout);
+  let info;
+  try {
+    const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file], { maxBuffer: 8 << 20 });
+    info = JSON.parse(stdout);
+  } catch (e) {
+    // The details (command line, full path) stay in the log: this message reaches the UI, phones and party guests included.
+    console.error("[stream] probe:", e instanceof Error ? e.message : e);
+    throw new Error(/** @type {any} */ (e)?.code === "ENOENT"
+      ? "FFmpeg wasn't found on the PC, so this video can't be read."
+      : "This file can't be read. It may be damaged or still downloading.");
+  }
   const v = info.streams.find((/** @type {any} */ s) => s.codec_type === "video" && !s.disposition?.attached_pic);
   const a = info.streams.find((/** @type {any} */ s) => s.codec_type === "audio");
   // ffmpeg's `-map 0:v:N` counts ALL video streams, cover art included.
