@@ -34,17 +34,6 @@ async function phone(/** @type {string} */ dir) {
   return p;
 }
 
-/** Closes the mini player if one is open (after a playback error the failed player lingers there: D-35). */
-async function closeMini(/** @type {any} */ app) {
-  await app.page.goto("#/"); await sleep(500);
-  if (!(await app.page.eval(`!!document.querySelector("[aria-label='Close mini player']")`))) return false;
-  const b = await app.page.box("sel:[data-player-host]");
-  await app.hover(b.x + b.w / 2, b.y + b.h / 2);
-  await app.click("Close mini player");
-  await app.page.waitFor(`!document.querySelector("[aria-label='Close mini player']")`, 5000);
-  return true;
-}
-
 describe("desktop journeys: phone, watch party, recovery", { skip }, () => {
   /** @type {any} */ let ctx;
   /** @type {any[]} */ const browsers = [];
@@ -206,7 +195,6 @@ describe("desktop journeys: phone, watch party, recovery", { skip }, () => {
     await app.click("Home", "a");
     await app.page.waitFor(`document.body.innerText.includes("Recently Added")`, 8000);
     fs.renameSync(f + ".away", f);
-    await closeMini(app); // D-35: else Play reuses the failed player
     await app.page.goto("#/movies/gamma-two");
     await app.click("Play");
     await playingAt(app.page, 0.3);
@@ -226,14 +214,13 @@ describe("desktop journeys: phone, watch party, recovery", { skip }, () => {
       const lib = (await app.get("/api/library")).json;
       assert.ok(lib.movies.length > 10, `library kept while unplugged (${lib.movies.length} movies)`);
     } finally { fs.renameSync(media + ".unplugged", media); }
-    await closeMini(app); // D-35
     await app.page.goto("#/movies/beta-film");
     await app.click("Play");
     await playingAt(app.page, 0.3);
     await app.close();
   }));
 
-  test("D-35: after \"file missing\", the file comes back and Play on the same title plays it (no need to close the mini player first)", { ...T, todo: "D-35" }, () => journey(ctx, "D-35", async () => {
+  test("D-35: after \"file missing\", the file comes back and Play on the same title plays it (no need to close the mini player first)", T, () => journey(ctx, "D-35", async () => {
     const dir = scratch("d35");
     const media = ctx.library(dir, LAYOUT_FULL);
     const app = await ctx.launch({ dir, media });

@@ -13,6 +13,9 @@ interface Session {
 
 interface PlaybackState {
   session: Session | null;
+  /** The `key` of the session that hit a playback error (its player shows the message for good): never kept, never re-used. */
+  failedKey: number | null;
+  markFailed: (key: number) => void;
   /** Playable id currently open in the full player (mpv); its watch page shows a placeholder and resumes after. */
   handedOff: string | null;
   /** Bumped by the watch page's "Find subtitles" button; the player opens its finder when it changes. */
@@ -36,6 +39,8 @@ let counter = 0;
 
 export const usePlayback = create<PlaybackState>((set, get) => ({
   session: null,
+  failedKey: null,
+  markFailed: (key) => { if (get().session?.key === key) set({ failedKey: key }); },
   handedOff: null,
   finderRequest: 0,
   cover: false,
@@ -46,7 +51,8 @@ export const usePlayback = create<PlaybackState>((set, get) => ({
   handOff: (id) => set({ session: null, handedOff: id, cover: false, elsewhere: null }),
   clearHandoff: () => set({ handedOff: null }),
   open: (id, startAt) => {
-    if (get().session?.id === id) return; // already playing this one (e.g. coming back from the mini player)
+    const { session, failedKey } = get();
+    if (session?.id === id && session.key !== failedKey) return; // already playing this one (e.g. coming back from the mini player)
     set({ session: { id, startAt, key: ++counter }, elsewhere: null });
   },
   close: () => set({ session: null, cover: false }),

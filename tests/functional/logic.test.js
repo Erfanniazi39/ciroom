@@ -220,3 +220,22 @@ describe("time and size formats", () => {
     assert.match(F.remaining(600, 6000), /90 ?min|1h 30m/);
   });
 });
+
+describe("page player session", () => {
+  test("D-35: Play on the same title keeps a working session (mini player) but starts over after a playback error", async () => {
+    const { usePlayback } = await loadTs("src/store/playback.ts");
+    const pb = () => usePlayback.getState();
+    pb().open("m1", 10);
+    const first = pb().session.key;
+    pb().open("m1", 99);
+    assert.deepEqual([pb().session.key, pb().session.startAt], [first, 10], "same video, same place");
+    pb().markFailed(first);
+    pb().open("m1", 20);
+    const second = pb().session.key;
+    assert.notEqual(second, first, "a fresh attempt after the error");
+    assert.equal(pb().session.startAt, 20);
+    pb().markFailed(first); // a late report from the replaced player
+    pb().open("m1", 30);
+    assert.equal(pb().session.key, second, "the new session isn't marked failed");
+  });
+});

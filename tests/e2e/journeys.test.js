@@ -243,6 +243,25 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     } finally { fs.renameSync(path.dirname(path.dirname(dlt.file.path)) + ".away", path.dirname(path.dirname(dlt.file.path))); }
   });
 
+  test("D-35: after \"file missing\", the file comes back and Play on the same title plays it; no broken mini player is left", async () => {
+    const lib = (await s.get("/api/library")).json;
+    const dir = path.dirname(path.dirname(lib.movies.find((m) => m.id === "delta-movie").file.path));
+    await b.goto(base + "/#/");
+    fs.renameSync(dir, dir + ".away");
+    try {
+      await b.goto(base + "/#/movies/delta-movie");
+      await b.click("Play");
+      await b.waitFor(`[...document.querySelectorAll("button")].some((x) => x.innerText.trim() === "Open in full player")`, 25000);
+    } finally { fs.renameSync(dir + ".away", dir); }
+    await b.click("Home", "a");
+    await b.waitFor(`!document.querySelector("video") && !document.querySelector("[aria-label='Close mini player']")`, 5000);
+    await b.goto(base + "/#/movies/delta-movie"); // the same window (no reload): the app's state is kept
+    await b.click("Play");
+    await playingAt(b, 0.3);
+    await b.click("Home", "a"); // a working player is still kept as the mini player
+    await b.waitFor(`location.hash === "#/" && !!document.querySelector("[aria-label='Close mini player']") && !document.querySelector("video").paused`, 5000);
+  });
+
   test("no uncaught errors in the page during the journeys", () => {
     const errors = b.console.filter((l) => l.startsWith("exception") || l.startsWith("error"));
     assert.deepEqual(errors, []);

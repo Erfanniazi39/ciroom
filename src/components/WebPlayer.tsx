@@ -33,6 +33,7 @@ export interface WebPlayerProps {
   mini?: boolean;
   onExpand?: () => void; // mini: back to the watch page
   onClose?: () => void; // mini: stop and dismiss
+  onFailed?: () => void; // playback failed: the error message is showing
   find?: SearchContext; // what to search online for (omitted → no "Find subtitles")
   path: string; // library path of the video
   title: string;
@@ -47,7 +48,7 @@ export interface WebPlayerProps {
  * fragmented MP4 from ffmpeg (copy for H.264/AAC, transcode otherwise). Every seek-bar
  * jump restarts the stream (the pipe isn't seekable) at the keyframe before the target; `offset` is measured.
  */
-export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration, next, onOpenFull, mini = false, onExpand, onClose, find }: WebPlayerProps) {
+export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration, next, onOpenFull, mini = false, onExpand, onClose, onFailed, find }: WebPlayerProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const savePosition = useUser((s) => s.savePosition);
@@ -92,6 +93,10 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
   // All times shown are offset + currentTime, so the bar, clock and subtitles match the picture.
   const engine = usePlaybackEngine({ videoRef, path, info, getStartAt: () => startAt, level: levelling, audio: 0, allowPipe: true });
   const { mode, src, offset, offsetRef, pending, mseRef, clock, waiting, setWaiting, error, setError, audioIdx, setAudioIdx } = engine;
+
+  const onFailedRef = useRef(onFailed);
+  onFailedRef.current = onFailed;
+  useEffect(() => { if (error) onFailedRef.current?.(); }, [error]); // every failure (probe, <video>, stream) ends up in `error`
 
   // ── File info (duration, subtitles) ───────────────────────────────────────────────────────
   useEffect(() => {

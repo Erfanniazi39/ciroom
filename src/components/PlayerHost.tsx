@@ -22,6 +22,8 @@ export function PlayerHost() {
   const session = usePlayback((s) => s.session);
   const close = usePlayback((s) => s.close);
   const open = usePlayback((s) => s.open);
+  const markFailed = usePlayback((s) => s.markFailed);
+  const failed = usePlayback((s) => !!s.session && s.session.key === s.failedKey);
   const lib = useLibrary((s) => s.data);
   const miniAllowed = useSettings((s) => s.miniPlayer);
   const mpvActive = usePlayer((s) => !!s.current);
@@ -34,9 +36,10 @@ export function PlayerHost() {
   const onAnyWatch = location.pathname.startsWith("/watch/");
 
   // Leaving the watch page: keep playing as a mini player, or stop if the user turned that off.
+  // A player that failed is never kept: the next Play starts over.
   useEffect(() => {
-    if (session && !onAnyWatch && !miniAllowed) close();
-  }, [session, onAnyWatch, miniAllowed, close]);
+    if (session && !onAnyWatch && (!miniAllowed || failed)) close();
+  }, [session, onAnyWatch, miniAllowed, failed, close]);
 
   const item = useMemo(() => {
     if (!lib || !session) return null;
@@ -181,6 +184,7 @@ export function PlayerHost() {
         mini={!onWatch}
         onExpand={() => navigate(`/watch/${session.id}`)}
         onClose={close}
+        onFailed={() => markFailed(session.key)}
         find={find}
       />
     </div>
