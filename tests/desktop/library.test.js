@@ -83,7 +83,7 @@ describe("desktop journeys: library, series, search, rescan", { skip }, () => {
     await app.close();
   }));
 
-  test("D-33: My List opens on what the user saved (only a watchlist entry → not an empty Favorites tab)", { ...T, todo: "D-33" }, () => journey(ctx, "D-33", async () => {
+  test("D-33: My List opens on what the user saved (only a watchlist entry → not an empty Favorites tab)", T, () => journey(ctx, "D-33", async () => {
     const dir = scratch("d33");
     const app = await ctx.launch({ dir, media: ctx.library(dir, LAYOUT_FULL) });
     await app.page.waitFor(`document.body.innerText.includes("Alpha Movie")`, 30000);

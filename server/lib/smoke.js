@@ -1,12 +1,18 @@
 // @ts-check
 /**
  * Packaged-app smoke test hook (scripts/smoke-appimage.sh). Completely off unless CIROOM_SMOKE=1, and only for this PC.
- *   GET  /api/smoke          200 when the hook is on (the page asks once at start; without the env var: 404)
+ *   index.html               carries <meta name="ciroom-smoke"> when the hook is on: that's how the page knows
+ *   GET  /api/smoke          200 when the hook is on (without the env var: 404)
  *   POST /api/smoke {ok,t}   the page reports how far the video got: writes <data>/smoke-result.json and exits 0 (ok) or 1
  */
 import fs from "node:fs";
 import path from "node:path";
 import { LOCAL_DIR } from "./paths.js";
+
+/** The built page, marked when the hook is on (a meta tag, not a script: the CSP allows no inline scripts). */
+export function smokePage(/** @type {string} */ html) {
+  return process.env.CIROOM_SMOKE === "1" ? html.replace("</head>", '<meta name="ciroom-smoke" content="1">\n</head>') : html;
+}
 
 /** @returns {Promise<boolean>} true if the request was handled */
 export async function handleSmoke(/** @type {import("node:http").IncomingMessage} */ req, /** @type {import("node:http").ServerResponse} */ res) {

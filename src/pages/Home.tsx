@@ -68,7 +68,7 @@ export default function Home() {
         icon={FolderPlus}
         title="Your library is empty"
         body="Point CiRoom at the folders where you keep your movies and series. Your files are never moved or changed."
-        action={<Button variant="primary" size="lg" onClick={() => navigate("/library")}>Add a folder</Button>}
+        action={<Button variant="primary" size="lg" onClick={() => navigate("/settings", { state: { focus: "library-folder" } })}>Add a folder</Button>}
       />
     );
   }

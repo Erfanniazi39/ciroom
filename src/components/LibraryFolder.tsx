@@ -1,15 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { Button, cx } from "./ui";
 
 /** Settings → Your library → Library folder: the folder that holds Movies/ and Series/. */
-export function LibraryFolder() {
+export function LibraryFolder({ focus = false }: { /** scroll here and focus the field once it shows */ focus?: boolean }) {
+  const input = useRef<HTMLInputElement>(null);
   const [info, setInfo] = useState<{ current: string; saved: string | null; ok: boolean } | null>(null);
   const [value, setValue] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   useEffect(() => {
     fetch("/api/media-root").then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) { setInfo(d); setValue(d.saved ?? d.current); } }).catch(() => undefined);
   }, []);
+  const shown = !!info;
+  useEffect(() => {
+    if (!focus || !shown) return;
+    input.current?.scrollIntoView({ block: "center" });
+    input.current?.focus({ preventScroll: true });
+  }, [focus, shown]);
   if (!info) return null;
 
   const save = async () => {
@@ -34,7 +41,7 @@ export function LibraryFolder() {
         </div>
       </div>
       <div className="flex gap-2">
-        <input value={value} onChange={(e) => setValue(e.target.value)} aria-label="Library folder" spellCheck={false}
+        <input ref={input} value={value} onChange={(e) => setValue(e.target.value)} aria-label="Library folder" spellCheck={false}
           className="h-10 w-72 rounded-full bg-white/[.07] px-4 font-mono text-[13px] outline-none ring-1 ring-white/[.08] focus:ring-accent" />
         <Button icon={<FolderOpen size={16} />} disabled={!value.trim() || value === (info.saved ?? info.current)} onClick={save}>Save</Button>
       </div>

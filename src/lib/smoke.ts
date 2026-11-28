@@ -2,7 +2,8 @@ import { useLibrary } from "@/store/library";
 
 /** Packaged-app smoke test (scripts/smoke-appimage.sh): only runs when the server was started with CIROOM_SMOKE=1. */
 export async function runSmoke() {
-  try { if (!(await fetch("/api/smoke")).ok) return; } catch { return; }
+  // The server marks the page in smoke mode. Asking /api/smoke instead logged a 404 in the console on every start.
+  if (!document.querySelector('meta[name="ciroom-smoke"]')) return;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const report = (ok: boolean, t: number, why = "") =>
     fetch("/api/smoke", { method: "POST", body: JSON.stringify({ ok, t, why }) }).catch(() => {});

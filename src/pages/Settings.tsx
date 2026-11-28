@@ -1,6 +1,6 @@
 import { HeartPulse, Library as LibraryIcon, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { api } from "@/api";
 import { subSearchApi } from "@/api/subsearch";
 import { PhoneRemoteSettings } from "@/components/PhoneRemoteSettings";
@@ -99,6 +99,7 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 }
 
 export default function Settings() {
+  const focusFolder = (useLocation().state as { focus?: string } | null)?.focus === "library-folder"; // Home's "Add a folder"
   const st = useSettings();
   const levelling = useUser((s) => s.levelling);
   const setLevelling = useUser((s) => s.setLevelling);
@@ -217,7 +218,7 @@ export default function Settings() {
       </Section>
 
       <Section title="Your library">
-        <LibraryFolder />
+        <LibraryFolder focus={focusFolder} />
         <Row label="Media folders" hint="CiRoom only reads these. It never moves, renames or deletes your files.">
           <Link to="/library"><Button icon={<LibraryIcon size={16} />} tabIndex={-1}>Open Library</Button></Link>
         </Row>

@@ -12,7 +12,7 @@ import type { Title } from "@/types/media";
 export default function MyList() {
   const lib = useLibrary((s) => s.data);
   const { favorites, watchlist } = useUser();
-  const [tab, setTab] = useState<"favorites" | "watchlist">("favorites");
+  const [tab, setTab] = useState<"favorites" | "watchlist">(() => (!favorites.length && watchlist.length ? "watchlist" : "favorites")); // opens on what's saved
 
   const ids = tab === "favorites" ? favorites : watchlist;
   const items = lib ? ids.map((id) => findTitle(lib, id)).filter((t): t is Title => !!t) : [];

@@ -267,3 +267,21 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     assert.deepEqual(errors, []);
   });
 });
+
+describe("first run: an empty library", { skip }, () => {
+  test("D-32: Home's \"Add a folder\" opens the library folder setting with the field in view and focused; Library has the field too", async () => {
+    const s = await startCiRoom({ layout: {} });
+    const profile = scratch("e2e-empty");
+    const b = await launch({ dir: profile });
+    try {
+      await b.goto(`http://127.0.0.1:${s.port}/`);
+      await b.waitFor(`document.body.innerText.includes("Your library is empty")`, 20000);
+      await b.click("Add a folder");
+      await b.waitFor(`document.activeElement?.getAttribute("aria-label") === "Library folder"`);
+      await sleep(1000); // sections above load their data: the field must still be in view afterwards
+      assert.ok(await b.eval(`(() => { const r = document.activeElement.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()`), "the field is in view");
+      await b.goto(`http://127.0.0.1:${s.port}/#/library`);
+      await b.waitFor(`!!document.querySelector("input[aria-label='Library folder']")`);
+    } finally { await b.close(); await s.stop(); fs.rmSync(profile, { recursive: true, force: true }); }
+  });
+});

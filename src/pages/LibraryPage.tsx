@@ -5,6 +5,7 @@ import { api } from "@/api";
 import { artApi } from "@/api/artwork";
 import { metaApi } from "@/api/meta";
 import { ArtworkSettings } from "@/components/ArtworkSettings";
+import { LibraryFolder } from "@/components/LibraryFolder";
 import { MetadataSettings } from "@/components/MetadataSettings";
 import { EmptyState } from "@/components/States";
 import { Badge, Button, IconButton, Segmented, cx } from "@/components/ui";
@@ -133,6 +134,13 @@ export default function LibraryPage() {
         <Stat label="Episodes" value={lib ? episodes : undefined} />
         <Stat label="Need attention" value={review?.length} accent />
       </div>
+
+      {/* Nothing in the library yet: the folder can be set right here (also in Settings). */}
+      {lib && !lib.movies.length && !lib.series.length && (
+        <div className="mt-6 rounded-2xl bg-white/[.03]">
+          <LibraryFolder />
+        </div>
+      )}
 
       {/* Scan progress */}
       {(scan || lastResult) && (

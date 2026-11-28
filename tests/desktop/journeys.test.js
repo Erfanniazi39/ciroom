@@ -30,8 +30,8 @@ describe("desktop journeys (real packaged app)", { skip }, () => {
     fs.writeFileSync(path.join(EVIDENCE, "D-32-after-add-a-folder.txt"), await app.page.text());
     const afterAdd = { hash: await app.page.hash(), hasField: await app.page.eval(`!!document.querySelector("input[aria-label='Library folder']")`) };
     fs.writeFileSync(path.join(EVIDENCE, "J1-add-a-folder.json"), JSON.stringify(afterAdd));
-    // Where the folder can actually be set: Settings → Library folder.
-    if (!afterAdd.hasField) { await app.click("Settings", "a"); await app.page.waitFor(`!!document.querySelector("input[aria-label='Library folder']")`); }
+    // The button itself leads to the field.
+    assert.ok(afterAdd.hasField, `the Library folder field right after "Add a folder" (at ${afterAdd.hash})`);
     const box = await app.page.box("sel:input[aria-label='Library folder']");
     await app.clickAt(box.x + box.w / 2, box.y + box.h / 2);
     await app.page.eval(`(() => { const i = document.activeElement; i.select(); return i === document.querySelector("input[aria-label='Library folder']"); })()`);
@@ -129,7 +129,7 @@ describe("desktop journeys (real packaged app)", { skip }, () => {
     const stopAt = (await app.page.video()).t;
     const saved = await until(async () => { const p = await progressOf(app, "alpha-movie"); return p && Math.abs(p.position - stopAt) < 2 && p; }, 10000, 200, "progress saved at the pause");
     assert.ok(saved.position > 200);
-    assert.deepEqual(app.page.errors().filter((/** @type {any} */ e) => !/api\/smoke/.test(e.url ?? "")), [], "no page errors");
+    assert.deepEqual(app.page.errors(), [], "no page errors");
     await app.close();
   }));
 

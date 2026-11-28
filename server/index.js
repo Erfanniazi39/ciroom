@@ -19,7 +19,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCiRoom } from "./lib/mpv-bridge.js";
-import { handleSmoke } from "./lib/smoke.js";
+import { handleSmoke, smokePage } from "./lib/smoke.js";
 import { DATA_DIR, isMediaRoot, savedMediaRoot } from "./lib/paths.js";
 import { closeDb } from "./lib/userdb.js";
 
@@ -59,13 +59,15 @@ function serveStatic(/** @type {http.IncomingMessage} */ req, /** @type {http.Se
     st = fs.statSync(file, { throwIfNoEntry: false });
     if (!st) { res.statusCode = 500; return res.end("CiRoom's page is missing (run npm run build)"); }
   }
+  const page = file === path.join(DIST, "index.html") ? Buffer.from(smokePage(fs.readFileSync(file, "utf8"))) : null;
   res.setHeader("Content-Type", TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream");
-  res.setHeader("Content-Length", st.size);
+  res.setHeader("Content-Length", page ? page.length : st.size);
   // Hashed build files never change; the page itself must always be fresh (it names the current files).
   res.setHeader("Cache-Control", file.includes(`${path.sep}assets${path.sep}`) ? "public, max-age=31536000, immutable" : "no-cache");
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (file.endsWith(".html")) { res.setHeader("Content-Security-Policy", CSP); res.setHeader("X-Frame-Options", "DENY"); }
   if (req.method === "HEAD") return res.end();
+  if (page) return res.end(page);
   fs.createReadStream(file).pipe(res);
 }
 
