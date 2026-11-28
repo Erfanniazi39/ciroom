@@ -2,7 +2,7 @@
 /** Finding the real video file for a path the library expects (folder-based identity). Read-only. */
 import fs from "node:fs";
 import path from "node:path";
-import { SKIP_DIR, PART_TOKEN, parseEpisode, absoluteNumber } from "./scanner.js";
+import { SKIP_DIR, PART_TOKEN, parseEpisode, absoluteNumber, isFolder } from "./scanner.js";
 
 const VIDEO = /\.(mkv|mp4|avi|m4v|mov|webm|ts|wmv)$/i;
 const isDir = (/** @type {string} */ p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
@@ -34,7 +34,7 @@ export function makeResolveVideo(rootAbs) {
       try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
         const p = path.join(d, e.name);
-        if (e.isDirectory()) { if (depth < 3 && !SKIP_DIR.test(e.name)) walk(p, depth + 1); continue; }
+        if (isFolder(d, e)) { if (depth < 3 && !SKIP_DIR.test(e.name)) walk(p, depth + 1); continue; }
         if (!VIDEO.test(e.name)) continue;
         let size;
         try { size = fs.statSync(p).size; } catch { continue; }

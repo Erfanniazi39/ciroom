@@ -124,6 +124,23 @@ export function parseEpisode(/** @type {string[]} */ dirs, /** @type {string} */
   return { season, episode, fromFile, alsoEpisode };
 }
 
+/**
+ * Is this directory entry a folder? A symbolic link (or Windows junction) to a folder counts too. A broken link
+ * doesn't, and neither does a link that points back up at a folder it sits in (a loop). The path stays the link's
+ * own name, never its target, so titles and ids come from what the library shows.
+ * @param {string} dir the folder that was listed @param {fs.Dirent} e
+ */
+export function isFolder(dir, e) {
+  if (e.isDirectory()) return true;
+  if (!e.isSymbolicLink()) return false;
+  try {
+    const target = fs.realpathSync(path.join(dir, e.name));
+    if (!fs.statSync(target).isDirectory()) return false;
+    const up = path.relative(target, fs.realpathSync(dir)); // "" or "a/b" = the target holds the link itself
+    return up === ".." || up.startsWith(`..${path.sep}`) || path.isAbsolute(up);
+  } catch { return false; }
+}
+
 /** Videos under a folder (depth-limited), with size and mtime. */
 function listVideos(/** @type {string} */ dir, depth = 3, /** @type {string[]} */ rel = []) {
   /** @type {{ abs: string, dirs: string[], name: string, size: number, mtime: number }[]} */
@@ -132,7 +149,7 @@ function listVideos(/** @type {string} */ dir, depth = 3, /** @type {string[]} *
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
     const abs = path.join(dir, e.name);
-    if (e.isDirectory()) { if (depth > 0 && !SKIP_DIR.test(e.name)) out.push(...listVideos(abs, depth - 1, [...rel, e.name])); }
+    if (isFolder(dir, e)) { if (depth > 0 && !SKIP_DIR.test(e.name)) out.push(...listVideos(abs, depth - 1, [...rel, e.name])); }
     else if (VIDEO.test(e.name)) {
       try {
         const st = fs.statSync(abs);
@@ -143,7 +160,7 @@ function listVideos(/** @type {string} */ dir, depth = 3, /** @type {string[]} *
   }
   return out;
 }
-const subdirs = (/** @type {string} */ dir) => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !SKIP_DIR.test(e.name)).map((e) => e.name).sort(); } catch { return []; } };
+const subdirs = (/** @type {string} */ dir) => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => isFolder(dir, e) && !SKIP_DIR.test(e.name)).map((e) => e.name).sort(); } catch { return []; } };
 /** Largest first; equal size → a "clean" name (no double extension), then the shorter name. */
 const bestFirst = (/** @type {any} */ a, /** @type {any} */ b) => b.size - a.size || Number(/\.\w{3}\.\w{3}$/.test(a.name)) - Number(/\.\w{3}\.\w{3}$/.test(b.name)) || a.name.length - b.name.length;
 
@@ -272,7 +289,7 @@ export function scanLibrary(mediaRoot) {
       const walk = (/** @type {string} */ d, /** @type {string} */ r, n = 0) => {
         if (n > 4) return;
         for (const e of (() => { try { return fs.readdirSync(d, { withFileTypes: true }); } catch { return []; } })()) {
-          if (e.isDirectory()) walk(path.join(d, e.name), `${r}/${e.name}`, n + 1);
+          if (isFolder(d, e)) walk(path.join(d, e.name), `${r}/${e.name}`, n + 1);
           else if (/\.(zip|rar|7z)$/i.test(e.name)) note("zipped_subtitle", `${r}/${e.name}`, "Subtitle is inside an archive. Extract it next to the video to use it.");
         }
       };

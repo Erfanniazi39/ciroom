@@ -68,13 +68,27 @@ describe("scanner ↔ symbolic links (Linux users often link folders from a seco
     } finally { await s.stop(); }
   });
 
-  test("D-26: a linked movie folder and a linked series folder show up in the library", { todo: "D-26" }, async () => {
+  test("D-26: a linked movie folder and a linked series folder show up in the library", async () => {
     const s = await startCiRoom({ layout: { "Movies/Alpha 2001/a.mkv": "short.mkv" } });
     try {
       linkLayout(s, await buildClips());
       const lib = await scan(s);
       assert.ok(lib.movies.some((/** @type {any} */ m) => m.title === "Gamma"), `movies: ${lib.movies.map((/** @type {any} */ m) => m.title).join(", ")}`);
       assert.ok(lib.series.some((/** @type {any} */ x) => x.title === "Show X"), `series: ${lib.series.map((/** @type {any} */ x) => x.title).join(", ") || "none"}`);
+      assert.equal(lib.movies.length, 3, "Alpha, Delta, Gamma: the loop link adds nothing");
+      const gamma = lib.movies.find((/** @type {any} */ m) => m.title === "Gamma");
+      assert.equal(gamma.file.path, path.join(s.media, "Movies/Gamma 2010/g.mkv"), "the library path, not the link's target");
+      const episode = lib.series[0].seasons[0].episodes[0];
+      for (const file of [gamma.file.path, episode.file.path]) {
+        const r = await s.get(`/api/stream?path=${encodeURIComponent(file)}`);
+        assert.equal(r.status, 200, file);
+        assert.ok(r.text.length > 0, file);
+      }
+      // A linked sub-folder is searched too when the video inside was renamed since the scan.
+      fs.mkdirSync(path.join(s.dir, "other-drive/Part"), { recursive: true });
+      fs.renameSync(path.join(s.media, "Movies/Alpha 2001/a.mkv"), path.join(s.dir, "other-drive/Part/renamed.mkv"));
+      fs.symlinkSync(path.join(s.dir, "other-drive/Part"), path.join(s.media, "Movies/Alpha 2001/Part"));
+      assert.equal((await s.get(`/api/probe?path=${encodeURIComponent(path.join(s.media, "Movies/Alpha 2001/a.mkv"))}`)).status, 200);
     } finally { await s.stop(); }
   });
 });
