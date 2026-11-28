@@ -520,6 +520,9 @@ export function streamRoutes(resolveVideo) {
           });
           return ff;
         };
+        // The client can leave during the awaits above (probe, the one-time GPU and pacing checks): its "close" has
+        // fired by then, so nothing would ever stop an ffmpeg started now. (A VA-API retry checks this itself.)
+        if (res.destroyed || res.writableEnded || req.socket.destroyed) return true;
         let cur = launch(!!vdev);
         const stop = () => { if (cur.exitCode === null && cur.signalCode === null) cur.kill("SIGKILL"); };
         req.on("close", stop);

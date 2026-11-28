@@ -25,7 +25,7 @@ describe("server ↔ ffmpeg: streams that break, storms of seeks, media never to
   });
   after(() => s?.stop());
 
-  test("D-29: the very first stream, dropped within milliseconds (during the one-time ffmpeg checks), leaves no ffmpeg behind", { todo: "D-29" }, async () => {
+  test("D-29: the very first stream, dropped within milliseconds (during the one-time ffmpeg checks), leaves no ffmpeg behind", async () => {
     const fresh = await startCiRoom({ layout: { "Movies/Alpha 2001/a.mkv": "long.mkv" } });
     try {
       const l = await scan(fresh);

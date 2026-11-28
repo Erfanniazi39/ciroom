@@ -43,6 +43,14 @@ const WATCH_EVENTS = ["waiting", "playing", "timeupdate", "seeking", "pause"] as
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Give up on a stream. Cancelling one whose fetch was already aborted (a video switch, a far seek) rejects with
+ * AbortError: expected, and there is nothing left to stop. */
+function cancelRead(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  reader.cancel().catch((e: unknown) => {
+    if (!(e instanceof DOMException && e.name === "AbortError")) console.warn("[player] stream cancel failed", e);
+  });
+}
+
 export class MseStream {
   static supported(mime: string): boolean {
     return typeof window !== "undefined" && "MediaSource" in window && MediaSource.isTypeSupported(mime);
@@ -340,12 +348,12 @@ export class MseStream {
         // us; WebKitGTK keeps downloading regardless, so there the server's pacing (stream.js) is what limits ffmpeg.
         // (0.2.6 closed the stream here and opened a new one later: the joins cut the sound for ~3 s in the installed app.)
         while (gen === this.gen && this.head - this.video.currentTime > AHEAD_MAX) await sleep(400);
-        if (gen !== this.gen) { void reader.cancel(); return; }
+        if (gen !== this.gen) { cancelRead(reader); return; }
         arm(appended === 0 ? FIRST_BYTE_TIMEOUT : CHUNK_GAP_TIMEOUT);
         const { done, value } = await reader.read();
         clearTimeout(timer);
         if (gen === this.gen) this.starting = false;
-        if (gen !== this.gen) { void reader.cancel(); return; }
+        if (gen !== this.gen) { cancelRead(reader); return; }
         if (done) {
           if (this.head >= this.duration - 2) {
             this.earlyEnd = -1;
@@ -362,7 +370,7 @@ export class MseStream {
         }
         if (!(await this.append(value, gen))) {
           if (gen !== this.gen) return;
-          void reader.cancel();
+          cancelRead(reader);
           this.recover();
           return;
         }

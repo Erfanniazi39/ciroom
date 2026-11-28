@@ -198,7 +198,7 @@ describe("window ↔ page player ↔ stream ↔ ffmpeg: switching faster than st
     } finally { clearInterval(watch); await b.close(); await s.stop(); }
   });
 
-  test("D-30: switching videos doesn't throw uncaught errors in the page", { todo: "D-30" }, async () => {
+  test("D-30: switching videos doesn't throw uncaught errors in the page", async () => {
     const s = await startCiRoom({ layout: LAYOUT });
     await scan(s);
     await saveUser(s, userState());
@@ -206,6 +206,26 @@ describe("window ↔ page player ↔ stream ↔ ffmpeg: switching faster than st
     try {
       await page(b, `http://127.0.0.1:${s.port}/#/`, "Alpha Movie");
       for (let i = 0; i < 8; i++) { await b.eval(`location.hash = "#/watch/${i % 2 ? "beta-film" : "alpha-movie"}?t=${50 + i}"`); await sleep(250); }
+      await sleep(1500);
+      const thrown = b.console.filter((/** @type {string} */ l) => l.startsWith("exception:"));
+      assert.deepEqual(thrown, []);
+    } finally { await b.close(); await s.stop(); }
+  });
+
+  test("D-30: switching while the player holds back (2 min already loaded) doesn't throw either", async () => {
+    const s = await startCiRoom({ layout: LAYOUT });
+    await scan(s);
+    await saveUser(s, userState());
+    const b = await launch({ dir: path.join(s.dir, "w") });
+    try {
+      await page(b, `http://127.0.0.1:${s.port}/#/`, "Alpha Movie");
+      for (let i = 0; i < 4; i++) {
+        await b.eval(`location.hash = "#/watch/${i % 2 ? "beta-film" : "alpha-movie"}?t=${50 + i}"`);
+        // past the 120 s look-ahead the read loop waits: the switch now aborts a stream it isn't reading
+        await b.waitFor(`(() => { const v = document.querySelector("video"); return v && v.currentTime >= ${50 + i} && v.currentTime < ${70 + i} && v.buffered.length && v.buffered.end(v.buffered.length - 1) - v.currentTime > 121; })()`, 30000);
+        await sleep(600);
+      }
+      await b.eval(`location.hash = "#/"`);
       await sleep(1500);
       const thrown = b.console.filter((/** @type {string} */ l) => l.startsWith("exception:"));
       assert.deepEqual(thrown, []);
