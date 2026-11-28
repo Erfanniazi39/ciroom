@@ -19,6 +19,7 @@ import { pickSubtitle, startSubtitle, subPrefFor, useSettings } from "@/store/se
 import { useUser } from "@/store/user";
 import { usePlaybackEngine } from "@/player/usePlaybackEngine";
 import { useProgressSaver } from "@/player/useProgressSaver";
+import { onBeforeClose } from "@/lib/beforeClose";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
 import { inDesktopShell } from "@/lib/windowFullscreen";
@@ -179,8 +180,10 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
     save: (pos) => { if (duration > 0) savePosition(id, pos, duration); else return false; },
   });
   const save = useCallback(() => { void saveNow(); }, [saveNow]);
+  // Closing the window/page: save the exact position now (the window is destroyed without unmounting this; D-31).
+  useEffect(() => onBeforeClose(() => { if (timeRef.current > 1) void saveNow(true); }), [saveNow]);
 
-  // Real watch time for Stats: whole seconds while the video is actually playing, flushed every 15 s and on leave.
+  // Real watch time for Stats: whole seconds while the video is actually playing, flushed every 15 s, on leave and on close.
   const watched = useRef(0);
   useEffect(() => {
     const flush = () => { if (watched.current > 0) { addWatchTime(titleId ?? id, watched.current); watched.current = 0; } };
@@ -189,7 +192,8 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
       if (v && !v.paused && !v.ended && v.readyState >= 3) watched.current += 1;
       if (watched.current >= 15) flush();
     }, 1000);
-    return () => { window.clearInterval(t); flush(); };
+    const off = onBeforeClose(flush);
+    return () => { window.clearInterval(t); off(); flush(); };
   }, [id, titleId, addWatchTime]);
 
   const updateBuffered = engine.updateBuffered;

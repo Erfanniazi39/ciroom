@@ -212,14 +212,15 @@ let inFlight = 0;
 /** UNSAVED was set here because a save failed (not by a read-only or offline spell): cleared once all is saved. */
 let failMarked = false;
 
-function send(name: string) {
+/** Sends one store's pending change; resolves (never rejects) once the database has answered or the send failed. */
+function send(name: string): Promise<void> | undefined {
   const value = pending.get(name);
   if (value === undefined) return;
   pending.delete(name);
   const s = SECTION[name];
   const state = (value as StorageValue<unknown>).state as Obj;
   inFlight++;
-  put(s, state).then(async (r) => {
+  return put(s, state).then(async (r) => {
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
       revision = d.revision ?? revision;
@@ -285,12 +286,16 @@ export function reloadFromServer(): boolean {
   return true;
 }
 
-/** Send anything not yet saved (on close). */
-export function flushUserData() {
-  for (const [name, t] of timers) { window.clearTimeout(t); timers.delete(name); send(name); }
-  if (mode === "online") for (const name of [...pending.keys()]) send(name); // saves that failed earlier
+/**
+ * Send anything not yet saved, at once (on close: src/lib/beforeClose.ts). Resolves when those saves have answered
+ * (the requests use `keepalive`, so they also finish if the page goes away first).
+ */
+export function flushUserData(): Promise<void> {
+  const sent: (Promise<void> | undefined)[] = [];
+  for (const [name, t] of timers) { window.clearTimeout(t); timers.delete(name); sent.push(send(name)); }
+  if (mode === "online") for (const name of [...pending.keys()]) sent.push(send(name)); // saves that failed earlier
+  return Promise.all(sent).then(() => undefined);
 }
-if (typeof window !== "undefined") window.addEventListener("pagehide", flushUserData);
 
 export function serverStorage<S>(): PersistStorage<S> {
   return {

@@ -485,6 +485,73 @@ code{{display:block;margin-top:.5rem;padding:.6rem .8rem;background:#1a1a22;bord
     }
 }
 
+/// Closing the window (its X): the page saves first. The player's last pause, jump or position is otherwise lost,
+/// because a destroyed window never unmounts the page and its saves wait 400 ms before they are sent (D-31).
+/// First close request: the close is held, the page's `window.__ciroomBeforeClose()` (src/lib/beforeClose.ts) runs, and
+/// the window is destroyed when the page reports back (the `ciroom-close-ready` event) or after 1 s, whichever comes
+/// first, so a dead or hung page never keeps CiRoom open. A second click on X closes at once. Pages that aren't
+/// CiRoom's (the error page, a file: URL) close at once. After the window is gone, `RunEvent::Exit` stops the server.
+#[cfg(desktop)]
+mod close {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tauri::{Listener, Manager, Window, WindowEvent};
+
+    #[derive(Default)]
+    pub struct Closing {
+        asked: AtomicBool,
+        done: AtomicBool,
+    }
+
+    const READY: &str = "ciroom-close-ready";
+    const SCRIPT: &str = "(async () => {\
+try { if (window.__ciroomBeforeClose) await window.__ciroomBeforeClose(); } catch (e) {}\
+try { await window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'ciroom-close-ready', payload: null }); } catch (e) {}\
+})()";
+
+    fn finish(window: &Window) {
+        if !window.state::<Closing>().done.swap(true, Ordering::SeqCst) {
+            let _ = window.destroy();
+        }
+    }
+
+    pub fn setup(app: &tauri::App) {
+        let handle = app.handle().clone();
+        app.listen_any(READY, move |_| {
+            if let Some(w) = handle.get_webview_window("main") {
+                if w.state::<Closing>().asked.load(Ordering::SeqCst) {
+                    finish(&w.as_ref().window());
+                }
+            }
+        });
+    }
+
+    pub fn on_window_event(window: &Window, event: &WindowEvent) {
+        let WindowEvent::CloseRequested { api, .. } = event else { return };
+        if window.label() != "main" {
+            return;
+        }
+        let state = window.state::<Closing>();
+        if state.asked.swap(true, Ordering::SeqCst) {
+            state.done.store(true, Ordering::SeqCst); // X clicked again while the page saves: close now
+            return;
+        }
+        let ours = window
+            .get_webview_window("main")
+            .filter(|w| w.url().map(|u| u.scheme() == "http" || u.scheme() == "https").unwrap_or(false));
+        let Some(webview) = ours else { return }; // error page or no page: nothing to save
+        if webview.eval(SCRIPT).is_err() {
+            return;
+        }
+        api.prevent_close();
+        let w = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(1));
+            finish(&w);
+        });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[allow(unused_mut)]
@@ -504,7 +571,10 @@ pub fn run() {
     }
     #[cfg(desktop)]
     {
-        builder = builder.manage(Server::default());
+        builder = builder
+            .manage(Server::default())
+            .manage(close::Closing::default())
+            .on_window_event(close::on_window_event);
     }
     // Android: the Connect page scans the PC's QR code and checks the PC is there before opening its page.
     #[cfg(mobile)]
@@ -542,6 +612,8 @@ pub fn run() {
                 cfg.url = tauri::WebviewUrl::External(url);
             }
             WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+            #[cfg(desktop)]
+            close::setup(app);
             #[cfg(all(desktop, not(debug_assertions)))]
             if let Some((port, secret)) = watch {
                 installed::watch(app.handle().clone(), port, secret);

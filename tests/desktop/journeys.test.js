@@ -133,7 +133,7 @@ describe("desktop journeys (real packaged app)", { skip }, () => {
     await app.close();
   }));
 
-  test("D-31: closing the window keeps where the movie was: a jump made just before closing, and a pause right before closing", { ...T, todo: "D-31" }, () => journey(ctx, "D-31", async () => {
+  test("D-31: closing the window keeps where the movie was: a jump made just before closing, and a pause right before closing", T, () => journey(ctx, "D-31", async () => {
     const dir = scratch("d31");
     const media = ctx.library(dir, LAYOUT_FULL);
     let app = await ctx.launch({ dir, media });
@@ -145,7 +145,7 @@ describe("desktop journeys (real packaged app)", { skip }, () => {
     await playingAt(app.page, 440, 470);
     await sleep(3000);
     const at = (await app.page.video()).t;
-    await app.close();
+    const close1 = await app.close(); // X → the app is gone (ms)
     app = await ctx.launch({ dir, media });
     const p = await progressOf(app, "alpha-movie");
     const r1 = `jumped to ~450 and closed at ${at.toFixed(1)}: saved ${p?.position?.toFixed(1)}`;
@@ -154,13 +154,14 @@ describe("desktop journeys (real packaged app)", { skip }, () => {
     await sleep(4000);
     await app.key("space"); // pause, then close at once
     const at2 = (await app.page.video()).t;
-    await app.close();
+    const close2 = await app.close();
     app = await ctx.launch({ dir, media });
     const p2 = await progressOf(app, "alpha-movie");
     const r2 = `paused at ${at2.toFixed(1)} and closed at once: saved ${p2?.position?.toFixed(1)}`;
-    fs.writeFileSync(path.join(EVIDENCE, "D-31.json"), JSON.stringify({ r1, r2 }));
+    fs.writeFileSync(path.join(EVIDENCE, "D-31.json"), JSON.stringify({ r1, r2, closeMs: [close1, close2] }));
     await app.close();
     assert.ok(p && Math.abs(at - p.position) < 5, r1);
+    assert.ok(close1 < 8000 && close2 < 8000, `closing took ${close1} / ${close2} ms`);
     assert.ok(p2 && Math.abs(p2.position - at2) < 2, r2);
   }));
 

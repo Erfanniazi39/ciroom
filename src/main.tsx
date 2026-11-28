@@ -8,6 +8,7 @@ import "./index.css";
 import { useUser } from "./store/user";
 import { useSettings } from "./store/settings";
 import { whenHydrated } from "./lib/serverStorage";
+import "./lib/beforeClose"; // saves at once on close (pagehide; the desktop window's X)
 import { runSmoke } from "./lib/smoke";
 
 // Opened from another device (a phone on the Wi-Fi): show the phone remote, not the PC interface.
