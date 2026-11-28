@@ -51,7 +51,7 @@ function MissingTools() {
 
 /** Background skip-intro analysis progress (dev/intro.js). */
 function SkipIntroStatus() {
-  const [st, setSt] = useState<{ done: number; total: number; running: string | null } | null>(null);
+  const [st, setSt] = useState<{ done: number; total: number; running: string | null; readOnly?: boolean } | null>(null);
   useEffect(() => {
     let alive = true;
     const load = () => fetch("/api/markers/status").then((r) => (r.ok ? r.json() : null)).then((d) => alive && setSt(d)).catch(() => undefined);
@@ -64,7 +64,7 @@ function SkipIntroStatus() {
   return (
     <div className="meta w-56 text-right text-[13px] leading-5">
       <div className="font-semibold text-fg">{all ? "All episodes checked" : `${st.done} of ${st.total} episodes checked`}</div>
-      {st.running ? <div>Now: {st.running}</div> : !all && <div>Starts shortly after CiRoom opens</div>}
+      {st.readOnly && !all ? <div>Paused: the data folder is read-only</div> : st.running ? <div>Now: {st.running}</div> : !all && <div>Starts shortly after CiRoom opens</div>}
     </div>
   );
 }

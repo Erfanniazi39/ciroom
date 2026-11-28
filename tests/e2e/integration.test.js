@@ -17,7 +17,7 @@ const LAYOUT = { "Movies/Alpha Movie 2001/a.mkv": "long.mkv", "Movies/Beta Film 
 const page = (/** @type {any} */ b, /** @type {string} */ url, /** @type {string} */ text) => b.goto(url).then(() => b.waitFor(`document.body.innerText.includes(${JSON.stringify(text)})`, 20000));
 
 describe("window ↔ server ↔ database: a data folder that turns read-only", { skip: skip || ROOT_USER }, () => {
-  test("D-22: a window opened while the data folder is read-only still shows the saved progress and lists", { todo: "D-22" }, async () => {
+  test("D-22: a window opened while the data folder is read-only still shows the saved progress and lists", async () => {
     const dir = scratch("e2e-ro");
     let s = await startCiRoom({ dir, layout: LAYOUT });
     await scan(s);
@@ -34,7 +34,7 @@ describe("window ↔ server ↔ database: a data folder that turns read-only", {
     } finally { await b?.close(); setReadOnly(s.data, false); await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test("D-22: what is watched while the folder is read-only is not lost once it is writable again", { todo: "D-22" }, async () => {
+  test("D-22: what is watched while the folder is read-only is not lost once it is writable again", async () => {
     const dir = scratch("e2e-ro2");
     let s = await startCiRoom({ dir, layout: LAYOUT });
     await scan(s);

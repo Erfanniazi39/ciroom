@@ -16,7 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
-import { openDb } from "./userdb.js";
+import { isDbReadOnly, onDbChange, openDb } from "./userdb.js";
 import { BACKGROUND, LIBRARY_FILE } from "./paths.js";
 import { defineRoutes } from "./routes.js";
 
@@ -46,6 +46,8 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
   let timer = /** @type {NodeJS.Timeout | null} */ (null);
   /** Seasons already handled in this pass: never picked again until the next RECHECK, so a season that can't be finished can't loop. */
   const tried = new Set();
+  /** Said once per read-only spell: the data folder can't be written, so no episode is analysed (results would be lost). */
+  let readOnlyNoted = false;
 
   const stat = (/** @type {string} */ f) => { try { const s = fs.statSync(f); return { size: s.size, mtime: Math.floor(s.mtimeMs) }; } catch { return null; } };
   const row = (/** @type {string} */ f) => db.prepare("SELECT * FROM media_markers WHERE path = ?").get(key(f));
@@ -81,18 +83,29 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
   }
 
   function save(/** @type {Season} */ season, /** @type {Record<string, any>} */ results) {
-    const ins = db.prepare("INSERT OR REPLACE INTO media_markers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    for (const f of season.files) {
-      const s = stat(f);
-      if (!s) continue;
-      const r = results[f] ?? { duration: null, intro: null, credits: null };
-      ins.run(key(f), s.size, s.mtime, r.duration ?? null, r.intro?.[0] ?? null, r.intro?.[1] ?? null, r.credits ?? null, VERSION, Date.now());
+    try {
+      const ins = db.prepare("INSERT OR REPLACE INTO media_markers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      for (const f of season.files) {
+        const s = stat(f);
+        if (!s) continue;
+        const r = results[f] ?? { duration: null, intro: null, credits: null };
+        ins.run(key(f), s.size, s.mtime, r.duration ?? null, r.intro?.[0] ?? null, r.intro?.[1] ?? null, r.credits ?? null, VERSION, Date.now());
+      }
+    } catch (e) { // e.g. the data folder turned read-only meanwhile: analysed again later, never a crash
+      console.warn(`[ciroom] skip intro: ${season.label}: result not saved:`, e instanceof Error ? e.message : e);
     }
   }
 
   function work() {
     timer = null;
     if (running || stale()) return;
+    if (isDbReadOnly()) {
+      if (!readOnlyNoted) console.warn("[ciroom] skip intro: the data folder is read-only, so episodes are checked again once it is writable");
+      readOnlyNoted = true;
+      openDb().catch(() => undefined); // checks the folder again (at most once a minute); onDbChange restarts the queue
+      if (BACKGROUND) timer = setTimeout(work, 60_000);
+      return;
+    }
     const season = next();
     if (!season) { tried.clear(); if (BACKGROUND) timer = setTimeout(work, RECHECK); return; }
     wanted = wanted.filter((k) => k !== season.key);
@@ -126,19 +139,36 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
   function start() {
     ready ??= (async () => {
       db = await openDb();
-      db.exec(TABLE);
-      // Before 0.1.2 rows were keyed by the full path: keep them, keyed by the path inside the library folder.
-      const prefix = path.resolve(mediaRoot) + path.sep;
-      const old = db.prepare("SELECT path FROM media_markers WHERE path LIKE ?").all(`${prefix}%`);
-      if (old.length) {
-        const upd = db.prepare("UPDATE OR REPLACE media_markers SET path = ? WHERE path = ?");
-        db.exec("BEGIN");
-        for (const r of old) upd.run(key(/** @type {any} */ (r).path), /** @type {any} */ (r).path);
-        db.exec("COMMIT");
-      }
+      prepare();
+      // The database is reopened when the data folder turns read-only or writable again (userdb.js).
+      const off = onDbChange((next, ro) => {
+        if (stale()) { off(); return; }
+        db = next;
+        prepare();
+        if (ro || !readOnlyNoted) return;
+        readOnlyNoted = false;
+        console.log("[ciroom] skip intro: the data folder is writable again, checking episodes");
+        if (timer) { clearTimeout(timer); timer = null; }
+        kick(5000);
+      });
     })();
     ready.then(() => { if (BACKGROUND) kick(START_DELAY); }).catch((e) => console.warn("[ciroom] skip intro disabled:", e.message));
     return ready;
+  }
+
+  /** The markers table (and, when the folder is writable, moving rows saved before 0.1.2 to the current keys). */
+  function prepare() {
+    db.exec(TABLE); // on a read-only folder: only the temporary copy
+    if (isDbReadOnly()) return;
+    // Before 0.1.2 rows were keyed by the full path: keep them, keyed by the path inside the library folder.
+    const prefix = path.resolve(mediaRoot) + path.sep;
+    const old = db.prepare("SELECT path FROM media_markers WHERE path LIKE ?").all(`${prefix}%`);
+    if (old.length) {
+      const upd = db.prepare("UPDATE OR REPLACE media_markers SET path = ? WHERE path = ?");
+      db.exec("BEGIN");
+      for (const r of old) upd.run(key(/** @type {any} */ (r).path), /** @type {any} */ (r).path);
+      db.exec("COMMIT");
+    }
   }
 
   /** Markers for a file already analysed, or null. Used for mpv and the phone. */
@@ -157,7 +187,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
         await start();
         const all = seasons();
         const files = all.flatMap((s) => s.files);
-        json(200, { done: files.filter((f) => current(f)).length, total: files.length, running });
+        json(200, { done: files.filter((f) => current(f)).length, total: files.length, running, readOnly: isDbReadOnly() });
       } },
       { method: "GET", path: "/api/markers", audience: "pc", handler: async ({ json, u }) => {
         await start();
@@ -165,7 +195,7 @@ export function introRoutes(/** @type {(p: string) => string} */ resolveVideo, /
         const m = markersFor(file);
         if (m) return json(200, { status: "ready", ...m });
         const season = seasons().find((s) => s.files.includes(file));
-        if (!season || season.files.length < 2) return json(200, { status: "none" });
+        if (!season || season.files.length < 2 || isDbReadOnly()) return json(200, { status: "none" }); // read-only: nothing can be analysed now
         wanted = [season.key, ...wanted.filter((k) => k !== season.key)].slice(0, 20);
         kick(0);
         json(200, { status: "pending" });

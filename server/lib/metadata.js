@@ -36,7 +36,7 @@ const writeJson = (/** @type {string} */ f, /** @type {any} */ v) => writeJsonAt
 const yearOf = (/** @type {string|undefined|null} */ d) => (d ? Number(d.slice(0, 4)) || undefined : undefined);
 
 export function metadataRoutes() {
-  fs.mkdirSync(META_DIR, { recursive: true });
+  try { fs.mkdirSync(META_DIR, { recursive: true }); } catch { /* read-only data folder: saving details fails with a message later */ }
   const index = () => readJson(INDEX, {});
   /** IMDb ratings loaded from the dataset for the ids we need: tconst → { value, votes }. */
   let imdbCache = /** @type {Map<string, {value:number, votes:number}>|null} */ (null);

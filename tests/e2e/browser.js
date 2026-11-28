@@ -80,7 +80,15 @@ export async function launch(o) {
     /** The page player's <video>: current time, paused, ready state. */
     video: () => page.eval(`(() => { const v = document.querySelector("video"); return v ? { t: v.currentTime, paused: v.paused, ready: v.readyState, ended: v.ended, muted: v.muted, rate: v.playbackRate } : null; })()`),
     hash: () => page.eval("location.hash"),
-    async close() { try { ws.close(); } catch { /* gone */ } proc.kill("SIGTERM"); await new Promise((r) => setTimeout(r, 300)); if (proc.exitCode === null) proc.kill("SIGKILL"); },
+    /** Like closing the window: Chrome is asked to quit (it writes the page's browser storage to disk then) and gets up to 5 s, else it is killed. */
+    async close() {
+      if (proc.exitCode !== null || proc.signalCode !== null) { try { ws.close(); } catch { /* gone */ } return; }
+      const exited = new Promise((r) => proc.once("exit", r));
+      send("Browser.close").catch(() => undefined);
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+      try { ws.close(); } catch { /* gone */ }
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+    },
   };
   return page;
 }

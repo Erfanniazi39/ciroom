@@ -8,16 +8,24 @@
  * Every row has a profile_id, ready for profiles (#17); today everything is profile 1.
  *
  * The UI keeps its zustand stores; their persistence goes through these routes (src/lib/serverStorage.ts):
- *   GET  /api/userdata                   → { imported, user: {...} | null, settings: {...} | null }
+ *   GET  /api/userdata                   → { imported, user: {...} | null, settings: {...} | null, revision, readOnly }
  *   PUT  /api/userdata/user     {state}  → replaces profile 1's user data (one transaction)
  *   PUT  /api/userdata/settings {state}  → replaces profile 1's settings
  *   POST /api/userdata/import   {user, settings} → one-time move from browser storage (cleans the
  *        session-1 sample data: progress/history saved before CiRoom existed)
  * This PC only: phones and watch-party guests get 403.
+ *
+ * Read-only data folder (the shared NTFS drive after Windows hibernated or shut down with Fast Startup): the database
+ * is opened from a private temporary copy, GET answers the saved data with `readOnly: true`, and the PUT routes answer
+ * 503 `{ readOnly: true }`. Writability is checked again at most once a minute when a request comes in. Every save
+ * bumps meta.revision, so a window that kept changes while the folder was read-only can tell whether the database
+ * changed meanwhile (src/lib/serverStorage.ts) and a PUT may carry `ifRevision` (409 `{ conflict: true }` if it changed).
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "./artwork-store.js";
+import { checkWritable } from "./diskcheck.js";
 import { LOCAL_DIR } from "./paths.js";
 import { defineRoutes } from "./routes.js";
 
@@ -63,19 +71,121 @@ const USER_SCALARS = ["volume", "levelling"];
 
 /** Opens the database lazily (node:sqlite is built into Node 22; no native module to install). */
 let db = /** @type {any} */ (null);
-async function open() {
-  if (db) return db;
-  if (closed) throw new Error("CiRoom is shutting down");
-  const { DatabaseSync } = await import("node:sqlite");
+/** True while the data folder can't be written: `db` is then a private temporary copy (or an empty in-memory database). */
+let readOnly = false;
+/** The temporary folder holding that copy, removed when the real database is opened again. */
+let roCopy = /** @type {string | null} */ (null);
+let lastCheck = 0;
+const RECHECK_MS = 60_000;
+/** @type {Promise<any> | null} */ let sqlite = null;
+/** Told when `db` is replaced (read-only ↔ writable), e.g. the skip-intro queue. @type {Set<(db: any, readOnly: boolean) => void>} */
+const listeners = new Set();
+
+/** True for errors that mean "this folder or file can't be written": read-only mount, permissions. */
+function isReadOnlyError(/** @type {any} */ e) {
+  if (["EROFS", "EACCES", "EPERM"].includes(e?.code)) return true;
+  const base = Number(e?.errcode) & 0xff;
+  return base === 8 /* SQLITE_READONLY */ || (base === 14 /* SQLITE_CANTOPEN */ && checkWritable(DATA_DIR).readOnly);
+}
+
+/** The real database, read-write (throws if the folder or file can't be written). */
+function openWritable(/** @type {any} */ DatabaseSync) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  db = new DatabaseSync(DB_FILE);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
-  db.exec(SCHEMA);
-  db.prepare("INSERT OR IGNORE INTO profiles (id, name, created_at) VALUES (?, ?, ?)").run(PROFILE, "Me", Date.now());
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1')").run();
+  const d = new DatabaseSync(DB_FILE);
+  try {
+    d.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
+    d.exec(SCHEMA);
+    d.prepare("INSERT OR IGNORE INTO profiles (id, name, created_at) VALUES (?, ?, ?)").run(PROFILE, "Me", Date.now());
+    d.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1')").run();
+  } catch (e) {
+    try { d.close(); } catch { /* not open */ }
+    throw e;
+  }
   try { fs.chmodSync(DB_FILE, 0o600); } catch { /* not fatal */ }
+  return d;
+}
+
+/**
+ * The saved data, for reading only. SQLite can't even read a WAL database in a folder where it can't create its -shm
+ * file, so this opens a private copy (database + write-ahead log) in the system's temporary folder. Nothing written to
+ * the copy is kept. No database yet: an empty one in memory.
+ */
+function openReadOnly(/** @type {any} */ DatabaseSync) {
+  dropCopy();
+  if (!fs.existsSync(DB_FILE)) {
+    const d = new DatabaseSync(":memory:");
+    d.exec(SCHEMA);
+    return d;
+  }
+  roCopy = fs.mkdtempSync(path.join(os.tmpdir(), "ciroom-readonly-"));
+  const copy = path.join(roCopy, "ciroom.db");
+  fs.copyFileSync(DB_FILE, copy);
+  if (fs.existsSync(`${DB_FILE}-wal`)) fs.copyFileSync(`${DB_FILE}-wal`, `${copy}-wal`); // not the -shm: SQLite rebuilds it from the log
+  for (const f of fs.readdirSync(roCopy)) fs.chmodSync(path.join(roCopy, f), 0o600); // copies keep the original's read-only mode
+  const d = new DatabaseSync(copy);
+  d.exec("PRAGMA busy_timeout = 3000;");
+  d.exec(SCHEMA); // only the copy: tables a very old database lacks
+  return d;
+}
+
+function dropCopy() {
+  if (!roCopy) return;
+  try { fs.rmSync(roCopy, { recursive: true, force: true }); } catch { /* the system cleans its temporary folder */ }
+  roCopy = null;
+}
+
+function replaceDb(/** @type {any} */ next, /** @type {boolean} */ ro) {
+  const old = db;
+  db = next;
+  readOnly = ro;
+  for (const fn of listeners) { try { fn(db, ro); } catch (e) { console.warn("[ciroom] database listener failed:", e instanceof Error ? e.message : e); } }
+  try { old?.close(); } catch { /* already closed */ }
+}
+
+const READ_ONLY_NOTE = (/** @type {string} */ dir) =>
+  `[ciroom] the data folder ${dir} is read-only (on the shared drive: Windows was hibernated or shut down with Fast Startup). ` +
+  "Showing the saved progress; the window keeps what you watch and saves it when the folder is writable again.";
+
+async function open() {
+  if (db && !(readOnly && Date.now() - lastCheck >= RECHECK_MS)) return db;
+  if (closed) throw new Error("CiRoom is shutting down");
+  const { DatabaseSync } = await (sqlite ??= import("node:sqlite"));
+  if (closed) throw new Error("CiRoom is shutting down");
+  if (db && !readOnly) return db; // opened by a request that arrived at the same time
+  if (db) {
+    // Read-only: try the real database again (the drive may have been remounted read-write).
+    if (Date.now() - lastCheck < RECHECK_MS) return db;
+    lastCheck = Date.now();
+    if (checkWritable(DATA_DIR).readOnly) return db;
+    let d;
+    try { d = openWritable(DatabaseSync); } catch (e) { if (!isReadOnlyError(e)) console.warn("[ciroom] database still read-only:", e instanceof Error ? e.message : e); return db; }
+    replaceDb(d, false);
+    dropCopy();
+    console.log(`[ciroom] the data folder ${DATA_DIR} is writable again: saving to the database`);
+    backup();
+    return db;
+  }
+  try {
+    db = openWritable(DatabaseSync);
+    readOnly = false;
+  } catch (e) {
+    if (!isReadOnlyError(e)) throw e;
+    db = openReadOnly(DatabaseSync);
+    readOnly = true;
+    lastCheck = Date.now();
+    console.warn(READ_ONLY_NOTE(DATA_DIR));
+    return db;
+  }
   backup();
   return db;
+}
+
+/** A write failed because the folder became read-only while CiRoom was running: switch to the read-only copy. */
+async function becomeReadOnly() {
+  const { DatabaseSync } = await (sqlite ??= import("node:sqlite"));
+  replaceDb(openReadOnly(DatabaseSync), true);
+  lastCheck = Date.now();
+  console.warn(READ_ONLY_NOTE(DATA_DIR));
 }
 
 /** Backups on this system's own disk (LOCAL_DIR): the data folder may sit on the shared NTFS drive, which has been damaged before. */
@@ -107,12 +217,18 @@ let closed = false;
 export function closeDb() {
   closed = true;
   if (!db) return;
-  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* busy or already closed */ }
+  if (!readOnly) try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* busy or already closed */ }
   try { db.close(); } catch { /* already closed */ }
   db = null;
+  dropCopy();
 }
 
 const imported = () => !!db.prepare("SELECT value FROM meta WHERE key = 'imported_at'").get();
+/** Counts every save of user data or settings (0 for a database saved before 0.2.10, which had no counter). */
+const revision = () => Number(/** @type {any} */ (db.prepare("SELECT value FROM meta WHERE key = 'revision'").get())?.value ?? 0) || 0;
+/** Inside a save's transaction: one more revision. Adds the row on the first save; never touches any other data. */
+const bumpRevision = () =>
+  db.prepare("INSERT INTO meta (key, value) VALUES ('revision', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)").run();
 
 /** Profile 1's user data in the shape of the UI's user store (src/store/user.ts). */
 function readUser() {
@@ -175,6 +291,7 @@ function writeUser(/** @type {any} */ s) {
     const a = db.prepare("INSERT INTO audio_prefs VALUES (?, ?, ?)");
     for (const [id, lang] of Object.entries(obj(s.audioPrefs))) if (lang) a.run(PROFILE, str(id), str(lang));
     writeScope("user", Object.fromEntries(USER_SCALARS.filter((k) => k in s).map((k) => [k, s[k]])));
+    bumpRevision();
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -184,7 +301,7 @@ function writeUser(/** @type {any} */ s) {
 
 function writeSettings(/** @type {any} */ s) {
   db.exec("BEGIN");
-  try { writeScope("app", obj(s)); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
+  try { writeScope("app", obj(s)); bumpRevision(); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
 }
 
 /** Drops the session-1 sample data: progress and history saved before CiRoom existed. Returns what was removed. */
@@ -196,8 +313,37 @@ function cleanSample(/** @type {any} */ user) {
   return { user: u, removed };
 }
 
-/** The open database (for other bridge modules, e.g. skip-intro markers). */
+/** The open database (for other bridge modules, e.g. skip-intro markers). While the data folder is read-only it is a temporary copy: check isDbReadOnly(). */
 export const openDb = () => open();
+/** True while the data folder can't be written (nothing written to the database is kept). */
+export const isDbReadOnly = () => readOnly;
+/** Calls `fn(db, readOnly)` whenever the open database is replaced (read-only ↔ writable). Returns the unsubscribe. */
+export function onDbChange(/** @type {(db: any, readOnly: boolean) => void} */ fn) {
+  listeners.add(fn);
+  return () => { listeners.delete(fn); };
+}
+
+const READ_ONLY_ERROR = "The drive with CiRoom's data is read-only, so nothing can be saved there right now. " +
+  "The window keeps your changes and saves them when the drive is writable again.";
+const refuseReadOnly = (/** @type {(status: number, body: any) => void} */ json) => { json(503, { error: READ_ONLY_ERROR, readOnly: true }); return true; };
+
+/** Runs a save; if the folder turned read-only meanwhile, switches to the read-only copy and answers 503. */
+async function save(/** @type {(status: number, body: any) => void} */ json, /** @type {() => void} */ write) {
+  try { write(); } catch (e) {
+    if (!isReadOnlyError(e)) throw e;
+    await becomeReadOnly();
+    return refuseReadOnly(json);
+  }
+  json(200, { ok: true, revision: revision() });
+  return true;
+}
+
+/** A window that kept changes while the folder was read-only sends the revision it loaded: refuse if the database changed since. */
+function changedSince(/** @type {any} */ ifRevision, /** @type {(status: number, body: any) => void} */ json) {
+  if (ifRevision == null || Number(ifRevision) === revision()) return false;
+  json(409, { error: "The saved data changed meanwhile", conflict: true, revision: revision() });
+  return true;
+}
 
 export function userdbRoutes() {
   return {
@@ -206,43 +352,50 @@ export function userdbRoutes() {
         await open();
         const ok = imported();
         const settings = readScope("app");
-        json(200, { imported: ok, user: ok ? readUser() : null, settings: ok && Object.keys(settings).length ? settings : null });
+        json(200, { imported: ok, user: ok ? readUser() : null, settings: ok && Object.keys(settings).length ? settings : null, revision: revision(), readOnly });
         return true;
       } },
       { method: "PUT", path: "/api/userdata/user", audience: "pc", handler: async ({ req, json, body }) => {
         await open();
-        if (!imported()) { json(409, { error: "Import first" }); return true; }
-        const { state } = await body(req);
+        const { state, ifRevision } = await body(req);
         // A broken or empty request must never wipe the data: the real store always sends these fields.
         if (!state || typeof state !== "object" || typeof state.progress !== "object" || !Array.isArray(state.favorites) || !Array.isArray(state.history)) {
           json(400, { error: "Incomplete user data" }); return true;
         }
-        writeUser(state);
-        json(200, { ok: true });
-        return true;
+        if (readOnly) return refuseReadOnly(json);
+        if (!imported()) { json(409, { error: "Import first" }); return true; }
+        if (changedSince(ifRevision, json)) return true;
+        return save(json, () => writeUser(state));
       } },
       { method: "PUT", path: "/api/userdata/settings", audience: "pc", handler: async ({ req, json, body }) => {
         await open();
-        if (!imported()) { json(409, { error: "Import first" }); return true; }
-        const { state } = await body(req);
+        const { state, ifRevision } = await body(req);
         if (!state || typeof state !== "object" || Array.isArray(state)) { json(400, { error: "Incomplete settings" }); return true; }
-        writeSettings(state);
-        json(200, { ok: true });
-        return true;
+        if (readOnly) return refuseReadOnly(json);
+        if (!imported()) { json(409, { error: "Import first" }); return true; }
+        if (changedSince(ifRevision, json)) return true;
+        return save(json, () => writeSettings(state));
       } },
       { method: "POST", path: "/api/userdata/import", audience: "pc", handler: async ({ req, json, body }) => {
         await open();
-        if (imported()) { json(200, { imported: true, user: readUser(), settings: readScope("app"), removed: [] }); return true; }
+        if (readOnly) return refuseReadOnly(json);
+        if (imported()) { json(200, { imported: true, user: readUser(), settings: readScope("app"), removed: [], revision: revision(), readOnly: false }); return true; }
         const b = await body(req);
         if (b.user != null && (typeof b.user !== "object" || Array.isArray(b.user))) { json(400, { error: "Bad import" }); return true; }
         const { user, removed } = cleanSample(b.user ?? { progress: {}, favorites: [], watchlist: [], history: [] });
-        writeUser(user);
-        if (b.settings) writeSettings(b.settings);
-        db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('imported_at', ?)").run(new Date().toISOString());
-        db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('import_removed', ?)").run(JSON.stringify(removed));
+        try {
+          writeUser(user);
+          if (b.settings) writeSettings(b.settings);
+          db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('imported_at', ?)").run(new Date().toISOString());
+          db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('import_removed', ?)").run(JSON.stringify(removed));
+        } catch (e) {
+          if (!isReadOnlyError(e)) throw e;
+          await becomeReadOnly();
+          return refuseReadOnly(json);
+        }
         backup();
         console.log(`[ciroom] user data moved to ${DB_FILE} (${Object.keys(obj(user.progress)).length} progress entries; removed sample data: ${removed.join(", ") || "none"})`);
-        json(200, { imported: true, user: readUser(), settings: readScope("app"), removed });
+        json(200, { imported: true, user: readUser(), settings: readScope("app"), removed, revision: revision(), readOnly: false });
         return true;
       } },
     ]),

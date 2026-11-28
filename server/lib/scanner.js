@@ -25,6 +25,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { DATA_DIR } from "./artwork-store.js";
+import { checkWritable } from "./diskcheck.js";
 import { LIBRARY_FILE } from "./paths.js";
 import { writeJsonAtomic } from "./fsutil.js";
 import { defineRoutes } from "./routes.js";
@@ -414,6 +415,18 @@ export function scanLibrary(mediaRoot) {
   }
 }
 
+/** Can't save to the data folder (read-only drive or permissions): a message the window can show; the saved library stays. */
+const READ_ONLY_SCAN = "The data folder is read-only, so a new scan can't be saved. Your library stays as it was. " +
+  "On the shared drive this usually means Windows was hibernated or shut down with Fast Startup.";
+const isWriteRefused = (/** @type {any} */ code) => ["EACCES", "EROFS", "EPERM"].includes(code) && checkWritable(DATA_DIR).readOnly;
+
+/** A failed scan as an error with an HTTP status: 409 no library folder, 503 read-only data folder, else 500. */
+function scanError(/** @type {string} */ message, /** @type {any} */ code) {
+  if (code === "NO_LIBRARY") return Object.assign(new Error(message), { status: 409 });
+  if (isWriteRefused(code)) return Object.assign(new Error(READ_ONLY_SCAN), { status: 503 });
+  return Object.assign(new Error(message), { status: 500 });
+}
+
 /** @param {string} mediaRoot */
 export function scannerRoutes(mediaRoot) {
   const rootAbs = path.resolve(mediaRoot);
@@ -424,7 +437,7 @@ export function scannerRoutes(mediaRoot) {
       const w = new Worker(new URL("./scan-worker.js", import.meta.url), { workerData: { root: mediaRoot } });
       let done = false;
       const end = (/** @type {Error | null} */ err, /** @type {any=} */ lib) => { if (done) return; done = true; running = null; err ? reject(err) : resolve(lib); };
-      w.once("message", (m) => (m.error ? end(Object.assign(new Error(m.error), { status: m.code === "NO_LIBRARY" ? 409 : 500 })) : end(null, m.library)));
+      w.once("message", (m) => (m.error ? end(scanError(m.error, m.code)) : end(null, m.library)));
       w.once("error", (e) => end(e));
       w.once("exit", (code) => end(new Error(`scan worker exited (${code})`)));
     });
@@ -472,8 +485,11 @@ export function scannerRoutes(mediaRoot) {
         const prev = readJson(LIB_FILE, null);
         const t0 = Date.now();
         let lib;
-        try { lib = await scan(); } catch (e) { json(/** @type {any} */ (e).status ?? 500, { error: String(/** @type {Error} */ (e).message) }); return true; }
-        writeJson(LIB_FILE, lib);
+        try { lib = await scan(); writeJson(LIB_FILE, lib); } catch (e) {
+          const err = /** @type {any} */ (e);
+          if (isWriteRefused(err.code)) { json(503, { error: READ_ONLY_SCAN }); return true; }
+          json(err.status ?? 500, { error: String(err.message) }); return true;
+        }
         json(200, { ...lib, changes: { ...diff(prev, lib), ms: Date.now() - t0 } });
         return true;
       } },

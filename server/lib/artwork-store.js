@@ -79,7 +79,7 @@ export async function searchTmdb(/** @type {"movie"|"tv"} */ type, /** @type {st
 
 
 export function artworkRoutes() {
-  fs.mkdirSync(ART_DIR, { recursive: true });
+  try { fs.mkdirSync(ART_DIR, { recursive: true }); } catch { /* read-only data folder: saving a picture fails with a message later */ }
 
   const index = readArtIndex;
 

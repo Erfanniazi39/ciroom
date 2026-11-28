@@ -11,6 +11,7 @@ import { EmptyState, ErrorState } from "@/components/States";
 import { useRemoteLink } from "@/lib/remoteLink";
 import { usePartyLink } from "@/lib/partyLink";
 import { PartyPanel } from "@/components/PartyPanel";
+import { ReadOnlyBanner } from "@/components/ReadOnlyBanner";
 import { useHotkey } from "@/hooks/useHotkey";
 import { setTvMode, useTvMode } from "@/hooks/useTvMode";
 import { useSettings } from "@/store/settings";
@@ -78,6 +79,7 @@ export default function App() {
     <div className="h-full">
       <Sidebar onSearch={openSearch} />
       <main ref={mainRef} onScroll={onScroll} className={`h-full overflow-y-auto overflow-x-hidden pb-16 transition-[padding] duration-300 md:pb-0 md:pl-rail ${playing ? "md:pb-32" : ""}`}>
+        {!location.pathname.startsWith("/watch/") && <ReadOnlyBanner />}
         {error ? (
           <ErrorState message={error} onRetry={load} />
         ) : (

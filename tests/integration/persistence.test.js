@@ -70,7 +70,7 @@ describe("server ↔ SQLite: saves that collide or get cut off", () => {
 });
 
 describe("server ↔ data folder that became read-only (Windows hibernated / Fast Startup on the shared drive)", { skip: ROOT_USER || process.platform === "win32" }, () => {
-  test("D-22: the saved progress and lists can still be READ (the window falls back to its browser copy otherwise)", { todo: "D-22" }, async () => {
+  test("D-22: the saved progress and lists can still be READ (the window falls back to its browser copy otherwise)", async () => {
     const dir = scratch("it-ro");
     let s = await startCiRoom({ dir, layout: { "Movies/Alpha 2001/a.mkv": "short.mkv" } });
     await scan(s);
@@ -107,6 +107,66 @@ describe("server ↔ data folder that became read-only (Windows hibernated / Fas
       setReadOnly(s.data, false);
       await s.stop(); fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("server ↔ data folder that became read-only: saves and the revision counter (D-22)", { skip: ROOT_USER || process.platform === "win32" }, () => {
+  test("saves answer 503 readOnly (no SQLite text), a scan says the folder is read-only, nothing changes; writable again: ifRevision guards the save", async () => {
+    const dir = scratch("it-ro3");
+    let s = await startCiRoom({ dir, layout: { "Movies/Alpha 2001/a.mkv": "short.mkv" } });
+    await scan(s);
+    await saveUser(s, userState({ favorites: ["alpha"] }));
+    const rev = (await s.get("/api/userdata")).json.revision;
+    assert.ok(rev >= 1, "every save counts a revision");
+    await s.stop({ keep: true });
+    setReadOnly(s.data, true);
+    try {
+      s = await startCiRoom({ dir, media: s.media, data: s.data, cache: s.cache });
+      const g = await s.get("/api/userdata");
+      assert.equal(g.json.readOnly, true);
+      assert.equal(g.json.revision, rev);
+      const w = await s.put("/api/userdata/user", { state: userState({ favorites: ["beta"] }) });
+      assert.equal(w.status, 503, w.text);
+      assert.equal(w.json.readOnly, true);
+      assert.doesNotMatch(w.json.error, /sqlite|readonly database/i);
+      assert.equal((await s.put("/api/userdata/settings", { state: { autoplayNext: false } })).status, 503);
+      const sc = await s.post("/api/library/scan");
+      assert.equal(sc.status, 503, sc.text);
+      assert.match(sc.json.error, /read-only/);
+      assert.doesNotMatch(sc.json.error, /EACCES|\.tmp/);
+      assert.deepEqual((await s.get("/api/userdata")).json.user.favorites, ["alpha"]);
+    } finally { setReadOnly(s.data, false); await s.stop({ keep: true }); }
+    s = await startCiRoom({ dir, media: s.media, data: s.data, cache: s.cache });
+    try {
+      const g = (await s.get("/api/userdata")).json;
+      assert.equal(g.readOnly, false);
+      assert.deepEqual(g.user.favorites, ["alpha"]);
+      assert.equal(g.revision, rev, "nothing was written while read-only");
+      const stale = await s.put("/api/userdata/user", { state: userState({ favorites: ["beta"] }), ifRevision: rev - 1 });
+      assert.equal(stale.status, 409);
+      assert.equal(stale.json.conflict, true);
+      const ok = await s.put("/api/userdata/user", { state: userState({ favorites: ["beta"] }), ifRevision: rev });
+      assert.equal(ok.status, 200, ok.text);
+      assert.equal(ok.json.revision, rev + 1);
+      assert.deepEqual((await s.get("/api/userdata")).json.user.favorites, ["beta"]);
+    } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a read-only data folder with no database yet: empty state, readOnly, the server stays up", async () => {
+    const dir = scratch("it-ro4");
+    const data = path.join(dir, "data");
+    fs.mkdirSync(data, { recursive: true });
+    setReadOnly(data, true);
+    let s;
+    try {
+      s = await startCiRoom({ dir, data, layout: {} });
+      const g = await s.get("/api/userdata");
+      assert.equal(g.status, 200, g.text);
+      assert.equal(g.json.readOnly, true);
+      assert.equal(g.json.imported, false);
+      assert.equal((await s.post("/api/userdata/import", { user: userState() })).status, 503);
+      assert.equal((await s.get("/api/ping")).status, 200);
+    } finally { setReadOnly(data, false); await s?.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
