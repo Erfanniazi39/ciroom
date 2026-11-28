@@ -15,9 +15,16 @@
  *              revision and data they are based on. They are saved as soon as the database is writable again:
  *              tried every minute while the window is open, and at the next start. If the database didn't change
  *              meanwhile, the browser copy is saved as it is; if it did, the two are merged (mergeUser.ts).
+ *
+ * The service stopping while the window is open (it crashed; the desktop shell restarts it): a save that fails stays
+ * pending (the newest whole state wins) and is re-sent after 2 s, 5 s, 15 s, then every 30 s, and at once when the
+ * service answers again (serverHealth.ts). UNSAVED is set meanwhile, so a window closed before that still merges its
+ * changes at the next start. A window that started while the service was unreachable keeps its changes the same way
+ * and loads from the database (merging them in) once the service is back: reloadFromServer().
  */
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { mergeSettings, mergeUser } from "./mergeUser";
+import { reportServerTrouble } from "./serverHealth";
 
 type Section = "user" | "settings";
 type Obj = Record<string, unknown>;
@@ -43,6 +50,12 @@ const timers = new Map<string, number>();
 let keptTimer = 0;
 /** Read-only state, but the database changed meanwhile: merged at the next start, not while this window runs. */
 let conflict = false;
+/** Re-sending failed saves (online state): the timer and how many tries so far. */
+const RETRY_MS = [2000, 5000, 15000, 30000];
+let retryTimer = 0;
+let retryStep = 0;
+/** Started with the service unreachable: the browser copy this window began with (the base of its changes). */
+const offlineBase: Record<Section, Obj | null> = { user: null, settings: null };
 const modeListeners = new Set<() => void>();
 
 const readLocal = (name: string) => {
@@ -87,7 +100,9 @@ const put = (s: Section, state: unknown, ifRevision?: number | null) =>
 async function saveKept(): Promise<"saved" | "readonly" | "conflict" | "error"> {
   const u = readLocal(UNSAVED) as Unsaved | null;
   if (!u) return "saved";
-  if (!u.base) return "conflict"; // kept before the database existed: moved in or merged at the next start
+  // Kept before the database existed, or while the service was unreachable (base unknown to the database): moved in
+  // or merged at the next load.
+  if (!u.base || u.revision == null) return "conflict";
   let rev = u.revision;
   const base: Record<Section, Obj | null> = { user: u.base?.user ?? null, settings: u.base?.settings ?? null };
   for (const s of ["user", "settings"] as const) {
@@ -193,15 +208,29 @@ async function loadAll(attempt = 0): Promise<Loaded | null> {
   }
 }
 
+let inFlight = 0;
+/** UNSAVED was set here because a save failed (not by a read-only or offline spell): cleared once all is saved. */
+let failMarked = false;
+
 function send(name: string) {
   const value = pending.get(name);
   if (value === undefined) return;
   pending.delete(name);
   const s = SECTION[name];
   const state = (value as StorageValue<unknown>).state as Obj;
+  inFlight++;
   put(s, state).then(async (r) => {
     const d = await r.json().catch(() => ({}));
-    if (r.ok) { revision = d.revision ?? revision; saved[s] = state; return; }
+    if (r.ok) {
+      revision = d.revision ?? revision;
+      saved[s] = state;
+      if (inFlight === 1 && !pending.size) {
+        retryStep = 0;
+        // Everything is in the database now: nothing left to merge at the next start.
+        if (failMarked && mode === "online") { removeLocal(UNSAVED); failMarked = false; }
+      }
+      return;
+    }
     if (d.readOnly) {
       // The folder turned read-only while this window was open: keep the changes here from now on.
       markUnsaved();
@@ -209,13 +238,57 @@ function send(name: string) {
       scheduleKept(60_000);
       return;
     }
-    throw new Error(String(r.status));
-  }).catch(() => { if (!pending.has(name)) pending.set(name, value); }); // keep it for the next change / flush
+    throw Object.assign(new Error(String(r.status)), { status: r.status });
+  }).catch((e: { status?: number }) => {
+    if (!pending.has(name)) pending.set(name, value); // keep it, unless a newer change replaced it meanwhile
+    if (e.status && e.status < 500) return; // refused: sent again with the next change / flush, as before
+    // Not reachable (the service stopped?) or failed there: try again, and merge at the next start if the window closes first.
+    if (!readLocal(UNSAVED)) { markUnsaved(); failMarked = true; }
+    scheduleRetry();
+    if (!e.status) reportServerTrouble();
+  }).finally(() => { inFlight--; });
+}
+
+function scheduleRetry() {
+  if (retryTimer || mode !== "online") return;
+  const ms = RETRY_MS[Math.min(retryStep, RETRY_MS.length - 1)];
+  retryStep++;
+  retryTimer = window.setTimeout(() => { retryTimer = 0; retryPending(); }, ms);
+}
+
+/** Re-send the saves that failed (the next backoff step, or at once when the service answers again). */
+export function retryPending() {
+  window.clearTimeout(retryTimer);
+  retryTimer = 0;
+  if (mode !== "online") return; // read-only: scheduleKept() handles it; offline: reloadFromServer()
+  for (const name of [...pending.keys()]) if (!timers.has(name)) send(name);
+}
+
+/**
+ * Started with the service unreachable: what the stores hold right after loading (the browser copy, or the defaults
+ * when there is none) is the base of this window's changes. Without it, a favourite added here couldn't be told apart
+ * from one removed elsewhere, and the merge would keep the database's list.
+ */
+export function setOfflineBase(base: Record<Section, Obj | null>) {
+  if (mode !== "offline" || ready.size < Object.keys(SECTION).length || readLocal(UNSAVED)) return;
+  offlineBase.user = base.user;
+  offlineBase.settings = base.settings;
+}
+
+/**
+ * The service answers again. Online: re-send what failed. Started offline: true when the stores must load again
+ * (the caller rehydrates them; getItem then loads from the database and merges this window's changes in).
+ */
+export function reloadFromServer(): boolean {
+  if (mode !== "offline" || !ready.size) { retryPending(); return false; }
+  loading = null;
+  return true;
 }
 
 /** Send anything not yet saved (on close). */
 export function flushUserData() {
   for (const [name, t] of timers) { window.clearTimeout(t); timers.delete(name); send(name); }
+  if (mode === "online") for (const name of [...pending.keys()]) send(name); // saves that failed earlier
 }
 if (typeof window !== "undefined") window.addEventListener("pagehide", flushUserData);
 
@@ -225,7 +298,13 @@ export function serverStorage<S>(): PersistStorage<S> {
       loading ??= loadAll();
       const d = await loading;
       ready.add(name);
-      if (!d) return readLocal(name); // service unreachable: use the browser-storage copy (writes stay local)
+      if (!d) {
+        // Service unreachable: use the browser-storage copy (writes stay local until it is back: reloadFromServer()).
+        const local = readLocal(name);
+        if (!readLocal(UNSAVED)) offlineBase[SECTION[name]] = local?.state ?? null;
+        reportServerTrouble();
+        return local;
+      }
       const state = d[SECTION[name]];
       if (!state) return null;
       const value = { state, version: 0 } as StorageValue<S>;
@@ -236,7 +315,11 @@ export function serverStorage<S>(): PersistStorage<S> {
       writeLocal(name, value);
       if (!ready.has(name) || !SECTION[name]) return; // not loaded yet: never overwrite the database with defaults
       if (mode === "readonly") { markUnsaved(); scheduleKept(10_000); return; }
-      if (mode !== "online") return;
+      if (mode === "offline") {
+        // Kept here; merged into the database once the service is back (base: what this window started with).
+        if (!readLocal(UNSAVED)) writeLocal(UNSAVED, { revision: null, base: { ...offlineBase }, at: Date.now() } satisfies Unsaved);
+        return;
+      }
       pending.set(name, value);
       window.clearTimeout(timers.get(name));
       timers.set(name, window.setTimeout(() => { timers.delete(name); send(name); }, 400));

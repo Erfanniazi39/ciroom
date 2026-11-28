@@ -1,7 +1,9 @@
 //! CiRoom desktop shell.
 //!
 //! Installed app (release build): starts CiRoom's server (server/index.js on the bundled Node, shipped next to
-//! this program) and opens the window on it. The server is stopped when CiRoom closes.
+//! this program) and opens the window on it. If the server stops on its own (a crash), it is started again on the
+//! same port with the same secret, so the open window reconnects by itself (at most 3 times in 2 minutes, then the
+//! error page). The server is stopped when CiRoom closes.
 //! Test version / `npm run desktop` (debug build): the Vite dev server already runs CiRoom's server; the
 //! window just opens the dev URL.
 //!
@@ -15,14 +17,18 @@
 mod pc_check;
 
 #[cfg(desktop)]
-use std::sync::Mutex;
+use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
 use tauri::WebviewWindowBuilder;
 #[cfg(desktop)]
 use tauri::{Manager, RunEvent};
 
-/// The server process, stopped on exit.
+/// The server process, stopped on exit. `exiting` is set first, so the watcher (installed::watch) never restarts it then.
 #[cfg(desktop)]
-struct Server(Mutex<Option<std::process::Child>>);
+#[derive(Default)]
+struct Server {
+    child: Mutex<Option<std::process::Child>>,
+    exiting: AtomicBool,
+}
 
 #[cfg(all(desktop, not(debug_assertions)))]
 mod installed {
@@ -30,6 +36,7 @@ mod installed {
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
     use tauri::Manager;
 
@@ -191,10 +198,12 @@ mod installed {
         (1431..1500).find(|p| TcpListener::bind(("127.0.0.1", *p)).is_ok() && !port_open(*p))
     }
 
-    /// Where the window should go: CiRoom's server, or an error page.
+    /// Where the window should go: CiRoom's server, or an error page. `secret`: what the server was started with
+    /// (a restart uses the same one).
     pub struct Started {
         pub port: u16,
         pub child: Option<Child>,
+        pub secret: Option<String>,
     }
 
     /// Starts server/index.js on the bundled Node and waits until it answers as CiRoom (max 30 s).
@@ -207,22 +216,35 @@ mod installed {
             std::thread::sleep(Duration::from_millis(200));
         }
         // Installed builds: a secret only this app and its own server know (dev builds keep the plain check).
-        let secret = if cfg!(debug_assertions) { None } else { Some(random_hex().ok_or("no randomness for the server check")?) };
-        let secret = secret.as_deref();
+        let owned = if cfg!(debug_assertions) { None } else { Some(random_hex().ok_or("no randomness for the server check")?) };
+        let secret = owned.as_deref();
         let mut port = PORT;
         if port_open(PORT) {
             if is_ciroom(PORT, secret) {
-                return Ok(Started { port, child: None }); // CiRoom already runs here (e.g. `npm run desktop`): use it
+                return Ok(Started { port, child: None, secret: owned }); // CiRoom already runs here (e.g. `npm run desktop`): use it
             }
             port = free_port().ok_or("Port 1420 is used by another program and no other port is free")?;
         }
+        let child = spawn(app, port, secret, false)?;
+        Ok(Started { port, child: Some(child), secret: owned })
+    }
+
+    /// Starts server/index.js on `port` and waits until it answers as CiRoom (max 30 s). `append`: add to server.log
+    /// (a restart keeps the log of the run that stopped) instead of starting it afresh.
+    fn spawn(app: &tauri::AppHandle, port: u16, secret: Option<&str>, append: bool) -> Result<Child, String> {
         let exe = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
         let node = exe.parent().ok_or("no program folder")?.join(if cfg!(windows) { "node.exe" } else { "node" });
         // Windows paths can come as \\?\C:\…; plain C:\… is safer for Node and for PATH.
         let res = PathBuf::from(app.path().resource_dir().map_err(|e| e.to_string())?.to_string_lossy().trim_start_matches(r"\\?\").to_string());
         let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        let log = std::fs::File::create(log_dir.join("server.log")).map_err(|e| e.to_string())?;
+        let log_file = log_dir.join("server.log");
+        let log = if append {
+            std::fs::OpenOptions::new().create(true).append(true).open(&log_file)
+        } else {
+            std::fs::File::create(&log_file)
+        }
+        .map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&node);
         cmd.arg(res.join("server").join("index.js"))
             .env("CIROOM_PORT", port.to_string())
@@ -279,7 +301,7 @@ mod installed {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(30) {
             if is_ciroom(port, secret) {
-                return Ok(Started { port, child: Some(child) });
+                return Ok(child);
             }
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!("CiRoom's server stopped right away ({status})."));
@@ -289,6 +311,105 @@ mod installed {
         let _ = child.kill();
         let _ = child.wait();
         Err("CiRoom's server did not start within 30 seconds.".to_string())
+    }
+
+    /// One line in server.log from the shell itself (why the server was restarted).
+    fn log_line(app: &tauri::AppHandle, text: &str) {
+        let Ok(dir) = app.path().app_log_dir() else { return };
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("server.log")) {
+            let _ = writeln!(f, "[ciroom shell] {text}");
+        }
+    }
+
+    /// The window shows the error page (with the log location) instead of a CiRoom that no longer answers.
+    fn show_error(app: &tauri::AppHandle, message: &str) {
+        log_line(app, message);
+        if let (Some(w), Some(url)) = (app.get_webview_window("main"), error_page(app, message)) {
+            let _ = w.navigate(url);
+        }
+    }
+
+    /// Starts the server again after it stopped on its own. Ok(None): CiRoom already answers on the port again
+    /// (proved with our secret), nothing to start.
+    fn restart(app: &tauri::AppHandle, port: u16, secret: Option<&str>) -> Result<Option<Child>, String> {
+        let wait = Instant::now();
+        while port_open(port) && wait.elapsed() < Duration::from_secs(3) {
+            if is_ciroom(port, secret) {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if port_open(port) {
+            // Never a second server beside a live CiRoom, nor on a port another program took meanwhile.
+            return Err(if is_ciroom(port, None) {
+                format!("CiRoom's server stopped, and another CiRoom now runs on port {port}.")
+            } else {
+                format!("CiRoom's server stopped, and port {port} is now used by another program.")
+            });
+        }
+        spawn(app, port, secret, true).map(Some)
+    }
+
+    /// Watches the server started by this app: if it stops while CiRoom is open (not when CiRoom closes), it is
+    /// started again on the same port with the same secret, so the window (src/lib/serverHealth.ts) reconnects by
+    /// itself. At most 3 restarts within 2 minutes; then, or if a restart fails, the window shows the error page.
+    pub fn watch(app: tauri::AppHandle, port: u16, secret: Option<String>) {
+        std::thread::spawn(move || {
+            let mut restarts: Vec<Instant> = Vec::new();
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let server = app.state::<crate::Server>();
+                if server.exiting.load(Ordering::SeqCst) {
+                    return;
+                }
+                let status = {
+                    let mut guard = server.child.lock().unwrap();
+                    let Some(child) = guard.as_mut() else { return }; // not ours to watch, or taken on exit
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            guard.take();
+                            status
+                        }
+                        _ => continue,
+                    }
+                };
+                if server.exiting.load(Ordering::SeqCst) {
+                    return;
+                }
+                log_line(&app, &format!("the server stopped unexpectedly ({status})"));
+                restarts.retain(|t| t.elapsed() < Duration::from_secs(120));
+                if restarts.len() >= 3 {
+                    show_error(&app, "CiRoom's server stopped 3 times within 2 minutes.");
+                    return;
+                }
+                restarts.push(Instant::now());
+                match restart(&app, port, secret.as_deref()) {
+                    Ok(Some(mut child)) => {
+                        let mut guard = server.child.lock().unwrap();
+                        if server.exiting.load(Ordering::SeqCst) {
+                            // CiRoom is closing meanwhile: stop the new server the same way (stdin closed, then kill).
+                            drop(guard);
+                            drop(child.stdin.take());
+                            std::thread::sleep(Duration::from_secs(2));
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return;
+                        }
+                        *guard = Some(child);
+                        drop(guard);
+                        log_line(&app, &format!("the server was started again on port {port}"));
+                    }
+                    Ok(None) => {
+                        log_line(&app, &format!("CiRoom answers on port {port} again; nothing to start"));
+                        return;
+                    }
+                    Err(e) => {
+                        show_error(&app, &e);
+                        return;
+                    }
+                }
+            }
+        });
     }
 
     /// A small local page for when the server can't start: what happened and where the log is.
@@ -383,7 +504,7 @@ pub fn run() {
     }
     #[cfg(desktop)]
     {
-        builder = builder.manage(Server(Mutex::new(None)));
+        builder = builder.manage(Server::default());
     }
     // Android: the Connect page scans the PC's QR code and checks the PC is there before opening its page.
     #[cfg(mobile)]
@@ -396,6 +517,9 @@ pub fn run() {
         .setup(|app| {
             #[allow(unused_mut)]
             let mut cfg = app.config().app.windows.first().cloned().ok_or("no window in tauri.conf.json")?;
+            // The server this app started (port, secret): watched once the window is open.
+            #[cfg(all(desktop, not(debug_assertions)))]
+            let mut watch = None;
             #[cfg(all(desktop, not(debug_assertions)))]
             {
                 installed::menu_entry();
@@ -403,7 +527,10 @@ pub fn run() {
                 installed::stable_gstreamer_plugins();
                 let url = match installed::start_server(app.handle()) {
                     Ok(started) => {
-                        *app.state::<Server>().0.lock().unwrap() = started.child;
+                        if started.child.is_some() {
+                            watch = Some((started.port, started.secret));
+                        }
+                        *app.state::<Server>().child.lock().unwrap() = started.child;
                         format!("http://127.0.0.1:{}/", started.port).parse().expect("valid url")
                     }
                     Err(e) => {
@@ -415,6 +542,10 @@ pub fn run() {
                 cfg.url = tauri::WebviewUrl::External(url);
             }
             WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+            #[cfg(all(desktop, not(debug_assertions)))]
+            if let Some((port, secret)) = watch {
+                installed::watch(app.handle().clone(), port, secret);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -425,7 +556,10 @@ pub fn run() {
     #[cfg(desktop)]
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            if let Some(mut child) = handle.state::<Server>().0.lock().unwrap().take() {
+            let server = handle.state::<Server>();
+            server.exiting.store(true, Ordering::SeqCst); // before taking the child: the watcher must not restart it
+            let taken = server.child.lock().unwrap().take();
+            if let Some(mut child) = taken {
                 // Ask first: closing the server's stdin makes it save mpv's position, quit mpv and close the
                 // database (server/index.js shutdown()). Kill only if it hasn't finished in 4 s.
                 drop(child.stdin.take());

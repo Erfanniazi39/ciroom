@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 import { isRemoteClient } from "@/components/MobileNav";
 import { episodeCode } from "@/lib/format";
 import { findEpisode } from "@/lib/library";
+import { reportServerTrouble } from "@/lib/serverHealth";
 import { useLibrary } from "@/store/library";
 import { usePlayback } from "@/store/playback";
 import { usePlayer } from "@/store/player";
@@ -46,6 +47,7 @@ export function useRemoteLink() {
 
     // ── Commands from the phone ────────────────────────────────────────────────────────
     const es = new EventSource("/api/remote/commands");
+    es.onerror = () => reportServerTrouble(); // it reconnects by itself; this only checks whether the server is gone
     es.onmessage = (ev) => {
       let c: Cmd;
       try { c = JSON.parse(ev.data); } catch { return; }

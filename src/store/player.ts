@@ -4,6 +4,7 @@
  */
 import { create } from "zustand";
 import { useUser } from "./user";
+import { reportServerTrouble, serverHealth } from "@/lib/serverHealth";
 
 export interface PlayRequest {
   id: string;
@@ -69,7 +70,10 @@ interface PlayerState {
 }
 
 const post = (url: string, body: unknown) =>
-  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => undefined);
+  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => { reportServerTrouble(); return undefined; });
+
+/** What Play shows when CiRoom's server doesn't answer (the same words as ConnectionBar). */
+const STOPPED = "CiRoom stopped. Reconnecting…";
 
 export async function fetchSnapshot(): Promise<PlayerSnapshot | null> {
   try {
@@ -104,6 +108,10 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const { subDelays, volume, levelling, subPrefs, audioPrefs } = useUser.getState();
     const subDelay = subDelays[req.id] ?? 0;
     const prefKey = req.titleId ?? req.id;
+    if (serverHealth() === "down") {
+      set({ error: STOPPED });
+      return;
+    }
     try {
       const r = await fetch("/api/play", {
         method: "POST",
@@ -119,7 +127,10 @@ export const usePlayer = create<PlayerState>((set, get) => ({
         },
       });
     } catch (e) {
-      set({ current: null, error: e instanceof Error ? e.message : "mpv could not start." });
+      // fetch() itself failed: the server isn't there (a refused answer comes back as an Error from above).
+      const unreachable = e instanceof TypeError;
+      if (unreachable) reportServerTrouble();
+      set({ current: null, error: unreachable ? STOPPED : e instanceof Error ? e.message : "mpv could not start." });
     }
   },
 

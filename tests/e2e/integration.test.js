@@ -5,6 +5,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import http from "node:http";
 import { startCiRoom, scan, until, sleep, scratch, userState, saveUser } from "../functional/env.js";
 import { HAS_FFMPEG } from "../fixtures/media.js";
 import { launch, CHROME } from "./browser.js";
@@ -89,7 +90,7 @@ describe("window ↔ server: the server crashes and comes back while the window 
     } finally { await b.close(); await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test("D-25: a change made while it is down reaches the database once it is back, even with no further change", { todo: "D-25" }, async () => {
+  test("D-25: a change made while it is down reaches the database once it is back, even with no further change", async () => {
     const dir = scratch("e2e-down2");
     let s = await startCiRoom({ dir, layout: LAYOUT });
     await scan(s);
@@ -106,7 +107,7 @@ describe("window ↔ server: the server crashes and comes back while the window 
     } finally { await b.close(); await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test("D-24: while the server is down the window says so (instead of silently doing nothing)", { todo: "D-24" }, async () => {
+  test("D-24: while the server is down the window says so (instead of silently doing nothing)", async () => {
     const dir = scratch("e2e-down3");
     const s = await startCiRoom({ dir, layout: LAYOUT });
     await scan(s);
@@ -120,6 +121,37 @@ describe("window ↔ server: the server crashes and comes back while the window 
       await b.click("Play");
       await b.waitFor(`/can't reach|cannot reach|not running|offline|connection|stopped/i.test(document.body.innerText)`, 15000);
     } finally { await b.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a window that started while the server couldn't be reached merges its change into the database once it answers (nothing saved there is lost)", async () => {
+    const dir = scratch("e2e-down4");
+    const s = await startCiRoom({ dir, layout: LAYOUT });
+    await scan(s);
+    await saveUser(s, userState({ favorites: ["alpha-movie"], progress: { "alpha-movie": { position: 200, duration: 600, watched: false, updatedAt: Date.now() } } }));
+    // A proxy in front of the server that drops the window's data and health requests until `blocked` is cleared.
+    let blocked = true;
+    const proxy = http.createServer((req, res) => {
+      if (blocked && /^\/api\/(userdata|ping)/.test(req.url ?? "")) { req.socket.destroy(); return; }
+      const up = http.request({ host: "127.0.0.1", port: s.port, path: req.url, method: req.method, headers: req.headers }, (r) => { res.writeHead(r.statusCode ?? 502, r.headers); r.pipe(res); });
+      up.on("error", () => res.destroy());
+      req.pipe(up);
+    });
+    await new Promise((r) => proxy.listen(0, "127.0.0.1", () => r(null)));
+    const port = /** @type {import("node:net").AddressInfo} */ (proxy.address()).port;
+    const b = await launch({ dir: path.join(dir, "w") }); // a fresh window: no browser copy of the data either
+    try {
+      await page(b, `http://127.0.0.1:${port}/#/movies/beta-film`, "Beta Film");
+      await sleep(800);
+      await b.click("Add to favorites");
+      await sleep(1000);
+      assert.deepEqual((await s.get("/api/userdata")).json.user.favorites, ["alpha-movie"], "saved while the server couldn't be reached");
+      blocked = false;
+      const u = await until(async () => { const x = (await s.get("/api/userdata")).json.user; return x.favorites.length === 2 && x; }, 10000);
+      assert.deepEqual(u.favorites, ["beta-film", "alpha-movie"]);
+      assert.equal(u.progress["alpha-movie"]?.position, 200, "the database's progress was overwritten by the window's empty copy");
+      await b.eval(`location.hash = "#/movies/alpha-movie"`); // the window now shows the database's data too
+      await b.waitFor(`document.body.innerText.includes("Resume")`, 5000);
+    } finally { await b.close(); proxy.closeAllConnections(); proxy.close(); await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

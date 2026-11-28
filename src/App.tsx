@@ -12,6 +12,8 @@ import { useRemoteLink } from "@/lib/remoteLink";
 import { usePartyLink } from "@/lib/partyLink";
 import { PartyPanel } from "@/components/PartyPanel";
 import { ReadOnlyBanner } from "@/components/ReadOnlyBanner";
+import { ConnectionBar } from "@/components/ConnectionBar";
+import { startReconnect } from "@/lib/reconnect";
 import { useHotkey } from "@/hooks/useHotkey";
 import { setTvMode, useTvMode } from "@/hooks/useTvMode";
 import { useSettings } from "@/store/settings";
@@ -42,6 +44,7 @@ export default function App() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { startUpdateChecks(); }, []);
+  useEffect(() => { startReconnect(); }, []);
 
   const openSearch = useCallback(() => setSearchOpen(true), []);
   useHotkey("mod+k", openSearch);
@@ -109,6 +112,7 @@ export default function App() {
       <ErrorBoundary fallback={() => null}><PlayerHost /></ErrorBoundary>
       <NowPlayingBar />
       <PartyPanel />
+      <ConnectionBar />
     </div>
   );
 }
