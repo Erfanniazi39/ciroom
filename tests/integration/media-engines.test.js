@@ -106,7 +106,7 @@ describe("server ↔ ffmpeg: streams that break, storms of seeks, media never to
 });
 
 describe("server ↔ missing or failing programs", { skip: !LINUX || !HAS_FFMPEG }, () => {
-  test("D-21: ffmpeg can't be started (missing; the same path as EMFILE/EAGAIN): the request fails, the server keeps running", { todo: "D-21" }, async () => {
+  test("D-21: ffmpeg can't be started (missing; the same path as EMFILE/EAGAIN): the request fails, the server keeps running", async () => {
     const dir = scratch("it-noff");
     const s = await startCiRoom({ dir, layout: { "Movies/Alpha 2001/a.mkv": "short.mkv" }, env: { PATH: pathWith(dir, ["ffprobe"]) } });
     try {
@@ -118,6 +118,7 @@ describe("server ↔ missing or failing programs", { skip: !LINUX || !HAS_FFMPEG
         let up = false;
         try { up = (await s.get("/api/ping")).status === 200; } catch { up = false; }
         assert.ok(up, `the whole server died on ${p.split("?")[0]} (answer: ${status})`);
+        assert.equal(status, p.startsWith("/api/stream") ? 503 : 200, p.split("?")[0]); // seek point: its usual fallback
       }
     } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });

@@ -213,6 +213,8 @@ async function probe(/** @type {string} */ file) {
  * run the SAME seek and read the first timestamps. -avoid_negative_ts make_zero shifts the output so
  * the earliest dts becomes 0, so that earliest dts is the offset the player must add.
  */
+/** A program that can't be started (missing, EMFILE, EAGAIN, EACCES) emits "error": unheard, that ends the server. */
+const warnSpawn = (/** @type {string} */ name, /** @type {NodeJS.ErrnoException} */ e) => console.warn(`[ciroom] ${name} can't be started:`, e.code ?? e.message);
 const SEEKPOINT_TIMEOUT_MS = Number(process.env.CIROOM_TEST_SEEKPOINT_TIMEOUT_MS) || 8000; // tests may shorten it
 /** @returns {Promise<{ start: number, exact: boolean }>} exact=false: the lookup timed out or found nothing, `start` is just the asked time. */
 function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** @type {number} */ aud = 0, /** @type {number} */ vi = 0) {
@@ -220,16 +222,31 @@ function streamOrigin(/** @type {string} */ file, /** @type {string} */ ss, /** 
     const ff = spawn("ffmpeg", ["-hide_banner", "-loglevel", "quiet", "-nostdin", "-ss", ss, "-i", file,
       "-map", `0:v:${vi}`, "-map", `0:a:${aud}?`, "-c", "copy", "-copyts", "-frames:v", "3", "-f", "nut", "pipe:1"], { stdio: ["ignore", "pipe", "ignore"] });
     const pr = spawn("ffprobe", ["-v", "quiet", "-show_entries", "packet=dts_time", "-of", "csv=p=0", "-"], { stdio: ["pipe", "pipe", "ignore"] });
-    ff.stdout.pipe(pr.stdin);
-    pr.stdin.on("error", () => {});
-    let out = "";
-    pr.stdout.on("data", (d) => { out += d; });
+    // After EMFILE/ENFILE a child has no pipes at all, hence the `?.` and the check.
+    if (ff.stdout && pr.stdin) ff.stdout.pipe(pr.stdin);
+    pr.stdin?.on("error", () => {});
+    let out = "", done = false;
+    pr.stdout?.on("data", (d) => { out += d; });
     const fallback = Number(ss);
-    const timer = setTimeout(() => { ff.kill("SIGKILL"); pr.kill("SIGKILL"); resolve({ start: fallback, exact: false }); }, SEEKPOINT_TIMEOUT_MS);
-    pr.on("close", () => {
+    const finish = (/** @type {{ start: number, exact: boolean }} */ result) => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
+      resolve(result);
+    };
+    const killBoth = () => { ff.kill("SIGKILL"); pr.kill("SIGKILL"); };
+    const timer = setTimeout(() => { killBoth(); finish({ start: fallback, exact: false }); }, SEEKPOINT_TIMEOUT_MS);
+    const failed = (/** @type {string} */ name) => (/** @type {Error} */ e) => {
+      if (done) return;
+      warnSpawn(name, e);
+      finish({ start: fallback, exact: false });
+      killBoth(); // the one that did start must not be left waiting on the other
+    };
+    ff.on("error", failed("ffmpeg"));
+    pr.on("error", failed("ffprobe"));
+    pr.on("close", () => {
       const ts = out.split("\n").filter((l) => l.trim() && l.trim() !== "N/A").map(Number).filter(Number.isFinite);
-      resolve(ts.length ? { start: Math.min(...ts), exact: true } : { start: fallback, exact: false });
+      finish(ts.length ? { start: Math.min(...ts), exact: true } : { start: fallback, exact: false });
     });
   });
 }
@@ -476,11 +493,21 @@ export function streamRoutes(resolveVideo) {
         const launch = (useVa) => {
           res.setHeader("X-Encoder", copying ? "copy" : useVa && vdev ? "vaapi" : "x264");
           const ff = spawn("ffmpeg", [...buildArgs(useVa), ...tail], { stdio: ["ignore", "pipe", "pipe"] });
-          let err = "", sent = 0;
-          ff.stderr.on("data", (d) => { if (err.length < 2000) err += d; });
-          ff.stdout.on("data", (c) => { sent += c.length; });
-          ff.stdout.pipe(res, { end: false });
+          let err = "", sent = 0, failed = false;
+          ff.on("error", (e) => {
+            if (failed) return;
+            failed = true;
+            warnSpawn("ffmpeg", e);
+            stop();
+            if (res.destroyed || res.writableEnded) return;
+            if (res.headersSent) res.end();
+            else json(503, { error: "FFmpeg can't be started" });
+          });
+          ff.stderr?.on("data", (d) => { if (err.length < 2000) err += d; });
+          ff.stdout?.on("data", (c) => { sent += c.length; });
+          ff.stdout?.pipe(res, { end: false });
           ff.on("close", (code, signal) => {
+            if (failed) return; // never started (its "close" code is a negative errno): not a VA-API failure
             if (useVa && vdev && code && !signal && !sent && !res.destroyed) {
               // The GPU encode failed before sending anything: don't use it again this session, redo this stream with x264.
               if (!vaapiBroken) console.warn("[stream] VA-API encode failed, using x264 from now on:", err.trim().split("\n").pop());

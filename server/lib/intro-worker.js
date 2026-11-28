@@ -41,7 +41,7 @@ function fingerprint(/** @type {string} */ file, /** @type {"head"|"tail"} */ pa
     const p = spawn(cmd, full, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     if (WIN && p.pid) { try { os.setPriority(p.pid, 19); } catch { /* fine */ } }
     /** @type {Buffer[]} */ const chunks = [];
-    p.stdout.on("data", (c) => chunks.push(c));
+    p.stdout?.on("data", (c) => chunks.push(c)); // no pipe after EMFILE: "error" below answers
     const timer = setTimeout(() => p.kill(), 180_000);
     p.on("error", () => { clearTimeout(timer); empty(); });
     p.on("close", (code) => {
