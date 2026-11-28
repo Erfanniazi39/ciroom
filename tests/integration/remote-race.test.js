@@ -50,7 +50,7 @@ describe("one screen at a time: phone and full player racing", { skip }, () => {
     await reset();
   });
 
-  test("D-27: phone plays, pauses and plays again while mpv is still starting: mpv must end up paused, not playing beside the phone", { todo: "D-27" }, async () => {
+  test("D-27: phone plays, pauses and plays again while mpv is still starting: mpv must end up paused, not playing beside the phone", async () => {
     await s.post("/api/play", { path: A.file.path, startAt: 30, itemId: A.id, volume: 0 });
     await phone.post("/api/remote/state", { id: A.id, position: 40, playing: true });
     await phone.post("/api/remote/state", { id: A.id, position: 40, playing: false });

@@ -134,7 +134,7 @@ test("mpv path + stale phone state (fake mpv, fake clock)", async () => {
     await postJson(port, "/api/remote/report", { now: { meta: { id: "tiny" }, page: null }, user: null });
     // mpv plays the same title → mpv is paused directly
     assert.equal((await st("tiny", true)).status, 200);
-    assert.deepEqual(mpv.cmds, [{ cmd: "pause" }]);
+    assert.deepEqual(mpv.cmds, [{ cmd: "set", name: "pause", value: true }]);
     await wait(100);
     assert.equal(yields(w).length, 1, "the window is told so it won't save a stale position");
     // heartbeat → no second pause

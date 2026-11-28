@@ -15,6 +15,8 @@ import { isElsewhere, takeBack } from "@/lib/oneScreen";
 
 const UP_NEXT_SECONDS = 10;
 const POLL_MS = 500;
+/** mpv not seen running this long after Play: it isn't going to start. */
+const START_LIMIT_MS = 15_000;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 /**
@@ -39,6 +41,7 @@ export function NowPlayingBar() {
     if (!current || upNext) return;
     lastSaved.current = current.startAt;
     sawRunning.current = false;
+    const startedAt = Date.now();
     lastPos.current = null;
     wasPaused.current = false;
     lastTracks.current = null;
@@ -93,7 +96,10 @@ export function NowPlayingBar() {
         }
         return;
       }
-      if (!sawRunning.current) return; // mpv still starting
+      if (!sawRunning.current) { // mpv still starting
+        if (Date.now() - startedAt > START_LIMIT_MS) usePlayer.setState({ current: null, error: "mpv didn't start." });
+        return;
+      }
       flush();
       const dur = snap.duration || cur.duration;
       const pos = snap.ended ? dur : snap.position;

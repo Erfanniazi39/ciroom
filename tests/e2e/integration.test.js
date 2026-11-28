@@ -9,7 +9,7 @@ import http from "node:http";
 import { startCiRoom, scan, until, sleep, scratch, userState, saveUser } from "../functional/env.js";
 import { HAS_FFMPEG } from "../fixtures/media.js";
 import { launch, CHROME } from "./browser.js";
-import { setReadOnly, streamsOf } from "../integration/procs.js";
+import { setReadOnly, streamsOf, pathWith } from "../integration/procs.js";
 
 const root = path.resolve(import.meta.dirname, "../..");
 const skip = !HAS_FFMPEG || !CHROME || !fs.existsSync(path.join(root, "dist/index.html")) || process.platform !== "linux";
@@ -152,6 +152,22 @@ describe("window ↔ server: the server crashes and comes back while the window 
       await b.eval(`location.hash = "#/movies/alpha-movie"`); // the window now shows the database's data too
       await b.waitFor(`document.body.innerText.includes("Resume")`, 5000);
     } finally { await b.close(); proxy.closeAllConnections(); proxy.close(); await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("window ↔ server ↔ mpv: the full player can't be started", { skip }, () => {
+  test("D-28: without mpv, \"Open in full player\" says it couldn't start playback, and why", async () => {
+    const dir = scratch("e2e-nompv");
+    const s = await startCiRoom({ dir, layout: LAYOUT, env: { PATH: pathWith(dir, ["ffprobe", "ffmpeg"]) } });
+    await scan(s);
+    await saveUser(s, userState());
+    const b = await launch({ dir: path.join(dir, "w") });
+    try {
+      await page(b, `http://127.0.0.1:${s.port}/#/watch/beta-film?t=20`, "Beta Film");
+      await b.waitFor(`document.querySelector("video")?.currentTime > 20`, 20000);
+      await b.eval(`document.querySelector('[aria-label="Open in full player (mpv)"]').click()`);
+      await b.waitFor(`document.body.innerText.includes("Couldn't start playback") && document.body.innerText.includes("mpv isn't installed")`, 10000);
+    } finally { await b.close(); await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

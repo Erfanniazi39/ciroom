@@ -28,6 +28,15 @@ export const alive = (/** @type {number} */ pid) => fs.existsSync(`/proc/${pid}`
 /** Programs `name` started directly by the process `pid`. */
 export const childrenNamed = (/** @type {number} */ pid, /** @type {string} */ name) => processes().filter((p) => p.ppid === pid && p.comm === name);
 
+const which = (/** @type {string} */ t) => ["/usr/bin/", "/usr/local/bin/"].map((d) => d + t).find((p) => fs.existsSync(p));
+/** A PATH folder that holds only the named tools (symlinks to the real ones). */
+export function pathWith(/** @type {string} */ dir, /** @type {string[]} */ tools) {
+  const bin = path.join(dir, "only-bin");
+  fs.mkdirSync(bin, { recursive: true });
+  for (const t of tools) { const real = which(t); if (real) fs.symlinkSync(real, path.join(bin, t)); }
+  return bin;
+}
+
 /** The page-stream ffmpeg processes of a server (not its loudness measuring or thumbnails, which run alongside). */
 export const streamsOf = (/** @type {number} */ pid) => childrenNamed(pid, "ffmpeg").filter((p) => p.cmd.includes("frag_keyframe"));
 

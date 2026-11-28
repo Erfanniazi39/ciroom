@@ -7,16 +7,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { startCiRoom, scan, until, sleep, scratch } from "../functional/env.js";
 import { HAS_FFMPEG, HAS_MPV } from "../fixtures/media.js";
-import { LINUX, streamsOf, fingerprint, openStream } from "./procs.js";
+import { LINUX, streamsOf, fingerprint, openStream, pathWith } from "./procs.js";
 
-const which = (/** @type {string} */ t) => ["/usr/bin/", "/usr/local/bin/"].map((d) => d + t).find((p) => fs.existsSync(p));
-/** A PATH folder that holds only the named tools (symlinks to the real ones). */
-function pathWith(/** @type {string} */ dir, /** @type {string[]} */ tools) {
-  const bin = path.join(dir, "only-bin");
-  fs.mkdirSync(bin, { recursive: true });
-  for (const t of tools) { const real = which(t); if (real) fs.symlinkSync(real, path.join(bin, t)); }
-  return bin;
-}
 const q = (/** @type {string} */ f, extra = "") => `?path=${encodeURIComponent(f)}${extra}`;
 
 describe("server ↔ ffmpeg: streams that break, storms of seeks, media never touched", { skip: !LINUX || !HAS_FFMPEG }, () => {
@@ -123,7 +115,7 @@ describe("server ↔ missing or failing programs", { skip: !LINUX || !HAS_FFMPEG
     } finally { await s.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test("D-28: mpv can't be started: /api/play must say so (the window otherwise waits for mpv forever)", { todo: "D-28" }, async () => {
+  test("D-28: mpv can't be started: /api/play must say so (the window otherwise waits for mpv forever)", async () => {
     const dir = scratch("it-nompv");
     const s = await startCiRoom({ dir, layout: { "Movies/Alpha 2001/a.mkv": "short.mkv" }, env: { PATH: pathWith(dir, ["ffprobe", "ffmpeg"]) } });
     try {

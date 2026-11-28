@@ -8,6 +8,7 @@
  *   POST /api/player/cmd    { cmd, value? }  cmd ∈ pause | seek | seek-rel | set | stop
  *     Commands sent while mpv is still starting are held and sent once the file is open; the answer is then
  *     { ok: true, queued: true }. They are thrown away if mpv exits or can't be reached.
+ *   /api/play answers 503 { error } when mpv itself can't be started (not installed, not runnable…).
  *
  * All three are for this PC only (mpv opens a window here). Safety: read-only on media; only paths inside the media root.
  */
@@ -71,6 +72,20 @@ const SETTABLE = new Set(["pause", "volume", "mute", "speed", "sub-delay", "sid"
 const NUMERIC = new Set(["volume", "speed", "sub-delay"]);
 /** How many commands are held while mpv is starting (the oldest go first when it's full). */
 const MAX_QUEUED = 50;
+
+/** How long /api/play waits to hear whether mpv started; no answer by then counts as started. */
+const SPAWN_WAIT_MS = 2000;
+
+/** Resolves once the process is running (null) or couldn't be started (the error). @param {import("node:child_process").ChildProcess} proc */
+const startError = (proc) => new Promise((resolve) => {
+  const timer = setTimeout(() => resolve(null), SPAWN_WAIT_MS);
+  const done = (/** @type {Error | null} */ e) => { clearTimeout(timer); resolve(e); };
+  proc.once("spawn", () => done(null));
+  proc.once("error", done);
+});
+
+/** What the window shows when mpv can't be started. */
+const startFailure = (/** @type {any} */ e) => (e?.code === "ENOENT" ? "mpv isn't installed" : "mpv isn't installed or can't be started");
 
 /**
  * @param {{ rootAbs: string, resolveVideo: (p: string) => string, markersFor: (file: string) => { intro: {start:number,end:number}|null, credits: number|null } | null, finalSave: () => void }} deps
@@ -344,7 +359,14 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
           Object.assign(st, { running: true, file, hasNext: !!hasNext, itemId: typeof itemId === "string" && /^[a-z0-9-]{1,200}$/.test(itemId) ? itemId : null, adopted: null });
           st.props["time-pos"] = startAt;
           if (subWant) st.subPick = { want: subWant, asked: false };
-          const proc = spawn("mpv", [
+          /** No mpv after all: forget it (no position to save) and tell the window why. */
+          const failed = (/** @type {any} */ e) => {
+            Object.assign(st, { running: false, proc: null, queue: [] });
+            console.error(`mpv couldn't be started: ${e?.message ?? e}`);
+            return json(503, { error: startFailure(e) });
+          };
+          let proc;
+          try { proc = spawn("mpv", [
             `--config-dir=${MPV_CONFIG}`, // Marquee's own look + shortcuts (mpv/), not the user's ~/.config/mpv
             `--input-ipc-server=${socketPath}`,
             "--fullscreen", `--slang=${slang.join(",")}`, `--alang=${alang.join(",")}`, ...sidArg,
@@ -358,10 +380,13 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
             `--volume=${Math.max(0, Math.min(130, volume !== null && volume !== "" && Number.isFinite(Number(volume)) ? Number(volume) : 100))}`, "--volume-max=130",
             ...(levelAf ? [`--af=lavfi=[${levelAf}]`] : []),
             file, ...morePartsOf(file), // a multi-part movie (CD1/CD2) is one mpv playlist
-          ], { stdio: "ignore" });
+          ], { stdio: "ignore" }); } catch (e) { return failed(e); } // some failures throw instead of emitting "error"
           st.proc = proc;
           proc.on("exit", () => { if (st.proc === proc) { finalSave(); st.running = false; st.proc = null; st.sock?.destroy(); st.sock = null; st.ready = false; st.queue = []; } });
-          proc.on("error", () => { st.running = false; });
+          proc.on("error", () => { if (st.proc === proc) st.running = false; });
+          const error = await startError(proc);
+          if (error && st.proc === proc) return failed(error);
+          if (error) return json(503, { error: startFailure(error) }); // a newer play took over meanwhile: leave its state alone
           setTimeout(() => connect(), 200);
           return json(200, { ok: true, file });
       } },

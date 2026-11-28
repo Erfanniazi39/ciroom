@@ -132,7 +132,8 @@ export function remoteRoutes(mpv, getPort = () => 1420, onToggle = () => {}, med
     const metaId = report.now?.meta?.id ?? null;
     if (mpv.running()) {
       if (metaId !== id) return;
-      if (!mpv.snapshot(true).paused) { mpv.command({ cmd: "pause" }); pushPhones(); }
+      // An absolute pause, never a toggle: while mpv starts the snapshot can't be trusted, and two toggles cancel out (D-27).
+      if (!mpv.snapshot(true).paused) { mpv.command({ cmd: "set", name: "pause", value: true }); pushPhones(); }
       sendWindows({ cmd: "yield", id, position, by: "phone" });
       return;
     }
