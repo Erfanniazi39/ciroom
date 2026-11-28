@@ -17,5 +17,5 @@ media fingerprints, read-only folders.
 | `filesystem.test.js` | reads during a 1,500-movie rescan, changes mid-scan, symbolic links | — |
 | `remote-race.test.js` | phone vs full player (one screen at a time) | mpv, a private LAN address |
 
-Tests named `D-21`…`D-30` are known defects from testing round 2 (`{ todo }`: reported, not failing the run).
-Details: `docs/to-opus/testing/round-2-integration/defects.md` (private).
+Tests named `D-21`…`D-30` cover the defects found in testing round 2. All are fixed: no known defects are open, and these
+tests must pass like any other.
