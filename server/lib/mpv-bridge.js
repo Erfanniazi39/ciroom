@@ -66,7 +66,7 @@ export function createCiRoom(mediaRoot) {
     /** Every route, with its audience (tests read it). */
     routes: table,
     /** Starts the background work (skip-intro analysis). Never called by `vite build`. */
-    start: () => { intro.start(); remote.start(); },
+    start: () => { intro.start(); remote.start(); mpv.adopt(); },
     setPort: (/** @type {number} */ p) => { server_port = p; },
     /** Clean shutdown: queue mpv's last position (even if a window is still connected), ask mpv to quit, wait up to 1 s, then SIGTERM. */
     shutdown: () => mpv.shutdown(() => remote.mpvSaveTick(true, true)),

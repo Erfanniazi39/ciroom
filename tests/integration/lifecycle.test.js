@@ -127,7 +127,7 @@ describe("server ↔ mpv ↔ ffmpeg: shutdown and crash", { skip: !LINUX || !HAS
     fs.rmSync(s.dir, { recursive: true, force: true });
   });
 
-  test("D-23: server crash while mpv plays: mpv must not live on unseen, and the next play must not open a second mpv", { todo: "D-23" }, async () => {
+  test("D-23: server crash while mpv plays: mpv must not live on unseen, and the next play must not open a second mpv", async () => {
     const dir = scratch("it-crash");
     let s = await startCiRoom({ dir, layout: LAYOUT, mpv: true });
     try {
@@ -141,11 +141,16 @@ describe("server ↔ mpv ↔ ffmpeg: shutdown and crash", { skip: !LINUX || !HAS
       await s.stop({ keep: true, signal: "SIGKILL" });
       await sleep(1500);
       s = await startCiRoom({ dir, media: s.media, data: s.data, cache: s.cache, port: s.port, mpv: true });
+      // The restarted server took the first mpv over: Now Playing shows it again.
+      await until(async () => { const p = (await s.get("/api/player")).json; return p.running && p.position > 101 && p.file.endsWith("a.mkv"); }, 5000);
       await s.post("/api/play", { path: b.file.path, startAt: 10, itemId: b.id, volume: 0 });
       await until(async () => { const p = (await s.get("/api/player")).json; return p.running && p.position > 11; }, 20000);
       const now = mpvOf(s);
       leftovers.push(...now);
       assert.equal(now.length, 1, `mpv processes now: ${now.map((p) => p.pid).join(", ")} (the first one, ${first[0]?.pid}, survived the crash)`);
+      // The first mpv's place was kept (no window open: queued for the next window, like a clean stop).
+      const pending = JSON.parse(fs.readFileSync(path.join(s.data, "phone-pending.json"), "utf8"));
+      assert.ok(pending[a.id] && pending[a.id].position > 100, `first title's position kept: ${JSON.stringify(pending[a.id])}`);
     } finally {
       await s.post("/api/player/cmd", { cmd: "stop" }).catch(() => {});
       await s.stop(); killAll(leftovers.filter((p) => alive(p.pid))); fs.rmSync(dir, { recursive: true, force: true });

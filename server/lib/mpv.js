@@ -106,6 +106,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     st.queue = [];
   }
 
+  /** Stops mpv. Resolves once a taken-over mpv (no child process to watch) is really gone, so its socket can't vanish under the next one. */
   function stop() {
     if (st.running) finalSave();
     write(["quit"]);
@@ -113,10 +114,71 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     st.ready = false;
     st.proc?.kill("SIGTERM");
     st.sock?.destroy();
+    const pid = st.adopted?.pid;
     st.proc = null;
     st.sock = null;
     st.running = false;
+    st.adopted = null;
+    return pid ? gone(pid, 2000) : Promise.resolve();
   }
+
+  const isAlive = (/** @type {number} */ pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  /** Waits up to `ms` for a process to end (it was asked to quit), then SIGTERMs it and waits a little more. */
+  async function gone(/** @type {number} */ pid, /** @type {number} */ ms) {
+    const until = Date.now() + ms;
+    while (isAlive(pid) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+    if (!isAlive(pid)) return;
+    try { process.kill(pid, "SIGTERM"); } catch { /* gone */ }
+    for (let i = 0; i < 20 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+  }
+
+  /** Asks whatever answers on CiRoom's socket for its pid, file and CiRoom options. null = nobody answers (a stale file). */
+  function probe(timeoutMs = 1500) {
+    return new Promise((resolve) => {
+      const names = ["pid", "path", "script-opts"];
+      /** @type {Record<string, any>} */ const got = {};
+      const sock = net.connect(socketPath);
+      let buf = "";
+      const done = (/** @type {any} */ v) => { clearTimeout(timer); sock.destroy(); resolve(v); };
+      const timer = setTimeout(() => done(null), timeoutMs);
+      sock.setEncoding("utf8");
+      sock.on("connect", () => names.forEach((n, i) => sock.write(JSON.stringify({ command: ["get_property", n], request_id: 901 + i }) + "\n")));
+      sock.on("data", (d) => {
+        buf += d;
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          try {
+            const msg = JSON.parse(line);
+            const n = names[Number(msg.request_id) - 901];
+            if (n) got[n] = msg.error === "success" ? msg.data : null;
+          } catch { /* partial line */ }
+        }
+        if (names.every((n) => n in got)) done(got);
+      });
+      sock.on("error", () => done(null));
+    });
+  }
+
+  /**
+   * After a crash (D-23): an mpv started by the previous server may still be playing on CiRoom's socket. Take it over
+   * (observe it again, keep saving its position, Now Playing and the phone work again) instead of starting a second one.
+   * Nobody answers → the socket file is stale and is removed.
+   */
+  async function adopt() {
+    if (st.running) return;
+    const info = /** @type {any} */ (await probe());
+    if (st.running) return; // a play started meanwhile (it waited for us, so this doesn't happen; just in case)
+    if (!info || !Number.isInteger(info.pid) || info.pid <= 0) { try { fs.unlinkSync(socketPath); } catch { /* not there */ } return; }
+    const opts = info["script-opts"] && typeof info["script-opts"] === "object" ? info["script-opts"] : {};
+    const itemId = typeof opts["ciroom-item"] === "string" && /^[a-z0-9-]{1,200}$/.test(opts["ciroom-item"]) ? opts["ciroom-item"] : null;
+    resetProps();
+    Object.assign(st, { running: true, proc: null, file: typeof info.path === "string" ? info.path : "", hasNext: opts["marquee-osc-has_next"] === "yes", itemId, adopted: { pid: info.pid } });
+    connect();
+  }
+  /** Set by `adopt()`; /api/play waits for it so a play never races the take-over. */
+  let adopting = Promise.resolve();
 
   /** Applies the remembered subtitle once the file is loaded. Request ids: 1 = list the tracks, 2 = list them again after the change. */
   function subPickReply(/** @type {any} */ msg) {
@@ -159,7 +221,14 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
         } catch { /* partial line */ }
       }
     });
+    // A taken-over mpv has no child process: its socket closing is how we learn it went away (closed by the user, or crashed).
+    sock.on("close", () => {
+      if (st.sock !== sock || !st.adopted) return; // stop() already cleared it, or this is our own child (proc "exit" handles it)
+      finalSave();
+      Object.assign(st, { running: false, sock: null, ready: false, queue: [], adopted: null });
+    });
     sock.on("error", () => {
+      if (st.adopted && !st.sock) { Object.assign(st, { running: false, queue: [], adopted: null }); return; } // it answered a moment ago and is gone now
       if (attempt < 200 && st.running) setTimeout(() => connect(attempt + 1), 150); // mpv still starting (~30 s: a slow drive or a cold start)
       else if (!st.sock) st.queue = null; // gave up: drop what was held and hold nothing more
     });
@@ -228,16 +297,20 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
     if (!st.running) return;
     try { beforeQuit(); } catch { /* best effort */ }
     const proc = st.proc;
+    const adoptedPid = st.adopted?.pid;
+    st.adopted = null; // its socket closing is now expected: no second save
     write(["quit"]);
     if (proc && proc.exitCode === null) {
       await Promise.race([new Promise((r) => proc.once("exit", r)), new Promise((r) => setTimeout(r, 1000))]);
       if (proc.exitCode === null) proc.kill("SIGTERM");
-    }
+    } else if (adoptedPid) await gone(adoptedPid, 1000);
     st.running = false;
   }
 
   return {
     snapshot, shutdown,
+    /** At server start: take over an mpv the previous server left playing (after a crash). Never called by `vite build`. */
+    adopt: () => (adopting = adopt().catch(() => {})),
     /** What the phone remote needs from mpv (see remote.js). */
     forRemote: { itemId: () => st.itemId ?? null, running: () => !!st.running, snapshot: (/** @type {boolean} */ peek) => snapshot(peek), command: playerCmd, skipState: mpvSkipState, skip: mpvSkip },
     routes: defineRoutes("mpv", [
@@ -264,10 +337,11 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
           if (level && knownGain === undefined) measureGainInBackground(file, track); // don't block the play button; next play has it
           const levelAf = knownGain !== undefined ? levelFilter(knownGain) : null; // same levelling as the page player
           if (dryRun) return json(200, { ok: true, file });
-          stop();
+          await adopting; // a take-over at start-up finishes first: never two mpv at once
+          await stop();
           try { fs.unlinkSync(socketPath); } catch { /* not there */ }
           resetProps();
-          Object.assign(st, { running: true, file, hasNext: !!hasNext, itemId: typeof itemId === "string" && /^[a-z0-9-]{1,200}$/.test(itemId) ? itemId : null });
+          Object.assign(st, { running: true, file, hasNext: !!hasNext, itemId: typeof itemId === "string" && /^[a-z0-9-]{1,200}$/.test(itemId) ? itemId : null, adopted: null });
           st.props["time-pos"] = startAt;
           if (subWant) st.subPick = { want: subWant, asked: false };
           const proc = spawn("mpv", [
@@ -276,6 +350,7 @@ export function createMpv({ rootAbs, resolveVideo, markersFor, finalSave }) {
             "--fullscreen", `--slang=${slang.join(",")}`, `--alang=${alang.join(",")}`, ...sidArg,
             `--force-media-title=${String(title).trim() || path.parse(file).name}`,
             `--script-opts-append=marquee-osc-has_next=${hasNext ? "yes" : "no"}`, // Next-episode button
+            ...(st.itemId ? [`--script-opts-append=ciroom-item=${st.itemId}`] : []), // lets a restarted server know what this mpv plays (D-23)
             ...markerOpts(markersFor(file)), // Skip intro / Skip credits button
             ...subs.map((f) => `--sub-file=${f}`),
             `--start=${Math.max(0, Math.floor(startAt))}`,
