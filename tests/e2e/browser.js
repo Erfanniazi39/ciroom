@@ -11,12 +11,13 @@ export async function launch(o) {
   if (!CHROME) throw new Error("Chrome/Chromium not found");
   const profile = path.join(o.dir, "chrome-profile");
   fs.mkdirSync(profile, { recursive: true });
+  const portFile = path.join(profile, "DevToolsActivePort");
+  fs.rmSync(portFile, { force: true }); // a profile used before still has the old port: reopening it would connect there
   const proc = spawn(CHROME, [
     "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-proxy-server", "--mute-audio", "--no-first-run",
     "--no-default-browser-check", "--autoplay-policy=no-user-gesture-required", `--window-size=${o.width ?? 1440},${o.height ?? 900}`,
     "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "about:blank",
   ], { stdio: "ignore" });
-  const portFile = path.join(profile, "DevToolsActivePort");
   const t0 = Date.now();
   while (!fs.existsSync(portFile) || !fs.readFileSync(portFile, "utf8").includes("\n")) {
     if (Date.now() - t0 > 20000) { proc.kill("SIGKILL"); throw new Error("Chrome did not start"); }
