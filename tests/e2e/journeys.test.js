@@ -180,6 +180,22 @@ describe("end-to-end journeys (real app in Chrome)", { skip }, () => {
     await b.waitFor(`!document.querySelector("video")`);
   });
 
+  test("D-34: with 7 subtitle tracks the player's Subtitles menu stays inside the player and every choice can be reached", async () => {
+    await b.goto(base + "/#/watch/alpha-movie?t=20");
+    await playingAt(b, 19);
+    await b.click("Settings (right-click)");
+    await b.click("Subtitles", "div[class*='bottom-[86px]'] button");
+    await b.waitFor(`document.querySelector("div[class*='bottom-[86px]'] span.flex-1")?.innerText.trim() === "Subtitles"`);
+    await sleep(500); // the panel's pop-in animation
+    const g = await b.eval(`(() => { const panel = document.querySelector("div[class*='bottom-[86px]']"); const host = document.querySelector("[data-player-host]").getBoundingClientRect();
+      const top = panel.getBoundingClientRect().top;
+      const rows = [...panel.querySelectorAll("button")].filter((x) => !x.getAttribute("aria-label") && !x.hasAttribute("aria-pressed")).map((x) => { x.scrollIntoView({ block: "nearest" }); const r = x.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { label: x.innerText.trim(), reachable: r.top >= Math.max(0, host.top) && r.bottom <= host.bottom && x.contains(hit) }; });
+      return { top, playerTop: host.top, rows }; })()`);
+    assert.ok(g.top >= g.playerTop, `the panel starts above the player: ${g.top} < ${g.playerTop}`);
+    assert.ok(g.rows.length >= 8, `Off + 7 tracks listed: ${g.rows.length}`);
+    assert.deepEqual(g.rows.filter((/** @type {any} */ r) => !r.reachable).map((/** @type {any} */ r) => r.label), []);
+  });
+
   test("journey 6: a new film on disk shows up after Library → Scan now; nothing else changes", async () => {
     addEntry(s.media, "Movies/Fresh Arrival 2026/fresh.mkv", "short20.mkv", s.clips);
     await b.goto(base + "/#/library");

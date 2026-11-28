@@ -50,10 +50,6 @@ describe("desktop journeys: subtitles, audio, full player, settings", { skip }, 
     await app.page.waitFor(`document.body.innerText.includes("Alpha Movie")`, 30000);
     await app.page.goto("#/watch/alpha-movie?t=20");
     await playingAt(app.page, 20.3);
-    // With 7 subtitle tracks the menu is taller than the player on the watch page and its top is cut off (D-34):
-    // use the player in fullscreen, where it fits.
-    await app.key("f");
-    await app.page.waitFor(`(() => { const r = document.querySelector("[data-player-host]").getBoundingClientRect(); return r.height >= innerHeight - 1; })()`, 8000);
     await menu(app, "Subtitles");
     const opts = await options(app);
     fs.writeFileSync(path.join(EVIDENCE, "J6-subtitle-options.json"), JSON.stringify(opts, null, 1));
@@ -117,7 +113,7 @@ describe("desktop journeys: subtitles, audio, full player, settings", { skip }, 
     await app.close();
   }));
 
-  test("D-34: every subtitle choice can be reached in the player's menu on the watch page (7 tracks, 1440×900 window)", { ...T, todo: "D-34" }, () => journey(ctx, "D-34", async () => {
+  test("D-34: every subtitle choice can be reached in the player's menu on the watch page (7 tracks, 1440×900 window)", T, () => journey(ctx, "D-34", async () => {
     const dir = scratch("d34");
     const app = await ctx.launch({ dir, media: ctx.library(dir, LAYOUT_FULL) });
     await app.page.waitFor(`document.body.innerText.includes("Alpha Movie")`, 30000);
@@ -125,11 +121,15 @@ describe("desktop journeys: subtitles, audio, full player, settings", { skip }, 
     await playingAt(app.page, 20.3);
     await menu(app, "Subtitles");
     ctx.disp.shot(path.join(EVIDENCE, "D-34-subtitle-menu-cut-off.png"));
+    const panel = await app.page.eval(`(() => { const host = document.querySelector("[data-player-host]").getBoundingClientRect(); const r = document.querySelector("div[class*='bottom-[86px]']").getBoundingClientRect(); return { top: Math.round(r.top), playerTop: Math.round(host.top) }; })()`);
+    // The list may scroll: each row must be reachable by scrolling it into view inside the panel.
     const geo = await app.page.eval(`(() => { const host = document.querySelector("[data-player-host]").getBoundingClientRect();
-      return [...document.querySelectorAll(${JSON.stringify(PANEL)})].filter((b) => !b.getAttribute("aria-label") && !b.hasAttribute("aria-pressed")).map((b) => { const r = b.getBoundingClientRect(); return { label: b.innerText.trim(), top: Math.round(r.top), visible: r.top >= Math.max(0, host.top) && r.bottom <= host.bottom }; }); })()`);
-    fs.writeFileSync(path.join(EVIDENCE, "D-34-options.json"), JSON.stringify({ window: await app.page.eval("[innerWidth, innerHeight]"), options: geo }, null, 1));
+      return [...document.querySelectorAll(${JSON.stringify(PANEL)})].filter((b) => !b.getAttribute("aria-label") && !b.hasAttribute("aria-pressed")).map((b) => { b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { label: b.innerText.trim(), top: Math.round(r.top), visible: r.top >= Math.max(0, host.top) && r.bottom <= host.bottom }; }); })()`);
+    fs.writeFileSync(path.join(EVIDENCE, "D-34-options.json"), JSON.stringify({ window: await app.page.eval("[innerWidth, innerHeight]"), panel, options: geo }, null, 1));
     await app.close();
     const hidden = geo.filter((/** @type {any} */ o) => !o.visible).map((/** @type {any} */ o) => o.label);
+    assert.ok(panel.top >= panel.playerTop, `the panel starts above the player: ${JSON.stringify(panel)}`);
+    assert.ok(geo.length >= 8, `Off + 7 tracks listed: ${geo.length}`);
     assert.deepEqual(hidden, [], `options cut off by the player: ${hidden.join(" | ")}`);
   }));
 

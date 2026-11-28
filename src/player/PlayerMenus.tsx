@@ -1,5 +1,5 @@
 import { ArrowLeft, AudioLines, Captions, Check, ChevronRight, Gauge, Search, Timer, X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { ProbeInfo } from "@/api/stream";
 import { cx } from "@/components/ui";
 import { useSettings, type SubtitleStyle } from "@/store/settings";
@@ -44,6 +44,15 @@ export function SettingsPanel(p: {
   levelGainDb?: number;
   setLevelling: (on: boolean) => void;
 }) {
+  const box = useRef<HTMLDivElement>(null);
+  // A page opens at its top, unless the selected choice is further down: then the list scrolls to it. (Only the panel
+  // scrolls: scrollIntoView would also move the player and the page.)
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const sel = el.querySelector<HTMLElement>("[data-selected]");
+    el.scrollTop = sel ? Math.max(0, sel.offsetTop + sel.offsetHeight + 8 - el.clientHeight) : 0;
+  }, [p.page]);
   const fmtDelay = (d: number) => (Math.abs(d) < 0.05 ? "0.0 s" : `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} s`);
   const subLabel = p.subIndex >= 0 ? p.subtitles[p.subIndex]?.label ?? "On" : "Off";
   const Row = ({ icon, label, value, onClick }: { icon: ReactNode; label: string; value: string; onClick: () => void }) => (
@@ -55,21 +64,24 @@ export function SettingsPanel(p: {
     </button>
   );
   const Option = ({ selected, label, onClick }: { selected: boolean; label: string; onClick: () => void }) => (
-    <button onClick={onClick} className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] transition hover:bg-white/10", selected ? "font-semibold text-white" : "text-white/80")}>
+    <button onClick={onClick} data-selected={selected || undefined} className={cx("flex w-full scroll-mt-12 items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] transition hover:bg-white/10", selected ? "font-semibold text-white" : "text-white/80")}>
       <span className="w-4">{selected && <Check size={16} className="text-violet-400" />}</span>
       <span className="truncate">{label}</span>
     </button>
   );
   const Header = ({ title }: { title: string }) => (
-    <div className="mb-1 flex items-center gap-2 border-b border-white/10 px-1 pb-2">
-      {p.page !== "main" && <button onClick={() => p.setPage("main")} aria-label="Back" className="flex h-8 w-8 items-center justify-center rounded-full text-white hover:bg-white/10"><ArrowLeft size={18} /></button>}
-      <span className="flex-1 px-2 text-[15px] font-semibold text-white">{title}</span>
-      <button onClick={() => p.setPage(null)} aria-label="Close" className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white"><X size={17} /></button>
+    <div className="sticky -top-2 z-10 -mt-2 mb-1 bg-[#141419] pt-2">
+      <div className="flex items-center gap-2 border-b border-white/10 px-1 pb-2">
+        {p.page !== "main" && <button onClick={() => p.setPage("main")} aria-label="Back" className="flex h-8 w-8 items-center justify-center rounded-full text-white hover:bg-white/10"><ArrowLeft size={18} /></button>}
+        <span className="flex-1 px-2 text-[15px] font-semibold text-white">{title}</span>
+        <button onClick={() => p.setPage(null)} aria-label="Close" className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white"><X size={17} /></button>
+      </div>
     </div>
   );
 
   return (
-    <div onClick={(e) => e.stopPropagation()} className="absolute bottom-[86px] right-[4%] z-10 w-[min(340px,86%)] rounded-2xl bg-[#141419]/95 p-2 shadow-[0_24px_70px_-15px_rgb(0_0_0/.95)] ring-1 ring-white/10 backdrop-blur-xl animate-pop">
+    // Never taller than the player (which clips it): the space above the control bar, then the list scrolls (D-34).
+    <div ref={box} onClick={(e) => e.stopPropagation()} className="absolute bottom-[86px] right-[4%] z-10 max-h-[calc(100%-94px)] w-[min(340px,86%)] overflow-y-auto overscroll-contain rounded-2xl bg-[#141419]/95 p-2 shadow-[0_24px_70px_-15px_rgb(0_0_0/.95)] ring-1 ring-white/10 backdrop-blur-xl animate-pop">
       {p.page === "main" && (
         <>
           <Header title="Settings" />
