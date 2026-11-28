@@ -162,11 +162,12 @@ describe("window ↔ page player ↔ stream ↔ ffmpeg: switching faster than st
     await saveUser(s, userState());
     const ep = lib.series[0].seasons[0].episodes.map((/** @type {any} */ e) => e.id);
     const b = await launch({ dir: path.join(s.dir, "w") });
+    let watch;
     try {
       await page(b, `http://127.0.0.1:${s.port}/#/`, "Alpha Movie");
       const seq = ["alpha-movie?t=100", "beta-film?t=300", `${ep[0]}?t=10`, "alpha-movie?t=100", `${ep[1]}?t=20`, "beta-film?t=300"];
       let most = 0;
-      const watch = setInterval(() => { most = Math.max(most, streamsOf(s.child.pid).length); }, 50);
+      watch = setInterval(() => { most = Math.max(most, streamsOf(s.child.pid).length); }, 50);
       for (let r = 0; r < 3; r++) for (const w of seq) { await b.eval(`location.hash = "#/watch/${w}"`); await sleep(120 + (r * 37 + w.length * 13) % 200); }
       await b.waitFor(`(() => { const v = document.querySelector("video"); return v && !v.paused && v.currentTime > 301 && v.currentTime < 330; })()`, 30000);
       clearInterval(watch);
@@ -178,7 +179,7 @@ describe("window ↔ page player ↔ stream ↔ ffmpeg: switching faster than st
       assert.ok(p["beta-film"].position > 300 && p["beta-film"].position < 340, `beta ${p["beta-film"].position}`);
       for (const [id, v] of Object.entries(p)) if (id !== "beta-film") assert.ok(Math.abs(/** @type {any} */ (v).position - 300) > 30, `${id} got Beta's position (${/** @type {any} */ (v).position})`);
       assert.ok(most <= 8, `at most ${most} streams ran at once`);
-    } finally { await b.close(); await s.stop(); }
+    } finally { clearInterval(watch); await b.close(); await s.stop(); }
   });
 
   test("D-30: switching videos doesn't throw uncaught errors in the page", { todo: "D-30" }, async () => {

@@ -22,7 +22,6 @@ import { useProgressSaver } from "@/player/useProgressSaver";
 import { useActiveCue, useCues } from "@/player/useSubtitles";
 import { cx } from "./ui";
 import { inDesktopShell } from "@/lib/windowFullscreen";
-import { reportServerTrouble } from "@/lib/serverHealth";
 
 const SUB_SCALE = { S: 0.8, M: 1, L: 1.3, XL: 1.7 } as const;
 const HIDE_MS = 2500;
@@ -442,7 +441,7 @@ export function WebPlayer({ id, titleId, path, title, startAt, fallbackDuration,
           if (autoNext) next!.onPlay(); // the card counted down to this moment
           else setEnded(true);
         }}
-        onError={() => { reportServerTrouble(); setError("This video couldn't be streamed. Try the full player."); }}
+        onError={() => setError("This video couldn't be streamed. Try the full player.")}
       />
 
       {/* Subtitles, lifted above the controls when they're visible */}
